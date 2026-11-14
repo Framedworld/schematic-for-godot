@@ -1,0 +1,19 @@
+# Godot's own cache
+.godot/
+
+# Local tool settings
+.claude/
+
+# Other people's projects converted for testing (large, and not ours to share)
+ports/
+
+# Tests that need those projects or a custom engine build
+tests/ports/
+tests/kits/
+tests/rewrite/
+tests/engine/
+
+# Test output
+tests/out/
+tests/tmp/
+*.log
