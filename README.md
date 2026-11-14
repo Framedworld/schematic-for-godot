@@ -2,7 +2,9 @@
 
 **Visual scripting for Godot 4. You wire nodes; it writes the GDScript you would have written.**
 
-![A Schematic graph while the game runs: the wires being followed light up and the pins show live values](docs/images/live_flow.gif)
+[![A game made from graphs, the code they compile to, and the game stopped at a breakpoint](docs/images/demo.gif)](docs/video/schematic_demo.mp4)
+
+*The game in this clip is `demo/arcade`. [Watch it at full quality](docs/video/schematic_demo.mp4).*
 
 ![The Schematic editor with an event graph open](docs/images/editor.png)
 
@@ -34,7 +36,7 @@ too: typing `BeginPlay` finds Event Ready.
 
 New Schematic offers ready-wired starters beside Empty: 2D and 3D characters, pickups, trigger volumes,
 projectiles, spawners, a health component, a game state and a score HUD, plus function libraries, macro
-libraries, data assets and interfaces. A small complete game built only from Blueprints is in `demo/game`.
+libraries, data assets and interfaces. `demo/arcade` is a small game made from five of them, unchanged.
 
 ![The player Schematic of the demo game](docs/images/game_schematic.png)
 
@@ -53,7 +55,7 @@ values.
 
 ## Watch it run
 
-![Exec wires lit up with moving dots while the game runs](docs/images/live_flow.png)
+![Exec wires lit up with moving dots while the game runs](docs/images/live_flow.gif)
 
 Turn on Show Flow and Values and play: the wires the game follows light up with moving dots, and each pin
 shows the last value it received. This is opt-in per Schematic, because it adds trace calls to the generated
@@ -137,7 +139,9 @@ other projects and are not in the repository.
    the Game State joins `game_state`); pickups and triggers need a CollisionShape child, the Spawner a scene.
 4. Double-clicking a Schematic `.gd` in the FileSystem opens it in the graph editor.
 5. `demo/demo.tscn` + `demo/SC_Demo.gd` is a working example (press Space while it runs).
-6. `demo/game/main.tscn` is a small complete game built only from schematics (player, coins, HUD, spawner): arrow keys to move.
+6. `demo/arcade/arcade.tscn` is the coin-collecting game from the video: five starters (character, pickup, spawner,
+   game state, score HUD) and two scenes, with no script written by hand. Arrow keys to move.
+7. `demo/game/main.tscn` is a smaller game built node by node in a test (player, coins, HUD): arrow keys to move.
 
 ### Editor
 
@@ -237,6 +241,7 @@ godot --headless --path . --script res://tests/test_interfaces.gd
 godot --headless --path . --script res://tests/test_reuse.gd
 godot --headless --path . --script res://tests/test_starters.gd
 godot --headless --path . --script res://tests/test_game.gd
+godot --headless --path . --script res://tests/make_arcade.gd      # rebuilds demo/arcade from the starters
 ```
 
 ## Extending

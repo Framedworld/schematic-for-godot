@@ -1,0 +1,269 @@
+[gd_scene load_steps=9 format=3]
+
+[ext_resource type="Script" path="res://demo/arcade/SC_ArcadePlayer.gd" id="1"]
+[ext_resource type="Script" path="res://demo/arcade/SC_ArcadeState.gd" id="2"]
+[ext_resource type="Script" path="res://demo/arcade/SC_ArcadeHUD.gd" id="3"]
+[ext_resource type="Script" path="res://demo/arcade/SC_ArcadeSpawner.gd" id="4"]
+[ext_resource type="PackedScene" path="res://demo/arcade/coin.tscn" id="6"]
+
+[sub_resource type="CircleShape2D" id="shape"]
+radius = 18.0
+
+[sub_resource type="Gradient" id="trail"]
+colors = PackedColorArray(0.3, 0.9, 1, 0.8, 0.2, 0.5, 1, 0)
+
+[sub_resource type="LabelSettings" id="score"]
+font_size = 44
+outline_size = 8
+outline_color = Color(0.03, 0.05, 0.08, 1)
+
+[node name="Arcade" type="Node2D"]
+
+[node name="Backdrop" type="Polygon2D" parent="."]
+z_index = -20
+color = Color(0.055, 0.07, 0.1, 1)
+polygon = PackedVector2Array(-4000, -4000, 4000, -4000, 4000, 4000, -4000, 4000)
+
+[node name="Floor" type="Node2D" parent="."]
+z_index = -10
+
+[node name="Edge" type="Line2D" parent="Floor"]
+points = PackedVector2Array(-380, -380, 380, -380, 380, 380, -380, 380)
+closed = true
+width = 3.0
+default_color = Color(0.2, 0.26, 0.36, 1)
+
+[node name="Line0" type="Line2D" parent="Floor"]
+points = PackedVector2Array(-380, -360, 380, -360)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line1" type="Line2D" parent="Floor"]
+points = PackedVector2Array(-360, -380, -360, 380)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line2" type="Line2D" parent="Floor"]
+points = PackedVector2Array(-380, -280, 380, -280)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line3" type="Line2D" parent="Floor"]
+points = PackedVector2Array(-280, -380, -280, 380)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line4" type="Line2D" parent="Floor"]
+points = PackedVector2Array(-380, -200, 380, -200)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line5" type="Line2D" parent="Floor"]
+points = PackedVector2Array(-200, -380, -200, 380)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line6" type="Line2D" parent="Floor"]
+points = PackedVector2Array(-380, -120, 380, -120)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line7" type="Line2D" parent="Floor"]
+points = PackedVector2Array(-120, -380, -120, 380)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line8" type="Line2D" parent="Floor"]
+points = PackedVector2Array(-380, -40, 380, -40)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line9" type="Line2D" parent="Floor"]
+points = PackedVector2Array(-40, -380, -40, 380)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line10" type="Line2D" parent="Floor"]
+points = PackedVector2Array(-380, 40, 380, 40)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line11" type="Line2D" parent="Floor"]
+points = PackedVector2Array(40, -380, 40, 380)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line12" type="Line2D" parent="Floor"]
+points = PackedVector2Array(-380, 120, 380, 120)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line13" type="Line2D" parent="Floor"]
+points = PackedVector2Array(120, -380, 120, 380)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line14" type="Line2D" parent="Floor"]
+points = PackedVector2Array(-380, 200, 380, 200)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line15" type="Line2D" parent="Floor"]
+points = PackedVector2Array(200, -380, 200, 380)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line16" type="Line2D" parent="Floor"]
+points = PackedVector2Array(-380, 280, 380, 280)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line17" type="Line2D" parent="Floor"]
+points = PackedVector2Array(280, -380, 280, 380)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line18" type="Line2D" parent="Floor"]
+points = PackedVector2Array(-380, 360, 380, 360)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="Line19" type="Line2D" parent="Floor"]
+points = PackedVector2Array(360, -380, 360, 380)
+width = 1.0
+default_color = Color(0.11, 0.14, 0.2, 1)
+
+[node name="GameState" type="Node" parent="."]
+script = ExtResource("2")
+
+[node name="Spawner0" type="Node2D" parent="."]
+position = Vector2(-250, -210)
+script = ExtResource("4")
+scene = ExtResource("6")
+interval = 2.3
+
+[node name="Pad" type="Polygon2D" parent="Spawner0"]
+z_index = -5
+color = Color(0.13, 0.17, 0.24, 1)
+polygon = PackedVector2Array(22.52, 13.00, 0.00, 26.00, -22.52, 13.00, -22.52, -13.00, -0.00, -26.00, 22.52, -13.00)
+
+[node name="Spawner1" type="Node2D" parent="."]
+position = Vector2(250, -210)
+script = ExtResource("4")
+scene = ExtResource("6")
+interval = 3.1
+
+[node name="Pad" type="Polygon2D" parent="Spawner1"]
+z_index = -5
+color = Color(0.13, 0.17, 0.24, 1)
+polygon = PackedVector2Array(22.52, 13.00, 0.00, 26.00, -22.52, 13.00, -22.52, -13.00, -0.00, -26.00, 22.52, -13.00)
+
+[node name="Spawner2" type="Node2D" parent="."]
+position = Vector2(-250, 210)
+script = ExtResource("4")
+scene = ExtResource("6")
+interval = 2.7
+
+[node name="Pad" type="Polygon2D" parent="Spawner2"]
+z_index = -5
+color = Color(0.13, 0.17, 0.24, 1)
+polygon = PackedVector2Array(22.52, 13.00, 0.00, 26.00, -22.52, 13.00, -22.52, -13.00, -0.00, -26.00, 22.52, -13.00)
+
+[node name="Spawner3" type="Node2D" parent="."]
+position = Vector2(250, 210)
+script = ExtResource("4")
+scene = ExtResource("6")
+interval = 3.7
+
+[node name="Pad" type="Polygon2D" parent="Spawner3"]
+z_index = -5
+color = Color(0.13, 0.17, 0.24, 1)
+polygon = PackedVector2Array(22.52, 13.00, 0.00, 26.00, -22.52, 13.00, -22.52, -13.00, -0.00, -26.00, 22.52, -13.00)
+
+[node name="Spawner4" type="Node2D" parent="."]
+position = Vector2(0, -300)
+script = ExtResource("4")
+scene = ExtResource("6")
+interval = 4.3
+
+[node name="Pad" type="Polygon2D" parent="Spawner4"]
+z_index = -5
+color = Color(0.13, 0.17, 0.24, 1)
+polygon = PackedVector2Array(22.52, 13.00, 0.00, 26.00, -22.52, 13.00, -22.52, -13.00, -0.00, -26.00, 22.52, -13.00)
+
+[node name="Spawner5" type="Node2D" parent="."]
+position = Vector2(0, 290)
+script = ExtResource("4")
+scene = ExtResource("6")
+interval = 2.9
+
+[node name="Pad" type="Polygon2D" parent="Spawner5"]
+z_index = -5
+color = Color(0.13, 0.17, 0.24, 1)
+polygon = PackedVector2Array(22.52, 13.00, 0.00, 26.00, -22.52, 13.00, -22.52, -13.00, -0.00, -26.00, 22.52, -13.00)
+
+[node name="Spawner6" type="Node2D" parent="."]
+position = Vector2(-310, 0)
+script = ExtResource("4")
+scene = ExtResource("6")
+interval = 3.4
+
+[node name="Pad" type="Polygon2D" parent="Spawner6"]
+z_index = -5
+color = Color(0.13, 0.17, 0.24, 1)
+polygon = PackedVector2Array(22.52, 13.00, 0.00, 26.00, -22.52, 13.00, -22.52, -13.00, -0.00, -26.00, 22.52, -13.00)
+
+[node name="Spawner7" type="Node2D" parent="."]
+position = Vector2(310, 0)
+script = ExtResource("4")
+scene = ExtResource("6")
+interval = 4.9
+
+[node name="Pad" type="Polygon2D" parent="Spawner7"]
+z_index = -5
+color = Color(0.13, 0.17, 0.24, 1)
+polygon = PackedVector2Array(22.52, 13.00, 0.00, 26.00, -22.52, 13.00, -22.52, -13.00, -0.00, -26.00, 22.52, -13.00)
+
+[node name="Player" type="CharacterBody2D" parent="."]
+motion_mode = 1
+script = ExtResource("1")
+speed = 300.0
+
+[node name="Shape" type="CollisionShape2D" parent="Player"]
+shape = SubResource("shape")
+
+[node name="Trail" type="CPUParticles2D" parent="Player"]
+z_index = -1
+amount = 60
+lifetime = 0.55
+local_coords = false
+emission_shape = 1
+emission_sphere_radius = 7.0
+spread = 180.0
+gravity = Vector2(0, 0)
+initial_velocity_max = 12.0
+scale_amount_min = 5.0
+scale_amount_max = 9.0
+color_ramp = SubResource("trail")
+
+[node name="Body" type="Polygon2D" parent="Player"]
+color = Color(0.25, 0.85, 1, 1)
+polygon = PackedVector2Array(18.00, 0.00, 9.00, 15.59, -9.00, 15.59, -18.00, 0.00, -9.00, -15.59, 9.00, -15.59)
+
+[node name="Core" type="Polygon2D" parent="Player"]
+color = Color(0.85, 0.98, 1, 1)
+polygon = PackedVector2Array(8.00, 0.00, 7.73, 2.07, 6.93, 4.00, 5.66, 5.66, 4.00, 6.93, 2.07, 7.73, 0.00, 8.00, -2.07, 7.73, -4.00, 6.93, -5.66, 5.66, -6.93, 4.00, -7.73, 2.07, -8.00, 0.00, -7.73, -2.07, -6.93, -4.00, -5.66, -5.66, -4.00, -6.93, -2.07, -7.73, -0.00, -8.00, 2.07, -7.73, 4.00, -6.93, 5.66, -5.66, 6.93, -4.00, 7.73, -2.07)
+
+[node name="Camera2D" type="Camera2D" parent="."]
+zoom = Vector2(0.8, 0.8)
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="HUD" type="Label" parent="UI"]
+offset_left = 28.0
+offset_top = 18.0
+offset_right = 400.0
+offset_bottom = 80.0
+text = "Score: 0"
+label_settings = SubResource("score")
+script = ExtResource("3")
