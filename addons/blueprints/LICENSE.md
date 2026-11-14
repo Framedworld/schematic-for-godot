@@ -2,7 +2,7 @@
 
 Version 1.0
 
-Copyright (c) 2026 Framedworld. All rights reserved except as granted below.
+Copyright (c) 2026 Matthew Kean. All rights reserved except as granted below.
 
 ## 1. What these words mean
 
