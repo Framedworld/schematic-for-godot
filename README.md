@@ -2,6 +2,8 @@
 
 **Unreal-style Blueprints for Godot 4. You wire nodes; it writes the GDScript you would have written.**
 
+![A Blueprint graph while the game runs: the wires being followed light up and the pins show live values](docs/images/live_flow.gif)
+
 ![The Blueprint editor with an event graph open](docs/images/editor.png)
 
 Blueprints for Godot is an editor plugin. There is no custom engine build, no runtime library and no new file
@@ -96,7 +98,8 @@ the script editor.
 in-graph animation pose editing (Godot's AnimationTree covers that) and interface-typed pins (GDScript has no
 interfaces). The limits of the debugger are listed under Debugging below.
 
-The pictures on this page are taken from the running editor by `tests/shot_readme.gd`.
+The pictures on this page are taken from the running editor by `tests/shot_readme.gd`, and the animation by
+`tests/shot_readme_gif.gd` and `tools/make_gif.py`.
 
 ## Installing it in your own project
 

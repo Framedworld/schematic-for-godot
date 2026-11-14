@@ -12,6 +12,8 @@ const COLOR := Color(1.0, 0.72, 0.2)
 var view: GraphEdit
 var _active: Dictionary = {}   # "node:port>node:port" -> [from node name, from port, to node name, to port, seconds left]
 var _time := 0.0
+## Set to 0 or more to place the dots for that moment instead of the running clock (used to record evenly spaced frames).
+var time_override := -1.0
 
 
 func _init() -> void:
@@ -68,7 +70,7 @@ func _draw() -> void:
 		var length := 0.0
 		for i in range(1, pts.size()):
 			length += pts[i - 1].distance_to(pts[i])
-		var at := fmod(_time * SPEED, SPACING)
+		var at := fmod((time_override if time_override >= 0.0 else _time) * SPEED, SPACING)
 		while at < length:
 			var dot := COLOR.lightened(0.45)
 			dot.a = fade
