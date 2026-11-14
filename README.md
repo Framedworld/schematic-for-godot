@@ -2,6 +2,10 @@
 
 **Visual scripting for Godot 4. You wire nodes; it writes the GDScript you would have written.**
 
+[![A marble run with a trapdoor, dominoes and a cannon, the graph that runs it lighting up lane by lane, and the game stopped at a breakpoint with the tower in mid-air](docs/images/machine.gif)](docs/video/schematic_machine.mp4)
+
+*One schematic runs this whole machine: it is `demo/machine`. [Watch the video at full quality](docs/video/schematic_machine.mp4).*
+
 ![The Schematic editor with an event graph open](docs/images/editor.png)
 
 Schematic is an editor plugin for building game logic as graphs of nodes and wires. There is no custom engine build, no runtime library and no new file
