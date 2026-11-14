@@ -519,6 +519,8 @@ func _rows(root: TreeItem, text: String, values: Dictionary) -> void:
 	var names := values.keys()
 	names.sort()
 	for n in names:
+		if String(n).begins_with("__"):
+			continue   # the plugin's own bookkeeping (timers, flow tracing), not something the graph shows
 		var it := _vars.create_item(g)
 		it.set_text(0, String(n))
 		it.set_text(1, String(values[n]))
