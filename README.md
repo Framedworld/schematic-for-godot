@@ -4,7 +4,8 @@
 
 [![A marble run with a trapdoor, dominoes and a cannon, the graph that runs it lighting up lane by lane, and the game stopped at a breakpoint with the tower in mid-air](docs/images/machine.gif)](docs/video/schematic_machine.mp4)
 
-*One schematic runs this whole machine: it is `demo/machine`. [Watch the video at full quality](docs/video/schematic_machine.mp4).*
+*One schematic runs this whole machine: it is `demo/machine`. [Watch the video at full quality](docs/video/schematic_machine.mp4),
+or [the one-minute tour of everything](docs/video/schematic_tour.mp4).*
 
 ![The Schematic editor with an event graph open](docs/images/editor.png)
 
@@ -71,12 +72,21 @@ looking at without knowing its class. It compiles to the `has_method` check you 
 
 ## Bring the scripts you already have
 
+[![The same game twice, once on its GDScript and once converted to nodes, with no pixel different, then the graph the script became](docs/images/convert.gif)](docs/video/schematic_convert.mp4)
+
+*Kenney's platformer kit, as written and after conversion. [Watch the video at full quality](docs/video/schematic_convert.mp4).*
+
 ![A hand-written script converted to a graph](docs/images/converted_script.png)
 
 Right-click a `.gd` file and pick Convert to Schematic, or convert a whole project from the command line. The
-original is kept beside it. Kenney's 3D platformer starter kit converts with all 110 lines as nodes and plays
-identically; a 42,000-line game converted with three lines left as code, and its own test suites gave the same
-results as before.
+original is kept beside it, and the converted script is declared the way the source was: what was untyped stays
+untyped, `:=` stays `:=`, signatures, signals, exports and constants are the same, so every other script sees the
+script it saw before.
+
+Kenney's 3D platformer starter kit converts with all 110 lines as nodes. Rendered with the same input, the original
+and the converted game are the same in all 560 frames, to the pixel. The converter is also run over every script of
+14 projects (5,284 scripts, 693,702 lines of statements, 98.1% of them nodes): wherever the original
+loads, the converted script loads too and offers the same functions, variables, signals and constants.
 
 ## Timelines and data tables
 
@@ -199,9 +209,18 @@ The **Generated Code** tab shows the GDScript live; selecting a node jumps to it
     **Is / As** nodes; `v.x = ...` on a vector held in a variable or property is a Set node for that member;
   - a lambda becomes a function of the schematic, with what it captured bound to the reference; handed to `connect`
     (or with optional parameters and captured values) it is a **Lambda** node, which makes a separate Callable each time.
-  What still stays as a GDScript node: a `match` arm that binds a name or has a guard, and odd lines the parser does
-  not understand. `ports/platformer` is Kenney's 3D platformer starter kit converted this way (110 of 110 lines as
-  nodes, plays the same as the original sample for sample).
+  - a `match` arm that binds names (`[var a, var b]`, `{"hp": var hp}`, `var x when x > 3`) is a Switch case; the
+    names it binds are read through small nodes that carry the name;
+  - `len`, `range` as a value, `assert`, `ord`, `char`, `is_instance_of`, `type_exists` and `print_stack` have nodes
+    of their own; a function of the script named like one of GDScript's (`log`, `range`) is called through `self`, as
+    GDScript requires;
+  - a parameter read far from where the event or function begins gets a small node with its name beside the reader,
+    instead of a wire across the graph.
+
+  What still stays as a GDScript node: a loop over a float or a vector, a new value given to a loop variable, a call
+  to `_input()` or another event by hand, a call that passes extra arguments to a `...rest` parameter, and lines the
+  parser does not understand. A script that extends another by its path (`extends "res://base.gd"`) keeps doing so.
+  Windows line endings are kept (a string that runs over several lines holds its file's line breaks).
 - **Reuse**: groups of nodes that repeat, inside one Schematic or across a project's Schematics, become macros that
   every place then uses. `convert_project.tscn` does this after converting (`--no-reuse` skips it), and
   `godot --headless --path <project> res://addons/schematic/tools/reuse_project.tscn -- --only=scripts,scenes`
@@ -240,6 +259,8 @@ godot --headless --path . --script res://tests/test_compile.gd
 godot --path . --editor -- --sc-selftest=res://tests/shot.gd        # also shot_input, shot_panels, shot_look, shot_alias, shot_macros, shot_tieins, shot_debug, shot_debugger, shot_interfaces, shot_collapse, shot_starters, shot_libs, shot_import, shot_data, shot_reuse
 godot --headless --path . --script res://tests/test_data.gd
 godot --headless --path . --script res://tests/test_import.gd
+godot --headless --path . --script res://tests/test_convert.gd     # the converter's torture test: tests/convert/*.gd run as written and converted
+godot --headless --path . --script res://tests/stress_convert.gd -- <folder of scripts>   # converts any scripts and checks the result (reads only)
 godot --headless --path . --script res://tests/test_libraries.gd
 godot --headless --path . --script res://tests/test_interfaces.gd
 godot --headless --path . --script res://tests/test_reuse.gd

@@ -295,6 +295,8 @@ func _assemble() -> String:
 	add.call(Model.MARKER + " v%d - generated from a Schematic graph. Edit it in the Schematic editor, not by hand." % Model.VERSION)
 	if bp.get("tool", false) or _construct:
 		add.call("@tool")
+	for class_ann in bp.get("class_pre", []):
+		add.call(String(class_ann))   # @icon(...) and the like, carried over from an imported script
 	if String(bp.get("class_name", "")) != "":
 		add.call("class_name " + T.ident(bp.class_name))
 	add.call("extends " + R.self_class(bp))
@@ -309,7 +311,12 @@ func _assemble() -> String:
 	if not bp.get("enums", []).is_empty():
 		add.call("")
 	for dsp in bp.dispatchers:
-		add.call("signal %s(%s)" % [T.ident(dsp.name), _param_list(dsp.get("params", []))])
+		for sig_ann in dsp.get("pre", []):
+			add.call(String(sig_ann))   # @warning_ignore(...) and the like, carried over from an imported script
+		var sig_params: Array = dsp.get("params", [])
+		if dsp.has("declared"):
+			sig_params = sig_params.slice(0, int(dsp.declared))   # an imported signal emitted with more than it declares
+		add.call("signal %s%s" % [T.ident(dsp.name), ("(%s)" % _param_list(sig_params)) if not (sig_params.is_empty() and dsp.has("declared")) else ""])
 	if not bp.dispatchers.is_empty():
 		add.call("")
 	# enums, constants and inner classes carried over from an imported script, exactly as written
@@ -355,6 +362,14 @@ func _assemble() -> String:
 		var decl := "%svar %s%s" % ["static " if _lib else "", vn, (": " + h) if h != "" else ""]
 		if not (T.is_object(vt) and lit == "null"):
 			decl += " = " + lit
+		# A variable of an imported script is declared the way the script declared it: one written without a
+		# type takes any value (another script may give it one this script never does), one written with ":="
+		# has whatever type GDScript infers. The type in the variable list is what the pins show.
+		var as_written := String(v.get("written", ""))
+		if as_written == "untyped":
+			decl = "%svar %s" % ["static " if _lib else "", vn] + ((" = " + String(v.default)) if String(v.get("default", "")) != "" else "")
+		elif as_written == "infer" and String(v.get("default", "")) != "":
+			decl = "%svar %s := %s" % ["static " if _lib else "", vn, String(v.default)]
 		var exported: bool = (v.get("export", false) or _data) and exportable and not _lib
 		var notify_fn := "on_%s_changed" % vn
 		var notify: bool = v.get("notify", false) and not _lib and not Model.graph_named(bp, notify_fn).is_empty()
@@ -437,9 +452,24 @@ func _declare_in_place(lines: Array, name: String, hint: String, infer := false)
 		var value := String(lines[i][1]).substr(name.length() + 3)
 		if infer:
 			lines[i][1] = "var %s := %s" % [name, value]
+		elif _declared_bare(lines[i]) and hint != "" and value == T.default_literal(hint):
+			lines[i][1] = "var %s: %s" % [name, hint]   # written as "var x: Vector3": that already starts at Vector3()
+		elif _declared_bare(lines[i]) and hint == "" and value == "null":
+			lines[i][1] = "var %s" % name
 		else:
 			lines[i][1] = "var %s%s = %s" % [name, (": " + hint) if hint != "" else "", value]
 	return true
+
+
+## True when the line comes from a Set node an imported `var x` / `var x: Type` (no value) became.
+func _declared_bare(line: Array) -> bool:
+	if line.size() < 4:
+		return false
+	var graph := Model.find_graph(bp, int(line[2]))
+	if graph.is_empty():
+		return false
+	var node := Model.find_node(graph, int(line[3]))
+	return not node.is_empty() and String(node.kind) == "local_set" and bool(node.p.get("bare", false))
 
 
 ## A local of the EventGraph belongs to the whole graph, so it can carry a value from one event to another
@@ -452,6 +482,11 @@ func _settle_event_locals(pending: Array) -> void:
 		for ml in entry[1]:
 			var name := T.ident(String(ml.name))
 			var hint := T.hint(String(ml.type))
+			var written := String(ml.get("hint", ""))
+			if written != "":
+				hint = written
+			elif bool(ml.get("untyped", false)):
+				hint = ""
 			var users := []
 			var named_in_text := false
 			for blk in _blocks:
@@ -480,6 +515,10 @@ func _settle_event_locals(pending: Array) -> void:
 				continue
 			var lit := String(ml.get("default", ""))
 			var text := "var %s%s = %s" % [name, (": " + hint) if hint != "" else "", lit if lit != "" else T.default_literal(String(ml.type))]
+			if written != "":
+				text = "var %s: %s" % [name, written]
+			elif bool(ml.get("untyped", false)):
+				text = "var %s = null" % name
 			var known := false
 			for m in _members:
 				if m[0] == text:
@@ -530,11 +569,22 @@ func _param_list(params: Array) -> String:
 	var out := PackedStringArray()
 	for prm in params:
 		var h := T.hint(String(prm[1]))
-		if prm.size() > 3 and String(prm[3]) != "":
+		var infer := false
+		if prm.size() > 3 and String(prm[3]).begins_with("..."):
+			# the rest of a call's arguments, as an imported script declared it
+			var rest_type := String(prm[3]).substr(3)
+			out.append("...%s%s" % [T.ident(String(prm[0])), (": " + rest_type) if rest_type != "" else ""])
+			continue
+		if prm.size() > 3 and String(prm[3]) == "-":
+			h = ""   # written without a type in the imported script: it stays that way, whatever the pin shows
+		elif prm.size() > 3 and String(prm[3]) == ":=":
+			infer = prm.size() > 2 and String(prm[2]) != ""
+			h = "" if infer else h
+		elif prm.size() > 3 and String(prm[3]) != "":
 			h = String(prm[3])   # a type written in the imported script that has no pin type
 		var text := T.ident(String(prm[0])) + ((": " + h) if h != "" else "")
 		if prm.size() > 2 and String(prm[2]) != "":
-			text += " = " + String(prm[2])
+			text += (" := " if infer else " = ") + String(prm[2])
 		out.append(text)
 	return ", ".join(out)
 
@@ -876,6 +926,8 @@ func _compile_function(g: Dictionary) -> void:
 	if String(g.get("ret_hint", "")) != "":
 		ret = String(g.ret_hint)
 	var header := "%sfunc %s(%s) -> %s:" % ["static " if (bool(g.get("static", false)) and not _lib) else "", fname, _param_list(g.inputs), ret]
+	if ret == "-":
+		header = header.replace(" -> -:", ":")   # an imported function written without a return type stays without one
 	if not _block(fname, header, entry, "then"):
 		return
 	var b: Dictionary = _blocks[-1]
@@ -886,7 +938,16 @@ func _compile_function(g: Dictionary) -> void:
 		if bool(l.get("param", false)):
 			continue   # a parameter the function assigns to: it is already declared, in the signature
 		var h := T.hint(String(l.type))
-		if _declare_in_place(b.lines, T.ident(String(l.name)), h, bool(l.get("infer", false))):
+		var written := String(l.get("hint", ""))   # a type of the imported script that has no pin type (an enum, an inner class)
+		if bool(l.get("untyped", false)):
+			h = ""   # written without a type in the imported script: it holds whatever it is given, as it did there
+		if _declare_in_place(b.lines, T.ident(String(l.name)), written if written != "" else h, bool(l.get("infer", false))):
+			continue
+		if written != "":
+			pre.append([1, "var %s: %s" % [T.ident(String(l.name)), written], _gid, int(entry.id)])
+			continue
+		if bool(l.get("untyped", false)):
+			pre.append([1, "var %s = null" % T.ident(String(l.name)), _gid, int(entry.id)])
 			continue
 		var lit := String(l.get("default", ""))
 		if lit == "":
@@ -902,6 +963,8 @@ func _compile_function(g: Dictionary) -> void:
 			var defs := PackedStringArray()
 			for o in outs:
 				defs.append(T.default_literal(String(o[1])))
+			if String(g.get("ret_default", "")) != "" and defs.size() == 1:
+				defs[0] = String(g.ret_default)   # an imported function that returns one of its script's enums
 			b.lines.append([1, "return " + (defs[0] if defs.size() == 1 else "[" + ", ".join(defs) + "]"), _gid, int(entry.id)])
 	_in_function = false
 
@@ -1109,6 +1172,10 @@ func _ovar(n: Dictionary) -> String:
 
 
 const STOP := [-1, ""]
+## Functions GDScript itself defines (the global scope's are in the API data): a script's own function of
+## the same name does not hide them.
+const GD_FUNCTIONS := ["assert", "char", "convert", "dict_to_inst", "get_stack", "inst_to_dict", "is_instance_of", "len", "load", "ord",
+	"preload", "print_debug", "print_stack", "range", "type_exists"]
 
 func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 	var id := int(n.id)
@@ -1120,6 +1187,8 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 	if d.latent and _in_function and not bool(_g.get("latent", false)):
 		_err(_gid, id, "Latent nodes (%s) can't be used inside functions. Use the Event Graph or a custom event, or mark the function as one that waits." % d.title)
 		return STOP
+	for pre_line in p.get("pre", []):
+		_line(ind, String(pre_line), id)   # @warning_ignore(...) written above the statement in an imported script
 	match n.kind:
 		"call", "bcall", "util", "call_self", "call_parent", "dyn_call":
 			var e := _call_expr(n, scope)
@@ -1220,12 +1289,26 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 			var text := String(p.get("code", "pass"))
 			for nm in p.get("ins", []):
 				text = _replace_word(text, String(nm), "(%s)" % _in(n, "x_" + String(nm), scope))
-			for code_line in text.split("\n"):
+			var code_lines := text.split("\n")
+			var in_string := T.lines_in_string(text)
+			var li := 0
+			while li < code_lines.size():
+				var code_line := code_lines[li]
 				var tabs := 0
 				while tabs < code_line.length() and code_line[tabs] == "\t":
 					tabs += 1
-				if code_line.strip_edges() != "":
-					_line(ind + tabs, code_line.strip_edges(), id)
+				# a string that runs over several lines is passed on as it is: its lines are part of its value
+				var whole := code_line.strip_edges(true, false)
+				var runs_on := false
+				while li + 1 < code_lines.size() and in_string[li + 1]:
+					li += 1
+					whole += "\n" + code_lines[li]
+					runs_on = true
+				if not runs_on:
+					whole = whole.strip_edges()
+				if whole != "":
+					_line(ind + tabs, whole, id)
+				li += 1
 			return _follow(id, "then")
 		"emit":
 			var args := PackedStringArray()
@@ -1360,6 +1443,8 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 			if use_idx:
 				_decl(idx, "int", "-1", ind, id, scope)
 			var h := T.hint(String(p.get("t", "any")))
+			if String(p.get("hint", "")) != "":
+				h = String(p.hint)   # the type an imported script gave its loop variable, when no pin has that type
 			_line(ind, "for %s%s in %s:" % [item, (": " + h) if h != "" else "", _in(n, "array", scope)], id)
 			var body := scope.duplicate()
 			body[item] = true
@@ -1984,7 +2069,15 @@ func _call_expr(n: Dictionary, scope: Dictionary) -> String:
 	match n.kind:
 		"call":
 			var m := R.find_method(p.cls, p.method)
-			if (int(m.get("flags", 0)) & METHOD_FLAG_STATIC) or R.is_singleton(p.cls):
+			# (a singleton reached through something the script calls, such as its own get_editor(), is still
+			# reached that way: the call it makes may do more than hand the singleton back)
+			if (int(m.get("flags", 0)) & METHOD_FLAG_STATIC) or (R.is_singleton(p.cls) and not _inw.has("%d:target" % int(n.id))):
+				if String(p.cls).begins_with("\""):
+					# a script known only by its path: its static function is the schematic's own when it extends
+					# that script, and is reached through the loaded script otherwise
+					if T.is_a(R.self_class(bp), String(p.cls)):
+						return "%s(%s)" % [p.method, arg_s]
+					return "preload(%s).%s(%s)" % [p.cls, p.method, arg_s]
 				return "%s.%s(%s)" % [p.cls, p.method, arg_s]
 			var tg := _in(n, "target", scope)
 			return "%s(%s)" % [p.method, arg_s] if tg == "self" else "%s.%s(%s)" % [tg, p.method, arg_s]
@@ -2009,7 +2102,11 @@ func _call_expr(n: Dictionary, scope: Dictionary) -> String:
 					return "%s.rpc_id(1%s)" % [T.ident(String(p.fn)), (", " + arg_s) if arg_s != "" else ""]
 				"owner":
 					return "%s.rpc_id(get_multiplayer_authority()%s)" % [T.ident(String(p.fn)), (", " + arg_s) if arg_s != "" else ""]
-			return "%s(%s)" % [T.ident(String(p.fn)), arg_s]
+			# a function named like one of GDScript's own (log, range, print ...) is only reached through self
+			var own_fn := T.ident(String(p.fn))
+			if (GD_FUNCTIONS.has(own_fn) or not R.util(own_fn).is_empty()) and not bool(_g.get("static", false)):
+				return "self.%s(%s)" % [own_fn, arg_s]
+			return "%s(%s)" % [own_fn, arg_s]
 	return "null"
 
 

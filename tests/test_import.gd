@@ -594,9 +594,10 @@ func _init() -> void:
 
 	# what must not be nodes is reported, not silently dropped
 	var imp2 := Importer.new()
-	var rep2: Dictionary = imp2.convert(SAMPLES["things kept as code"][1], {}).report
-	check("unconvertible lines are counted and explained", int(rep2.as_code) >= 1 and rep2.notes.any(func(n): return String(n).contains("match")), "%d as code, %d notes" % [rep2.as_code, rep2.notes.size()])
-	check("only the match that binds a name stays as code", int(rep2.as_code) == 3, "%d as code: %s" % [rep2.as_code, str(rep2.notes)])
+	var rep2: Dictionary = imp2.convert("extends Node\nvar out: Array = []\nfunc _ready():\n\tfor f in 2.5:\n\t\tout.append(f)\n\tout.append(1)\n", {}).report
+	check("unconvertible lines are counted and explained", int(rep2.as_code) == 2 and rep2.notes.any(func(n): return String(n).contains("a loop over a float")), "%d as code: %s" % [rep2.as_code, str(rep2.notes)])
+	var rep_match: Dictionary = Importer.new().convert(SAMPLES["things kept as code"][1], {}).report
+	check("a match that binds names is nodes too", int(rep_match.as_code) == 0, "%d as code: %s" % [rep_match.as_code, str(rep_match.notes)])
 	for sample_name in ["forms that used to be code", "lambdas"]:
 		var rep3: Dictionary = Importer.new().convert(SAMPLES[sample_name][1], {}).report
 		check("%s: every line is nodes" % sample_name, int(rep3.as_code) == 0, "%d as code: %s" % [rep3.as_code, str(rep3.notes.filter(func(n): return String(n).contains("kept as code")))])

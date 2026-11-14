@@ -101,7 +101,7 @@ func run(p: EditorPlugin) -> void:
 			kinds[n.kind] = int(kinds.get(n.kind, 0)) + 1
 	check("it has events, a function, a dispatcher call and no code node", int(kinds.get("event", 0)) == 2 and int(kinds.get("emit", 0)) == 1 and int(kinds.get("code", 0)) == 0
 		and ed.doc.bp.graphs.size() == 2 and ed.doc.bp.dispatchers.size() == 1 and ed.doc.bp.variables.size() == 3, str(kinds))
-	check("exports survive", text.contains("@export var speed: float = 120.0"))
+	check("exports survive, declared as the script declared them", text.contains("@export var speed := 120.0"))
 	ed.open_member_graph("burn")
 	await tree.create_timer(0.5).timeout
 	EditorInterface.get_base_control().get_viewport().get_texture().get_image().save_png("res://tests/out/look_20_converted.png")

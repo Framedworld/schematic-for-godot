@@ -114,6 +114,27 @@ static func _builtin_templates() -> void:
 		"tip": "The whole numbers from Start up to (not including) Stop, Step apart. Step may be negative.",
 		"ins": [["from", "Start", "int", "0"], ["to", "Stop", "int", "10"], ["step", "Step", "int", "1"]], "outs": [["ret", "Numbers", "Array[int]"]],
 		"exprs": {"ret": "range({from}, {to}, {step})"}})
+	# GDScript's own functions (the ones that are not in the global scope's list)
+	register_template("gd_len", {"title": "Length", "cat": "Utilities", "pure": true, "search": "len size count length of string array dictionary",
+		"tip": "How many characters a text has, or how many items an array or dictionary holds (GDScript's len).",
+		"ins": [["value", "Value", "any", ""]], "outs": [["ret", "Length", "int"]], "exprs": {"ret": "len({value})"}})
+	register_template("gd_char", {"title": "Character From Code", "cat": "Utilities|String", "pure": true, "search": "char unicode code point letter",
+		"ins": [["code", "Code", "int", "65"]], "outs": [["ret", "Character", "String"]], "exprs": {"ret": "char({code})"}})
+	register_template("gd_ord", {"title": "Code Of Character", "cat": "Utilities|String", "pure": true, "search": "ord unicode code point letter",
+		"ins": [["text", "Character", "String", "\"A\""]], "outs": [["ret", "Code", "int"]], "exprs": {"ret": "ord({text})"}})
+	register_template("gd_is_instance_of", {"title": "Is Instance Of", "cat": "Utilities", "pure": true, "search": "is a type class check",
+		"tip": "True when the value is of the given type (a type number, a class or a script).",
+		"ins": [["value", "Value", "any", ""], ["type", "Type", "any", ""]], "outs": [["ret", "Return Value", "bool"]],
+		"exprs": {"ret": "is_instance_of({value}, {type})"}})
+	register_template("gd_type_exists", {"title": "Type Exists", "cat": "Utilities", "pure": true, "search": "class exists",
+		"ins": [["type", "Type Name", "StringName", "&\"Node\""]], "outs": [["ret", "Return Value", "bool"]], "exprs": {"ret": "type_exists({type})"}})
+	register_template("gd_get_stack", {"title": "Get Call Stack", "cat": "Utilities|Debug", "pure": true, "search": "stack trace backtrace",
+		"ins": [], "outs": [["ret", "Stack", "Array"]], "exprs": {"ret": "get_stack()"}})
+	register_template("gd_print_stack", {"title": "Print Call Stack", "cat": "Utilities|Debug", "search": "stack trace backtrace",
+		"ins": [], "outs": [], "lines": ["print_stack()"]})
+	register_template("gd_assert", {"title": "Assert", "cat": "Utilities|Debug", "search": "ensure check verify must condition",
+		"tip": "Stops with an error when the condition is false. It only does anything in debug builds, like GDScript's assert.",
+		"ins": [["cond", "Condition", "bool", "true"], ["message", "Message", "String", "\"\""]], "outs": [], "lines": ["assert({cond}, {message})"]})
 	register_template("wait", {"title": "Wait", "cat": "Game|Time", "latent": true, "node": true,
 		"search": "delay sleep timer seconds await", "tip": "Waits this many seconds, then continues. Unlike Delay it keeps no state: every time it is reached it waits.",
 		"ins": [["duration", "Seconds", "float", "1.0"]], "outs": [], "lines": ["await get_tree().create_timer({duration}).timeout"]})
@@ -354,8 +375,8 @@ static func cls_info(cls: String) -> Dictionary:
 			out.p[String(p.name)] = p
 		for s in ClassDB.class_get_signal_list(cls, true):
 			out.s[String(s.name)] = s
-	elif T.globals().has(cls):
-		var scr: Script = load(T.globals()[cls].path) as Script
+	elif not T.script_entry(cls).is_empty():
+		var scr: Script = load(T.script_entry(cls).path) as Script
 		if scr:
 			for m in scr.get_script_method_list():
 				if not out.m.has(String(m.name)):

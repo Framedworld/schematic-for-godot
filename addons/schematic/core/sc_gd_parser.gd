@@ -10,6 +10,7 @@ extends RefCounted
 ##   stmt = {k: var|assign|expr|if|for|while|return|pass|break|continue|raw, src, line, ...}
 ##   expr = {k: num|str|name|bool|null|self|node|un|bin|tern|call|attr|index|array|dict|as|raw, ...}
 
+const T := preload("res://addons/schematic/core/sc_types.gd")
 const KEYWORDS := ["if", "elif", "else", "for", "while", "match", "break", "continue", "pass", "return", "func", "var", "const",
 	"signal", "enum", "class", "class_name", "extends", "static", "await", "and", "or", "not", "in", "is", "as", "self", "true",
 	"false", "null", "super"]   # `when` is only a keyword inside a match pattern: elsewhere it is an ordinary name
@@ -23,6 +24,7 @@ var _t: Array = []       # tokens of the line being parsed
 var _p := 0
 var _saw_raw := false
 var _lambdas: Dictionary = {}   # placeholder name -> the lambda lifted out of a statement's text
+var _open_quote := ""           # the quote the text last given to _open() ends inside, "" when it ends outside any string
 
 
 # ---------------------------------------------------------------- tokenizer
@@ -46,7 +48,11 @@ func _tokenize(source: String) -> void:
 			var cut := 0
 			while cut < base_tabs and cut < more.length() and more[cut] == "\t":
 				cut += 1
-			if text.strip_edges(false, true).ends_with("\\"):
+			if _open_quote != "":
+				text += "\n" + more   # the rest of a string that runs over several lines: exactly as written
+			elif text.strip_edges(false, true).ends_with("\\"):
+				if more.strip_edges().begins_with("#"):
+					continue   # a comment between the lines of one statement: the statement goes on after it
 				text = text.strip_edges(false, true).trim_suffix("\\") + " " + more.strip_edges(true, false)
 			else:
 				text += "\n" + more.substr(cut)
@@ -97,6 +103,7 @@ func _open(text: String) -> bool:
 		if c != " " and c != "\t" and c != "\n":
 			last = c
 		i += 1
+	_open_quote = quote
 	return depth > 0 or quote != "" or last == "\\"
 
 
@@ -150,9 +157,9 @@ func _scan(text: String, toks: Array, depth: int) -> int:
 				break
 			i = line_end
 			continue
-		# strings, with the &"name" / ^"path" prefixes
+		# strings, with the &"name" / ^"path" / r"raw" prefixes
 		var prefix := ""
-		if (c == "&" or c == "^") and i + 1 < n and (text[i + 1] == "\"" or text[i + 1] == "'"):
+		if (c == "&" or c == "^" or c == "r") and i + 1 < n and (text[i + 1] == "\"" or text[i + 1] == "'"):   # r"raw"
 			prefix = c
 			i += 1
 			c = text[i]
@@ -199,6 +206,13 @@ func _scan(text: String, toks: Array, depth: int) -> int:
 			toks.append({"t": "ann", "v": text.substr(i, j - i)})
 			i = j
 			continue
+		# A sign straight in front of a digit is part of the number unless something it could be subtracted
+		# from stands before it, exactly as in GDScript's tokenizer: "-2 ** 2" is (-2) ** 2, "- 2 ** 2" is not.
+		var sign := ""
+		if (c == "-" or c == "+") and i + 1 < n and text[i + 1].is_valid_int() and not (not toks.is_empty() and _ends_value(toks[-1])):
+			sign = c
+			i += 1
+			c = text[i]
 		if c.is_valid_int() or (c == "." and i + 1 < n and text[i + 1].is_valid_int()):
 			var j := i
 			var is_float := false
@@ -207,14 +221,16 @@ func _scan(text: String, toks: Array, depth: int) -> int:
 				while j < n and (text[j].is_valid_hex_number() or text[j] == "_"):
 					j += 1
 			else:
-				while j < n and (text[j].is_valid_int() or text[j] == "_" or text[j] == "." or text[j] == "e"
-						or ((text[j] == "-" or text[j] == "+") and text[j - 1] == "e")):
-					if text[j] == "." or text[j] == "e":
-						if text[j] == "." and j + 1 < n and _is_id_start(text[j + 1]) and text[j + 1] != "e":
+				while j < n and (text[j].is_valid_int() or text[j] == "_" or text[j] == "." or text[j] == "e" or text[j] == "E"
+						or ((text[j] == "-" or text[j] == "+") and (text[j - 1] == "e" or text[j - 1] == "E"))):
+					if text[j] == "." or text[j] == "e" or text[j] == "E":
+						if text[j] == "." and j + 1 < n and _is_id_start(text[j + 1]) and not text[j + 1] in ["e", "E"]:
 							break   # 1.method()
+						if text[j] != "." and not (j + 1 < n and (text[j + 1].is_valid_int() or text[j + 1] in ["-", "+"])):
+							break   # not an exponent: a word begins here
 						is_float = true
 					j += 1
-			toks.append({"t": "num", "v": text.substr(i, j - i).replace("_", ""), "f": is_float})
+			toks.append({"t": "num", "v": ("-" if sign == "-" else "") + text.substr(i, j - i).replace("_", ""), "f": is_float})
 			i = j
 			continue
 		if _is_id_start(c):
@@ -245,6 +261,18 @@ func _is_id_start(c: String) -> bool:
 
 func _is_id_char(c: String) -> bool:
 	return _is_id_start(c) or c.is_valid_int()
+
+
+## True for a token a binary operator can follow: a name, a literal, self or a closing bracket.
+func _ends_value(tok: Dictionary) -> bool:
+	match String(tok.t):
+		"id", "num", "str", "node":
+			return true
+		"kw":
+			return String(tok.v) in ["self", "true", "false", "null"]
+		"op":
+			return String(tok.v) in [")", "]", "}"]
+	return false
 
 
 func _is_operator_tok(tok: Dictionary) -> bool:
@@ -285,7 +313,7 @@ func parse(source: String) -> Dictionary:
 	_tokenize(source)
 	_li = 0
 	var out := {"extends": "", "class_name": "", "tool": false, "signals": [], "vars": [], "funcs": [], "enums": [], "extra": [],
-		"notes": notes, "uses_groups": false}
+		"notes": notes, "uses_groups": false, "crlf": source.contains("\r\n"), "class_pre": []}
 	var group := ""
 	var pending := {"export": false, "onready": false, "plain": true, "text": PackedStringArray()}
 	while _li < _lines.size():
@@ -327,8 +355,16 @@ func parse(source: String) -> Dictionary:
 					if ann.begins_with("@export"):
 						pending.export = true
 		if _at_end():
-			# a line of annotations only: it belongs to the next declaration
-			if ln.src != "@tool":
+			# a line of annotations only: it belongs to the class (@icon, @static_unload) or to the next declaration
+			var of_class := PackedStringArray()
+			for word in String(ln.src).split("@", false):
+				var ann_text := "@" + word.strip_edges()
+				if ann_text.begins_with("@icon") or ann_text.begins_with("@static_unload"):
+					of_class.append(ann_text)
+			if not of_class.is_empty():
+				out.class_pre.append_array(of_class)
+				pending = {"export": false, "onready": false, "plain": true, "text": PackedStringArray()}
+			elif ln.src != "@tool":
 				pending.text.append(ln.src)
 			_li += 1
 			continue
@@ -338,22 +374,20 @@ func parse(source: String) -> Dictionary:
 			_p += 1
 			is_static = true
 			tok = _peek()
-		if tok.t == "kw" and tok.v == "extends":
-			_p += 1
-			out.extends = String(_next().v).trim_prefix("\"").trim_suffix("\"")
-			while _take("."):
-				out.extends += "." + String(_next().v)
-			_li += 1
-		elif tok.t == "kw" and tok.v == "class_name":
-			_p += 1
-			out.class_name = String(_next().v)
-			if _take("extends"):
-				out.extends = String(_next().v)
-			if not pending.text.is_empty():
-				out.extra.append("\n".join(pending.text))   # @icon and friends
-				notes.append("line %d: the annotation above class_name is not carried over: %s" % [ln.line, " ".join(pending.text)])
-				out.extra.pop_back()
+		if tok.t == "kw" and (tok.v == "extends" or tok.v == "class_name"):
+			# annotations written above or in front of the class (@icon, @abstract ...) stay with it
+			out.class_pre.append_array(pending.text)
+			var lead := String(ln.src).substr(0, maxi(String(ln.src).find(String(tok.v)), 0)).replace("@tool", "").strip_edges()
+			if lead != "":
+				out.class_pre.append(lead)
 			pending = {"export": false, "onready": false, "plain": true, "text": PackedStringArray()}
+			_p += 1
+			if tok.v == "class_name":
+				out.class_name = String(_next().v)
+			if tok.v == "extends" or _take("extends"):
+				out.extends = String(_next().v).trim_prefix("\"").trim_suffix("\"")
+				while _take("."):
+					out.extends += "." + String(_next().v)
 			_li += 1
 		elif tok.t == "kw" and tok.v == "signal":
 			_p += 1
@@ -366,6 +400,12 @@ func parse(source: String) -> Dictionary:
 						pt = _type()
 					sig.params.append([pn, pt])
 					_take(",")
+			# annotations written above the signal (@warning_ignore ...) stay with it
+			sig["pre"] = Array(pending.text)
+			var sig_line := String(ln.src)
+			if sig_line.begins_with("@"):
+				sig.pre.append(sig_line.substr(0, sig_line.find("signal ")).strip_edges())
+			pending = {"export": false, "onready": false, "plain": true, "text": PackedStringArray()}
 			out.signals.append(sig)
 			_li += 1
 		elif tok.t == "kw" and (tok.v == "var" or tok.v == "const"):
@@ -457,10 +497,12 @@ func _var_decl() -> Dictionary:
 		v.init = _expr()
 		v.init_src = unparse(v.init)
 	else:
-		if _take(":"):
+		var colon := _take(":")
+		if colon:
 			if not _is("=") and not _at_end() and not (_peek().t == "id" and String(_peek().v) in ["set", "get"]):
 				v.type = _type()
 		if _take("="):
+			v.infer = colon and String(v.type) == ""   # "var x: = value" is ":=" written with a space
 			v.init = _expr()
 			v.init_src = unparse(v.init)
 	v["has_raw"] = _saw_raw
@@ -472,9 +514,15 @@ func _func_decl(ln: Dictionary) -> Dictionary:
 	var f := {"name": String(_next().v), "params": [], "ret": "", "body": [], "line": ln.line}
 	_take("(")
 	while not _at_end() and not _is(")"):
+		var rest := false
+		while _take("."):
+			rest = true   # ...args: whatever further arguments the caller passes, as an array
 		var prm := {"name": String(_next().v), "type": "", "default": null}
-		if _take(":="):
+		if rest:
+			prm["rest"] = true
+		if _take(":=") or (_is(":") and _peek(1).t == "op" and _peek(1).v == "=" and _take(":") and _take("=")):   # ":=", or ": ="
 			prm.default = _expr()
+			prm["infer"] = true
 		else:
 			if _take(":"):
 				prm.type = _type()
@@ -485,7 +533,13 @@ func _func_decl(ln: Dictionary) -> Dictionary:
 	_take(")")
 	if _take("->"):
 		f.ret = _type()
-	_take(":")
+	if not _take(":") and _at_end():
+		# a header with no colon and nothing under it: an @abstract function, which has no body to convert
+		f["abstract"] = true
+		f["text"] = String(ln.src)
+		f["body_text"] = ""
+		_li += 1
+		return f
 	var body_from := _li + 1
 	var inline := not _at_end()
 	f.body = _body(int(ln.indent))
@@ -500,6 +554,38 @@ func _func_decl(ln: Dictionary) -> Dictionary:
 
 ## The statements after a header's colon: the rest of the line, or the indented block below.
 func _body(indent: int) -> Array:
+	if not _at_end() and _peek().t == "kw" and _peek().v == "if":
+		# `pattern: if condition: statement` on one line (a match arm may be written so), or `else: if condition:`
+		# with its block underneath, which the lines that follow at this depth (elif, else) then belong to
+		var ln: Dictionary = _lines[_li]
+		var start := _li
+		_p += 1
+		var st := {"k": "if", "branches": [], "else": [], "line": ln.line}
+		var cond: Variant = _expr()
+		_take(":")
+		st.branches.append([cond, _body(indent)])
+		while _li < _lines.size() and int(_lines[_li].indent) == indent:
+			_t = _lines[_li].toks
+			_p = 0
+			if _take("elif"):
+				var c2: Variant = _expr()
+				_take(":")
+				st.branches.append([c2, _body(indent)])
+			elif _take("else"):
+				_take(":")
+				st["else"] = _body(indent)
+				break
+			else:
+				break
+		var first_line := String(ln.src)
+		var text := first_line.substr(maxi(first_line.find("if "), 0))
+		if _li > start + 1:
+			text += "\n" + _text(start + 1, _li, indent)
+		st["src"] = text.get_slice("\n", 0)
+		st["text"] = text
+		if cond == null or st.branches[0][1].is_empty():
+			return [{"k": "raw", "src": String(st.src), "text": text, "line": ln.line, "why": "syntax"}]
+		return [st]
 	if not _at_end():
 		var out := []
 		while not _at_end():
@@ -526,8 +612,11 @@ func _block(indent: int) -> Array:
 			while _li < _lines.size() and int(_lines[_li].indent) > indent:
 				_li += 1
 			var body_text := PackedStringArray()
-			for part in _text(from, _li).split("\n"):
-				body_text.append("\t" + part)
+			var body_src := _text(from, _li)
+			var body_inside := T.lines_in_string(body_src)
+			var body_parts := body_src.split("\n")
+			for k in body_parts.size():
+				body_text.append(body_parts[k] if body_inside[k] else "\t" + body_parts[k])
 			if out.is_empty():
 				notes.append("line %d: unexpected indented block kept as text" % ln.line)
 				out.append({"k": "raw", "src": String(ln.src), "text": _text(from, _li), "line": ln.line, "why": "indentation"})
@@ -559,7 +648,7 @@ func _block(indent: int) -> Array:
 			_p += 1
 			var st := {"k": "for", "var": String(_next().v), "iter": null, "body": [], "src": ln.src, "line": ln.line}
 			if _take(":"):
-				_type()
+				st["var_type"] = _type()   # for item: Type in ...
 			_take("in")
 			st.iter = _expr()
 			_take(":")
@@ -615,8 +704,9 @@ func _inline_lambda(text: String) -> Variant:
 		return null
 	while not _at_end() and not _is(")"):
 		var prm := {"name": String(_next().v), "type": "", "default": null}
-		if _take(":="):
+		if _take(":=") or (_is(":") and _peek(1).t == "op" and _peek(1).v == "=" and _take(":") and _take("=")):   # ":=", or ": ="
 			prm.default = _expr()
+			prm["infer"] = true
 		else:
 			if _take(":"):
 				prm.type = _type()
@@ -686,19 +776,60 @@ func _unopened_close(text: String) -> int:
 	return -1
 
 
+## The text with whatever is inside strings and comments replaced, character for character, so that brackets,
+## colons and words in them are not taken for code. Quotes and line breaks stay where they are.
+func _blank_strings(text: String) -> String:
+	var out := PackedStringArray()
+	var i := 0
+	var n := text.length()
+	var from := 0
+	while i < n:
+		var c := text[i]
+		if c == "#":
+			var nl := text.find("\n", i)
+			if nl == -1:
+				nl = n
+			out.append(text.substr(from, i - from))
+			out.append(" ".repeat(nl - i))
+			i = nl
+			from = i
+			continue
+		if c == "\"" or c == "'":
+			var q := c
+			if text.substr(i, 3) == c + c + c:
+				q = c + c + c
+			var j := i + q.length()
+			while j < n and text.substr(j, q.length()) != q:
+				if text[j] == "\\":
+					j += 1
+				j += 1
+			j = mini(j, n)
+			out.append(text.substr(from, i + q.length() - from))
+			for k in range(i + q.length(), j):
+				out.append("\n" if text[k] == "\n" else "_")
+			from = j
+			i = j + q.length()
+			continue
+		i += 1
+	out.append(text.substr(from))
+	return "".join(out)
+
+
 ## Takes lambdas that span several lines out of a statement's text: each becomes a placeholder name that
 ## _atom turns back into the parsed lambda. Returns the shortened text, or "" when there is nothing to lift.
 func _lift_lambdas(text: String) -> String:
 	if not text.contains("func"):
 		return ""
 	var lines := text.split("\n")
+	# what is inside a string or a comment is never a lambda: headers are looked for with those blanked out
+	var blank_lines := _blank_strings(text).split("\n")
 	var header := RegEx.create_from_string("func\\s*[A-Za-z_0-9]*\\s*\\(")
 	var out := PackedStringArray()
 	var found := false
 	var i := 0
 	while i < lines.size():
 		var line := lines[i]
-		var stripped := line.strip_edges(false, true)
+		var stripped := blank_lines[i].strip_edges(false, true)
 		var at := -1
 		if stripped.ends_with(":") and i + 1 < lines.size():
 			for m in header.search_all(stripped):
@@ -707,6 +838,7 @@ func _lift_lambdas(text: String) -> String:
 			out.append(line)
 			i += 1
 			continue
+		stripped = line.substr(0, stripped.length())
 		# Everything after the header belongs to the body until the call the lambda sits in goes on (see
 		# _unopened_close). How far the header's own line is indented says nothing: it may be a continuation line.
 		var j := lines.size()
@@ -715,19 +847,26 @@ func _lift_lambdas(text: String) -> String:
 		# (`... false))` or `... x), CONNECT_ONE_SHOT)`): from the first bracket the body does not open, the
 		# text belongs to the statement around it.
 		var joined := "\n".join(taken)
-		var cut := _unopened_close(joined)
+		var cut := _unopened_close("\n".join(blank_lines.slice(i + 1)))
 		var tail := ""
 		if cut != -1:
 			tail = joined.substr(cut)
 			joined = joined.substr(0, cut)
 		var body := PackedStringArray()
 		var base := -1
-		for body_line in joined.split("\n"):
+		var joined_inside := T.lines_in_string(joined)
+		var joined_lines := joined.split("\n")
+		for k in joined_lines.size():
+			var body_line := joined_lines[k]
+			if joined_inside[k]:
+				body.append(body_line)   # a line of a string that runs over several lines: exactly as written
+				continue
 			if body_line.strip_edges() == "":
 				continue
 			if base == -1:
 				base = _tabs(body_line)
-			body.append("\t" + body_line.substr(mini(base, _tabs(body_line))).strip_edges(false, true))
+			body_line = body_line.substr(mini(base, _tabs(body_line)))
+			body.append("\t" + (body_line if (k + 1 < joined_inside.size() and joined_inside[k + 1]) else body_line.strip_edges(false, true)))
 		var head := stripped.substr(at)
 		var open := head.find("(")
 		var sub: Dictionary = {}
@@ -818,13 +957,16 @@ func _pattern_text(src: String) -> String:
 
 
 ## Source text of logical lines [from, to), re-indented relative to the first one.
-func _text(from: int, to: int) -> String:
+func _text(from: int, to: int, base_indent := -1) -> String:
 	var out := PackedStringArray()
-	var base := int(_lines[from].indent)
+	var base := int(_lines[from].indent) if base_indent < 0 else base_indent
 	for i in range(from, mini(to, _lines.size())):
 		var pad := "\t".repeat(maxi((int(_lines[i].indent) - base) / 4, 0))
-		for part in String(_lines[i].src).split("\n"):
-			out.append(pad + part)
+		var src := String(_lines[i].src)
+		var inside := T.lines_in_string(src)
+		var parts := src.split("\n")
+		for k in parts.size():
+			out.append(parts[k] if inside[k] else pad + parts[k])   # the lines of a string stay as they are
 	return "\n".join(out)
 
 
@@ -893,138 +1035,83 @@ func _simple_stmt(ln: Dictionary) -> Variant:
 
 # ---------------------------------------------------------------- expressions
 
+## Expressions are read the way GDScript reads them: the same order of operators (gdscript_parser.cpp's table),
+## each binary operator taking what stands to its left first. `as` binds least of all, then the ternary `if`,
+## `or`, `and`, `not`, `in`, the comparisons, `|`, `^`, `&`, the shifts, `+ -`, `* / %`, a sign, `~`, `**`, `is`.
+const PREC_CAST := 2
+const PREC_TERNARY := 3
+const PREC_NOT := 6
+const PREC_IN := 7
+const PREC_COMPARISON := 8
+const PREC_SIGN := 15
+const PREC_BIT_NOT := 16
+const PREC_POWER := 17
+const PREC_IS := 18
+const BINARY := {"or": 4, "||": 4, "and": 5, "&&": 5, "in": 7, "==": 8, "!=": 8, "<": 8, ">": 8, "<=": 8, ">=": 8,
+	"|": 9, "^": 10, "&": 11, "<<": 12, ">>": 12, "+": 13, "-": 13, "*": 14, "/": 14, "%": 14, "**": 17}
+
+
 func _expr() -> Variant:
-	var e: Variant = _or()
-	if _is("if"):
-		_p += 1
-		var c: Variant = _or()
-		_take("else")
-		var other: Variant = _expr()
-		return {"k": "tern", "c": c, "a": e, "b": other}
-	return e
+	return _climb(PREC_CAST)
 
 
-func _or() -> Variant:
-	var a: Variant = _and()
-	while _is("or") or _is("||"):
-		_p += 1
-		a = {"k": "bin", "op": "or", "a": a, "b": _and()}
+## How tightly the operator at the cursor binds what is to its left; 0 when there is no operator there.
+func _binding() -> int:
+	var tok := _peek()
+	if tok.t != "op" and tok.t != "kw":
+		return 0
+	var v := String(tok.v)
+	if BINARY.has(v):
+		return int(BINARY[v])
+	match v:
+		"as": return PREC_CAST
+		"if": return PREC_TERNARY
+		"is": return PREC_IS
+		"not": return PREC_IN if (_peek(1).t == "kw" and _peek(1).v == "in") else 0
+	return 0
+
+
+func _climb(least: int) -> Variant:
+	var a: Variant = _prefix()
+	while a != null:
+		var prec := _binding()
+		if prec == 0 or prec < least:
+			break
+		var v := String(_next().v)
+		match v:
+			"as":
+				a = {"k": "as", "a": a, "t": _type()}
+			"if":
+				var c: Variant = _climb(PREC_TERNARY)
+				_take("else")
+				a = {"k": "tern", "c": c, "a": a, "b": _climb(PREC_TERNARY)}
+			"is":
+				var negated := _take("not")
+				a = {"k": "is", "a": a, "t": _type()}
+				if negated:
+					a = {"k": "un", "op": "not", "a": a}
+			"not":
+				_p += 1   # the "in" of "not in"
+				a = {"k": "un", "op": "not", "a": {"k": "bin", "op": "in", "a": a, "b": _climb(PREC_IN + 1)}}
+			_:
+				var op := "or" if v == "||" else ("and" if v == "&&" else v)
+				a = {"k": "bin", "op": op, "a": a, "b": _climb(prec + 1)}
 	return a
 
 
-func _and() -> Variant:
-	var a: Variant = _not()
-	while _is("and") or _is("&&"):
-		_p += 1
-		a = {"k": "bin", "op": "and", "a": a, "b": _not()}
-	return a
-
-
-func _not() -> Variant:
+## An operator written in front of its operand, or the operand itself.
+func _prefix() -> Variant:
 	if _is("not") or (_is("!") and not (_peek(1).t == "op" and _peek(1).v == "=")):
 		_p += 1
-		return {"k": "un", "op": "not", "a": _not()}
-	return _compare()
-
-
-func _compare() -> Variant:
-	var a: Variant = _bit_or()
-	while true:
-		var tok := _peek()
-		if tok.t == "op" and String(tok.v) in ["==", "!=", "<", ">", "<=", ">="]:
-			_p += 1
-			a = {"k": "bin", "op": String(tok.v), "a": a, "b": _bit_or()}
-		elif _is("in"):
-			_p += 1
-			a = {"k": "bin", "op": "in", "a": a, "b": _bit_or()}
-		elif _is("not") and _peek(1).t == "kw" and _peek(1).v == "in":
-			_p += 2
-			a = {"k": "un", "op": "not", "a": {"k": "bin", "op": "in", "a": a, "b": _bit_or()}}
-		elif _is("is"):
-			_p += 1
-			var neg := _take("not")
-			a = {"k": "is", "a": a, "t": _type()}
-			if neg:
-				a = {"k": "un", "op": "not", "a": a}
-		else:
-			break
-	return a
-
-
-func _bit_or() -> Variant:
-	var a: Variant = _bit_xor()
-	while _is("|"):
-		_p += 1
-		a = {"k": "bin", "op": "|", "a": a, "b": _bit_xor()}
-	return a
-
-
-func _bit_xor() -> Variant:
-	var a: Variant = _bit_and()
-	while _is("^"):
-		_p += 1
-		a = {"k": "bin", "op": "^", "a": a, "b": _bit_and()}
-	return a
-
-
-func _bit_and() -> Variant:
-	var a: Variant = _shift()
-	while _is("&"):
-		_p += 1
-		a = {"k": "bin", "op": "&", "a": a, "b": _shift()}
-	return a
-
-
-func _shift() -> Variant:
-	var a: Variant = _sum()
-	while _is("<<") or _is(">>"):
+		return {"k": "un", "op": "not", "a": _climb(PREC_NOT)}
+	if _is("-") or _is("+"):
 		var op := String(_next().v)
-		a = {"k": "bin", "op": op, "a": a, "b": _sum()}
-	return a
-
-
-func _sum() -> Variant:
-	var a: Variant = _product()
-	while _is("+") or _is("-"):
-		var op := String(_next().v)
-		a = {"k": "bin", "op": op, "a": a, "b": _product()}
-	return a
-
-
-func _product() -> Variant:
-	var a: Variant = _unary()
-	while _is("*") or _is("/") or _is("%"):
-		var op := String(_next().v)
-		a = {"k": "bin", "op": op, "a": a, "b": _unary()}
-	return a
-
-
-func _unary() -> Variant:
-	if _is("-") or _is("+") or _is("~"):
-		var op := String(_next().v)
-		var a: Variant = _unary()
-		if op == "+":
-			return a
-		if op == "-" and a != null and a.k == "num":
-			return {"k": "num", "v": "-" + String(a.v), "f": a.f}
-		return {"k": "un", "op": op, "a": a}
-	return _power()
-
-
-func _power() -> Variant:
-	var a: Variant = _as()
-	if _is("**"):
+		var a: Variant = _climb(PREC_SIGN)
+		return a if op == "+" else {"k": "un", "op": "-", "a": a}
+	if _is("~"):
 		_p += 1
-		return {"k": "bin", "op": "**", "a": a, "b": _unary()}
-	return a
-
-
-func _as() -> Variant:
-	var a: Variant = _postfix()
-	while _is("as"):
-		_p += 1
-		a = {"k": "as", "a": a, "t": _type()}
-	return a
+		return {"k": "un", "op": "~", "a": _climb(PREC_BIT_NOT)}
+	return _postfix()
 
 
 func _postfix() -> Variant:
@@ -1123,7 +1210,11 @@ func _atom() -> Variant:
 					var pairs := []
 					while not _at_end() and not _is("}"):
 						var key: Variant = _expr()
-						if not (_take(":") or _take("=")):
+						if _take("="):
+							# {name = value}: the key is the name as a string
+							if key is Dictionary and key.k == "name":
+								key = {"k": "str", "v": "\"%s\"" % String(key.v)}
+						elif not _take(":"):
 							break
 						pairs.append([key, _expr()])
 						if not _take(","):
@@ -1136,58 +1227,89 @@ func _atom() -> Variant:
 
 # ---------------------------------------------------------------- back to text
 
-static func unparse(e: Variant) -> String:
+## The expression as GDScript text that reads back as the same expression. `least` is how tightly the place
+## it goes binds (0: on its own, as an argument or a value); brackets are added only where the order of
+## operators would otherwise change what it means.
+static func unparse(e: Variant, least := 0) -> String:
 	if e == null:
 		return "null"
+	var text := ""
+	var prec := 99   # how tightly this expression holds together
 	match String(e.k):
-		"num", "str", "bool":
-			return String(e.v)
+		"num":
+			text = String(e.v)
+			if text.begins_with("-"):
+				prec = PREC_SIGN   # "-2 ** 2" squares -2, but "(-2).x" and "(-2) is int" need the brackets
+		"str", "bool":
+			text = String(e.v)
 		"null":
-			return "null"
+			text = "null"
 		"self":
-			return "self"
+			text = "self"
 		"name":
-			return String(e.v)
+			text = String(e.v)
 		"node":
 			var path := String(e.path)
 			if path.begins_with("%"):
-				return path
-			return "$" + (path if path.is_valid_identifier() or not path.contains(" ") else "\"%s\"" % path)
+				text = path
+			else:
+				text = "$" + (path if path.is_valid_identifier() or not path.contains(" ") else "\"%s\"" % path)
 		"paren":
-			return "(%s)" % unparse(e.a)
+			text = "(%s)" % unparse(e.a)
 		"un":
-			return ("not %s" if e.op == "not" else String(e.op) + "%s") % unparse(e.a)
+			if e.op == "not":
+				text = "not %s" % unparse(e.a, PREC_NOT)
+				prec = PREC_NOT
+			elif e.op == "~":
+				text = "~%s" % unparse(e.a, PREC_BIT_NOT)
+				prec = PREC_BIT_NOT
+			else:
+				var operand := unparse(e.a, PREC_SIGN)
+				# a sign straight in front of a digit would be read as part of that number
+				if e.a != null and e.a.k != "num" and operand != "" and (operand[0].is_valid_int() or operand[0] == "."):
+					operand = "(%s)" % operand
+				text = String(e.op) + operand
+				prec = PREC_SIGN
 		"bin":
-			return "%s %s %s" % [unparse(e.a), e.op, unparse(e.b)]
+			prec = int(BINARY.get(String(e.op), 1))
+			text = "%s %s %s" % [unparse(e.a, prec), e.op, unparse(e.b, prec + 1)]
 		"tern":
-			return "%s if %s else %s" % [unparse(e.a), unparse(e.c), unparse(e.b)]
+			text = "%s if %s else %s" % [unparse(e.a, PREC_TERNARY + 1), unparse(e.c, PREC_TERNARY + 1), unparse(e.b, PREC_TERNARY)]
+			prec = PREC_TERNARY
 		"await":
-			return "await %s" % unparse(e.a)
+			text = "await %s" % unparse(e.a, PREC_IS + 1)
+			prec = PREC_IS + 1
 		"lambda":
-			return String(e.src)
+			text = String(e.src)
+			prec = 1
 		"is":
-			return "%s is %s" % [unparse(e.a), e.t]
+			text = "%s is %s" % [unparse(e.a, PREC_IS), e.t]
+			prec = PREC_IS
 		"as":
-			return "%s as %s" % [unparse(e.a), e.t]
+			text = "%s as %s" % [unparse(e.a, PREC_CAST), e.t]
+			prec = PREC_CAST
 		"attr":
-			return "%s.%s" % [unparse(e.obj), e.name]
+			text = "%s.%s" % [unparse(e.obj, 20), e.name]
 		"index":
-			return "%s[%s]" % [unparse(e.obj), unparse(e.i)]
+			text = "%s[%s]" % [unparse(e.obj, 20), unparse(e.i)]
 		"call":
 			var args := PackedStringArray()
 			for a in e.args:
 				args.append(unparse(a))
-			return "%s(%s)" % [unparse(e.fn), ", ".join(args)]
+			text = "%s(%s)" % [unparse(e.fn, 20), ", ".join(args)]
 		"array":
 			var items := PackedStringArray()
 			for a in e.items:
 				items.append(unparse(a))
-			return "[%s]" % ", ".join(items)
+			text = "[%s]" % ", ".join(items)
 		"dict":
 			var pairs := PackedStringArray()
 			for pr in e.pairs:
 				pairs.append("%s: %s" % [unparse(pr[0]), unparse(pr[1])])
-			return "{%s}" % ", ".join(pairs)
+			text = "{%s}" % ", ".join(pairs)
 		"raw":
-			return String(e.src)
-	return "null"
+			text = String(e.src)
+			prec = 1
+		_:
+			return "null"
+	return "(%s)" % text if (least > 0 and prec < least) else text

@@ -546,12 +546,15 @@ func convert_script_dialog(path: String) -> void:
 		var rep: Dictionary = result.report
 		lines.append("%s: %d of %d lines become nodes, %d are carried over as GDScript code nodes." % [path.get_file(), rep.as_nodes, rep.lines, rep.as_code])
 		lines.append("The file is replaced by the Schematic; the original is kept as %s.orig." % path.get_file())
-		if not rep.notes.is_empty():
+		# what the person converting should know about: lines that stay code, declarations kept as written.
+		# (How each thing was turned into nodes is in the full report the command-line tool prints.)
+		var worth: Array = rep.notes.filter(func(note): return not Importer.is_detail(String(note)))
+		if not worth.is_empty():
 			lines.append("")
-			for note in rep.notes.slice(0, 14):
+			for note in worth.slice(0, 14):
 				lines.append("- " + String(note).left(150))
-			if rep.notes.size() > 14:
-				lines.append("... and %d more notes" % (rep.notes.size() - 14))
+			if worth.size() > 14:
+				lines.append("... and %d more notes" % (worth.size() - 14))
 		dlg.ok_button_text = "Convert"
 		dlg.confirmed.connect(func():
 			if convert_script_apply(path, result):
@@ -2220,7 +2223,10 @@ func _fill_details() -> void:
 				mutate("Change Variable Type", func():
 					v.type = t
 					v.default = ""
-					v.erase("enum"))
+					v.erase("enum")
+					# a type chosen here is the type from now on, however an imported script declared it
+					for flag in ["written", "untyped", "infer", "hint"]:
+						v.erase(flag))
 				_refresh_details()))
 			if not is_local and String(v.type) == "int" and not bp.get("enums", []).is_empty():
 				var eob := OptionButton.new()

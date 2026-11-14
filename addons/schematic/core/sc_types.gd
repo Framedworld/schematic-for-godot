@@ -47,10 +47,12 @@ const C_ENUM := Color(0.0, 0.43, 0.39)
 
 static var _globals: Dictionary = {}  # class_name -> {base, path}
 static var _globals_stamp: int = -1
+static var _by_path: Dictionary = {}  # "res://script.gd" in quotes -> {base, path}, for scripts without a class name
 
 
 static func refresh_globals() -> void:
 	_globals.clear()
+	_by_path.clear()
 	for c in ProjectSettings.get_global_class_list():
 		_globals[String(c["class"])] = {"base": String(c["base"]), "path": String(c["path"])}
 	_globals_stamp = Engine.get_process_frames()
@@ -62,6 +64,27 @@ static func globals() -> Dictionary:
 	return _globals
 
 
+## Where a script class comes from: {base, path}, or {} for anything else. A script with no class name is
+## known by its path in quotes, exactly as `extends "res://base.gd"` names it.
+static func script_entry(cls: String) -> Dictionary:
+	if globals().has(cls):
+		return _globals[cls]
+	if not (cls.begins_with("\"res://") and cls.ends_with("\"")):
+		return {}
+	if not _by_path.has(cls):
+		var path := cls.substr(1, cls.length() - 2)
+		var entry := {}
+		var scr := (load(path) as Script) if ResourceLoader.exists(path) else null
+		if scr != null:
+			var above := scr.get_base_script()
+			var base := String(scr.get_instance_base_type())
+			if above != null:
+				base = String(above.get_global_name()) if above.get_global_name() != &"" else "\"%s\"" % above.resource_path
+			entry = {"base": base, "path": path}
+		_by_path[cls] = entry
+	return _by_path[cls]
+
+
 static func is_builtin(t: String) -> bool:
 	return BUILTIN.has(t) or t.begins_with("Array[")
 
@@ -71,15 +94,13 @@ static func is_object(t: String) -> bool:
 
 
 static func class_known(t: String) -> bool:
-	return ClassDB.class_exists(t) or globals().has(t)
+	return ClassDB.class_exists(t) or not script_entry(t).is_empty()
 
 
 static func parent_of(cls: String) -> String:
 	if ClassDB.class_exists(cls):
 		return String(ClassDB.get_parent_class(cls))
-	if globals().has(cls):
-		return globals()[cls]["base"]
-	return ""
+	return String(script_entry(cls).get("base", ""))
 
 
 ## The nearest engine (ClassDB) class in the ancestry of `cls`.
@@ -269,14 +290,46 @@ static func default_literal(t: String) -> String:
 
 ## Type annotation text (without the colon), or "" when the pin is untyped.
 static func hint(t: String) -> String:
-	if t == "any" or t == "exec" or t == "":
-		return ""
+	if t == "any" or t == "exec" or t == "" or t.begins_with("\""):
+		return ""   # (a script known only by its path has no type name to write)
 	if is_builtin(t):
 		if t.begins_with("Array["):
 			var e := element_type(t)
 			return t if (BUILTIN.has(e) or class_known(e)) else "Array"
 		return t
 	return t if class_known(t) else ""
+
+
+## For each line of GDScript `text`: true when the line begins inside a string that was opened on an earlier
+## line. Such a line is part of the string's value, so it must be passed on exactly as it is: no indenting,
+## no trimming.
+static func lines_in_string(text: String) -> Array:
+	var out := [false]
+	var quote := ""
+	var i := 0
+	var n := text.length()
+	while i < n:
+		var c := text[i]
+		if c == "\n":
+			out.append(quote != "")
+		elif quote != "":
+			if c == "\\":
+				if i + 1 < n and text[i + 1] == "\n":
+					out.append(true)
+				i += 1
+			elif text.substr(i, quote.length()) == quote:
+				i += quote.length() - 1
+				quote = ""
+		elif c == "#":
+			var nl := text.find("\n", i)
+			if nl == -1:
+				break
+			i = nl - 1
+		elif c == "\"" or c == "'":
+			quote = c + c + c if text.substr(i, 3) == c + c + c else c
+			i += quote.length() - 1
+		i += 1
+	return out
 
 
 static func ident(s: String) -> String:

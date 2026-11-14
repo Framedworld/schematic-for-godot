@@ -171,6 +171,7 @@ static func is_schematic_file(path: String) -> bool:
 static func parse_source(src: String) -> Dictionary:
 	if not is_schematic_source(src):
 		return {}
+	src = src.replace("\r\n", "\n")
 	var json := PackedStringArray()
 	for line in src.split("\n"):
 		if line.begins_with(DATA_PREFIX):
@@ -259,4 +260,7 @@ static func build_source(code: String, bp: Dictionary) -> String:
 		out.append(DATA_PREFIX + line)
 	out.append("#endregion")
 	out.append("")
-	return "\n".join(out)
+	# A script converted from one with Windows line endings keeps them: a string that runs over several lines
+	# holds the line breaks of its file, so its value would change with them.
+	var text := "\n".join(out)
+	return text.replace("\n", "\r\n") if bool(bp.get("crlf", false)) else text

@@ -15,9 +15,14 @@ const T := preload("res://addons/schematic/core/sc_types.gd")
 const Parser := preload("res://addons/schematic/core/sc_gd_parser.gd")
 const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
 
+const FAR := 900.0     # further than this from the entry node, a parameter is read through a node of its own
 const COL := 290.0     # horizontal step between a node and the node feeding it
 const ROW := 135.0     # vertical step between data nodes of one statement
 const CONSTANTS := {"PI": "float", "TAU": "float", "INF": "float", "NAN": "float"}
+## Enums of the global scope: a variable of one of these types starts at 0, not at null.
+const GLOBAL_ENUMS := ["Side", "Corner", "Orientation", "ClockDirection", "HorizontalAlignment", "VerticalAlignment", "InlineAlignment",
+	"EulerOrder", "Key", "KeyModifierMask", "KeyLocation", "MouseButton", "MouseButtonMask", "JoyButton", "JoyAxis", "MIDIMessage", "Error",
+	"PropertyHint", "PropertyUsageFlags", "MethodFlags"]
 
 var bp: Dictionary
 var notes: Array = []
@@ -56,6 +61,13 @@ var _fn_name := ""             # the function or event being lowered
 var _keep_step := false        # the value being lowered goes straight into a Set or Return node: a call there stays a step
 var _clash: Dictionary = {}    # names used both for a local and for a loop variable in the function being lowered
 var _clash_abort := false      # a statement kept as text mentions one of them: the function is kept whole instead
+var _loop_depth := 0           # how many loops the statement being lowered is inside
+
+
+## True for a note that only says how something became nodes (a lambda became a function, a signal's Call
+## node got a pin): worth having in a full report, not something the person converting has to act on.
+static func is_detail(note: String) -> bool:
+	return note.begins_with("a lambda in ") or note.contains("is emitted with more arguments") or note.begins_with("expression kept as a Math Expression node")
 
 
 # ---------------------------------------------------------------- entry point
@@ -68,14 +80,26 @@ func convert(source: String, opts := {}) -> Dictionary:
 	_nodes_cls = opts.get("nodes", {}).duplicate()
 	_conn_params = opts.get("params", {}).duplicate()
 	var parent := String(ast.extends) if String(ast.extends) != "" else "RefCounted"
+	if parent.ends_with(".gd") and not parent.begins_with("res://") and String(opts.get("path", "")) != "":
+		parent = String(opts.path).get_base_dir().path_join(parent).simplify_path()   # a path beside the script
 	if parent.begins_with("res://"):
-		var base := load(parent) as Script
-		parent = String(base.get_global_name()) if base and base.get_global_name() != &"" else (String(base.get_instance_base_type()) if base else "Node")
-		notes.append("extends a script by path: the schematic extends %s" % parent)
+		# a parent named by its path: by its class name if it has one, else by the path, as written
+		var base := (load(parent) as Script) if ResourceLoader.exists(parent) else null
+		if base != null and base.get_global_name() != &"":
+			parent = String(base.get_global_name())
+		elif base != null:
+			parent = "\"%s\"" % parent
+		else:
+			notes.append("extends %s, which is not in this project: the schematic extends Node" % parent)
+			parent = "Node"
 	_cls = parent
 	var cn := String(opts.get("class_name", ast.class_name))
 	bp = Model.new_schematic(parent, cn)
 	bp.tool = bool(ast.tool)
+	if bool(ast.crlf):
+		bp["crlf"] = true
+	if not ast.class_pre.is_empty():
+		bp["class_pre"] = ast.class_pre.duplicate()   # @icon(...) and the like, written above the class
 	var eg: Dictionary = bp.graphs[0]
 	eg.nodes.clear()
 	eg.next_id = 1
@@ -92,6 +116,18 @@ func convert(source: String, opts := {}) -> Dictionary:
 				_consts[String(value)] = "int"
 	for text in ast.extra:
 		extra.append(String(text))
+	# an @abstract function has no body to make a graph of: its declaration is carried over as written
+	var with_body := []
+	for f in ast.funcs:
+		if not bool(f.get("abstract", false)):
+			with_body.append(f)
+			continue
+		var decl := PackedStringArray(f.get("pre", []))
+		var header := String(f.text)
+		decl.append(("static " if bool(f.get("static", false)) else "") + header.substr(maxi(header.find("func "), 0)))
+		extra.append("\n".join(decl))
+		notes.append("abstract function kept as written: %s" % f.name)
+	ast.funcs = with_body
 	_assigned = {}
 	for f in ast.funcs:
 		_scan_targets(f.body)
@@ -123,6 +159,11 @@ func convert(source: String, opts := {}) -> Dictionary:
 				fg["pre"] = f.pre.duplicate()
 			if String(f.ret) != "" and T.hint(String(fi.ret)) == "" and String(fi.ret) != "any" and String(f.ret) != "void":
 				fg["ret_hint"] = String(f.ret)   # a return type the schematic has no pin type for: kept in the signature
+				fg["ret_default"] = ("(0 as %s)" % String(f.ret)) if _is_enum_type(String(f.ret)) else "null"
+			elif String(f.ret) == "":
+				# Written without a return type: other scripts may use what it returns (nothing, which reads as
+				# null), which a stated "void" would forbid. The signature stays as it was written.
+				fg["ret_hint"] = "-"
 			fg.nodes.remove_at(1)
 			graphs[String(f.name)] = fg
 	for f in ast.funcs:
@@ -153,7 +194,7 @@ func _declare_functions(ast: Dictionary) -> void:
 				pt = T.from_info(info.args[i])
 			if pt == "" and _conn_params.has(String(f.name)) and i < _conn_params[String(f.name)].size():
 				pt = String(_conn_params[String(f.name)][i])
-			if pt == "" and prm.default != null:
+			if pt == "" and prm.default != null and bool(prm.get("infer", false)):   # only ":=" states a type
 				pt = _type(prm.default)
 			var entry := [String(prm.name), pt if pt != "" else "any"]
 			if prm.default != null:
@@ -163,6 +204,15 @@ func _declare_functions(ast: Dictionary) -> void:
 				while entry.size() < 3:
 					entry.append("")
 				entry.append(String(prm.type))   # a type the schematic has no pin type for: kept in the signature
+			if bool(prm.get("rest", false)):
+				# ...args: the further arguments of a call, as an array; written back the same way
+				entry = [String(prm.name), "Array", "", "..." + String(prm.type)]
+			elif String(prm.type) == "" and not is_event:
+				# Written without a type: it takes whatever a caller passes, and so it does after conversion.
+				# The pin may show the type the script always uses it with; the signature does not state one.
+				while entry.size() < 3:
+					entry.append("")
+				entry.append(":=" if bool(prm.get("infer", false)) else "-")
 			params.append(entry)
 		var required := 0
 		for prm in f.params:
@@ -194,13 +244,38 @@ func _float_params(ast: Dictionary) -> bool:
 			if not declared and String(fi.params[i][1]) == "any" and String(seen.get("%s:%d" % [f.name, i], "")) == "float" \
 					and not _conn_params.has(String(f.name)):
 				fi.params[i][1] = "float"
-				notes.append("%s: parameter '%s' is typed float, as every call in the script passes one" % [f.name, fi.params[i][0]])
 				changed = true
 	if changed:
 		for nm in _members:
 			if String(_members[nm]) == "any" and not _typed_members.has(nm):
 				_members[nm] = ""
 	return changed
+
+
+## Names of the script's own functions whose result is read somewhere (a call that is a statement of its own
+## reads nothing).
+func _scan_used_results(node: Variant, used: Dictionary) -> void:
+	if node is Array:
+		for it in node:
+			_scan_used_results(it, used)
+	elif node is Dictionary:
+		if node.get("k", "") == "expr" and node.get("e") is Dictionary:
+			var inner: Dictionary = node.e
+			while inner.get("k", "") in ["paren", "await"] and inner.get("a") is Dictionary:
+				inner = inner.a
+			if inner.get("k", "") == "call":
+				_scan_used_results(inner.args, used)
+				if inner.fn is Dictionary and inner.fn.get("k", "") == "attr":
+					_scan_used_results(inner.fn.obj, used)
+				return
+		if node.get("k", "") == "call" and node.get("fn") is Dictionary:
+			if node.fn.get("k", "") == "name":
+				used[String(node.fn.v)] = true
+			elif node.fn.get("k", "") == "attr" and node.fn.obj is Dictionary and node.fn.obj.get("k", "") == "self":
+				used[String(node.fn.name)] = true
+		for key in node:
+			if node[key] is Array or node[key] is Dictionary:
+				_scan_used_results(node[key], used)
 
 
 func _scan_calls(node: Variant, seen: Dictionary) -> void:
@@ -225,7 +300,7 @@ func _declare_members(ast: Dictionary) -> void:
 			_const_init[nm] = v.init
 			continue
 		var declared := _norm(String(v.type))
-		var known := declared == "" or declared == "any" or T.hint(declared) != ""
+		var known := declared == "" or declared == "any" or T.hint(declared) == declared
 		if bool(v.onready) and bool(v.plain) and v.init != null and (v.init.k == "node" or _is_get_node(v.init)) and not _assigned.has(nm) and known:
 			# a node shortcut that is never reassigned: every use becomes a node reference
 			var path := String(v.init.path) if v.init.k == "node" else String(v.init.args[0].v).trim_prefix("^").trim_prefix("&").trim_prefix("\"").trim_suffix("\"")
@@ -334,6 +409,8 @@ func _infer_member_types(ast: Dictionary) -> void:
 		if String(_members[nm]) == "":
 			_members[nm] = "any"
 	# functions without a declared return type: take it from their return statements
+	var used_results := {}
+	_scan_used_results(ast.funcs, used_results)
 	for f in ast.funcs:
 		var fi: Dictionary = _funcs[String(f.name)]
 		if String(fi.ret) == "" and not bool(fi.void) and not bool(fi.event):
@@ -342,7 +419,15 @@ func _infer_member_types(ast: Dictionary) -> void:
 				_scope[String(prm[0])] = {"k": "param", "t": String(prm[1])}
 			_local_types(f.body)
 			# no declared type: a function that returns values returns a Variant, exactly as the script does
-			fi.ret = "any" if _return_type(f.body) != "" else ""
+			# (one that returns nothing, but whose result the script reads all the same, hands back null)
+			fi.ret = "any" if (_return_type(f.body) != "" or used_results.has(String(f.name))) else ""
+			# ...and one that overrides an engine callback hands back what that callback does (the pin shows that
+			# type; the signature stays without one, as it was written)
+			var above := R.find_method(_cls, String(f.name))
+			if not above.is_empty() and bool(int(above.get("flags", 0)) & METHOD_FLAG_VIRTUAL):
+				var rt := T.from_info(above.get("return", {}), true)
+				if rt != "" and above.args.size() == f.params.size():
+					fi.ret = rt
 		if String(fi.ret) == "void":
 			fi.ret = ""
 	_scope = {}
@@ -410,11 +495,19 @@ func _widen(cur: String, new: String) -> String:
 
 
 func _declare_signals(ast: Dictionary) -> void:
+	var declared_counts := {}
+	var signal_pre := {}
 	for s in ast.signals:
 		var params := []
 		for prm in s.params:
-			params.append([String(prm[0]), _norm(String(prm[1])) if String(prm[1]) != "" else "any"])
+			var entry := [String(prm[0]), _norm(String(prm[1])) if String(prm[1]) != "" else "any"]
+			if String(prm[1]) != "" and T.hint(String(entry[1])) == "" and String(entry[1]) != "any":
+				entry = [String(prm[0]), "any", "", String(prm[1])]   # a type the schematic has no pin type for: kept in the signature
+			params.append(entry)
 		_signals[String(s.name)] = params
+		declared_counts[String(s.name)] = params.size()
+		if not s.get("pre", []).is_empty():
+			signal_pre[String(s.name)] = s.pre.duplicate()
 	# GDScript lets a signal be emitted with more arguments than it declares; dispatchers need them declared
 	for f in ast.funcs:
 		_scope = {}
@@ -424,7 +517,13 @@ func _declare_signals(ast: Dictionary) -> void:
 		_scan_emits(f.body)
 	_scope = {}
 	for nm in _signals:
-		bp.dispatchers.append({"name": nm, "params": _signals[nm]})
+		var dispatcher := {"name": nm, "params": _signals[nm]}
+		if signal_pre.has(nm):
+			dispatcher["pre"] = signal_pre[nm]
+		if declared_counts.has(nm) and int(declared_counts[nm]) < _signals[nm].size():
+			# emitted with more than it declares: the Call node has a pin for each, the declaration stays as written
+			dispatcher["declared"] = int(declared_counts[nm])
+		bp.dispatchers.append(dispatcher)
 
 
 func _scan_emits(body: Array) -> void:
@@ -433,7 +532,7 @@ func _scan_emits(body: Array) -> void:
 			var params: Array = _signals[String(st.e.fn.obj.v)]
 			for i in range(params.size(), st.e.args.size()):
 				params.append(["arg%d" % i, _type(st.e.args[i])])
-				notes.append("signal %s is emitted with more arguments than it declares; added parameter arg%d" % [st.e.fn.obj.v, i])
+				notes.append("signal %s is emitted with more arguments than it declares: its Call node has a pin for each (arg%d), the declaration stays as written" % [st.e.fn.obj.v, i])
 		elif st.k == "if":
 			for br in st.branches:
 				_scan_emits(br[1])
@@ -452,6 +551,12 @@ func _fill_variables(ast: Dictionary) -> void:
 			continue
 		var entry := {"name": nm, "type": String(_members[nm]), "default": String(v.init_src) if v.init != null else "", "export": bool(v.export),
 			"category": String(v.group), "tooltip": ""}
+		# declared as the script declared it (see the compiler): the type above is only what the pins show
+		if String(v.type) == "":
+			entry["written"] = "infer" if bool(v.get("infer", false)) else "untyped"
+		if bool(v.export) and not _raw.has(nm) and (T.hint(String(entry.type)) == "" or String(entry.type) in ["Callable", "Signal", "RID"]):
+			# `@export var hp = 2` exports by its value; the variable list would need a type to export it
+			_raw[nm] = String(v.text)
 		if _raw.has(nm):
 			entry["raw"] = String(_raw[nm])
 		bp.variables.append(entry)
@@ -766,7 +871,13 @@ func _scan_locals(body: Array) -> void:
 				if lt == "" and st.init != null:
 					lt = _type(st.init)
 				var prev := String(_scope[nm].t) if (_scope.has(nm) and _scope[nm].k == "local") else ""
-				_scope[nm] = {"k": "local", "t": _widen(prev, lt) if lt != "" else (prev if prev != "" else "any"), "name": nm, "typed": String(st.type) != "" or bool(st.get("infer", false)), "infer": bool(st.get("infer", false)) or (prev != "" and bool(_scope[nm].get("infer", false)))}
+				# a type with no pin type (an enum, an inner class, an array of them) is kept as written, as long
+				# as every declaration of the name agrees on it
+				var written := String(st.type) if (String(st.type) != "" and lt != "any" and T.hint(lt) != lt) else ""
+				if prev != "" and String(_scope[nm].get("written", "")) != written:
+					written = "-"
+				_scope[nm] = {"k": "local", "t": _widen(prev, lt) if lt != "" else (prev if prev != "" else "any"), "name": nm, "typed": String(st.type) != "" or bool(st.get("infer", false)) or (prev != "" and bool(_scope[nm].get("typed", false))), "infer": bool(st.get("infer", false)) or (prev != "" and bool(_scope[nm].get("infer", false))),
+					"written": written}
 			"assign":
 				if st.target.k == "name" and _scope.has(String(st.target.v)) and _scope[String(st.target.v)].k == "local" and not bool(_scope[String(st.target.v)].get("typed", false)):
 					var s: Dictionary = _scope[String(st.target.v)]
@@ -835,6 +946,7 @@ func _function(f: Dictionary, graph: Dictionary) -> void:
 func _body(f: Dictionary) -> void:
 	var first_node: int = _g.nodes.size()
 	_awaits = false
+	_loop_depth = 0
 	_clash = _clash_names(f.body)
 	if _clash.is_empty():
 		_declare_locals(f.body, String(f.name))
@@ -977,6 +1089,10 @@ func _declare_locals(body: Array, fn_name: String) -> void:
 			var made := {"name": unique, "type": String(s.t), "default": ""}
 			if bool(s.get("infer", false)):
 				made["infer"] = true   # written as "var x := ...": the type is whatever GDScript infers there
+			if not String(s.get("written", "")) in ["", "-"]:
+				made["hint"] = String(s.written)   # a type the schematic has no pin for: kept in the declaration
+			elif not bool(s.get("typed", false)):
+				made["untyped"] = true   # written without a type: declared without one, whatever the pins show
 			_g.locals.append(made)
 	for nm in _scope.keys():
 		if _scope[nm].k == "loopvar":
@@ -1052,11 +1168,16 @@ func _out_pin(n: Dictionary) -> Dictionary:
 # ---------------------------------------------------------------- statements
 
 func _block(stmts: Array) -> void:
+	var carried := PackedStringArray()   # @warning_ignore(...) lines waiting for the statement they are written above
 	for i in stmts.size():
 		var st: Dictionary = stmts[i]
 		var last := i == stmts.size() - 1
 		var total_before := lines_total
 		lines_total += _own_lines(st)
+		if st.k == "raw" and String(st.src).begins_with("@warning_ignore") and not String(st.get("text", st.src)).contains("\n") and not last:
+			carried.append(String(st.src))
+			continue
+		var came_from := _cursor.duplicate()
 		if _cursor.is_empty():
 			notes.append("line %d: unreachable code after return/break dropped: %s" % [st.get("line", 0), st.src])
 			continue
@@ -1082,6 +1203,9 @@ func _block(stmts: Array) -> void:
 			_pending.clear()
 			notes.append("line %d kept as code (%s): %s" % [st.get("line", 0), _failed if _failed != "" else String(st.get("why", "not supported")), String(st.src)])
 			var text := String(st.get("text", st.src))
+			if not carried.is_empty():
+				text = "\n".join(carried) + "\n" + text
+				carried.clear()
 			for clashing in _clash:
 				if Compiler._replace_word(text, String(clashing), "") != text:
 					_clash_abort = true
@@ -1090,6 +1214,15 @@ func _block(stmts: Array) -> void:
 			_code(_devar(text))
 			if _ends_path(st):
 				_cursor = []
+		elif not carried.is_empty():
+			# the annotation goes with the first step the statement became
+			if not came_from.is_empty():
+				for wi in range(int(mark.wires), _g.wires.size()):
+					var w: Array = _g.wires[wi]
+					if int(w[0]) == int(came_from[0].id) and String(w[1]) == String(came_from[1]):
+						Model.find_node(_g, int(w[2])).p["pre"] = Array(carried)
+						break
+			carried.clear()
 
 
 func _line_count(st: Dictionary) -> int:
@@ -1110,8 +1243,11 @@ func _own_lines(st: Dictionary) -> int:
 func _devar(text: String) -> String:
 	var re := RegEx.create_from_string("^(\\t*)var\\s+(\\w+)\\s*(:\\s*[\\w\\[\\], .]+?)?\\s*(:?=\\s*(.*))?$")
 	var out := PackedStringArray()
-	for line in text.split("\n"):
-		var m := re.search(line)
+	var inside := T.lines_in_string(text)
+	var lines := text.split("\n")
+	for k in lines.size():
+		var line := lines[k]
+		var m := re.search(line) if not inside[k] else null   # (a line of a string is not a declaration)
 		if m == null or not _scope.has(m.get_string(2)):
 			out.append(line)
 		elif m.get_string(5) != "":
@@ -1132,17 +1268,25 @@ func _statement(st: Dictionary, last: bool) -> bool:
 		"raw":
 			return false
 		"var":
-			if st.init == null:
-				return true
+			var first: Variant = st.init
+			if first == null:
+				# Declared without a value: it starts from its type's default every time the declaration is
+				# reached. A graph's local lives for the whole function (in the EventGraph, for as long as the
+				# object), so inside a loop or an event it is set back here; elsewhere the local's own default does it.
+				if _is_fn and _loop_depth == 0:
+					return true
+				first = _default_value(String(st.type))
 			if not _scope.has(String(st.name)) or _scope[String(st.name)].k != "local":
 				return _fail("a variable declared where the importer does not track locals")
 			var s: Dictionary = _scope[String(st.name)]
 			_keep_step = true
-			var val := _value(st.init, 1)
+			var val := _value(first, 1)
 			_keep_step = false
 			if val.is_empty():
 				return false
 			var n := _exec("local_set", {"name": String(s.name)})
+			if st.init == null:
+				n.p["bare"] = true   # declared without a value: written back that way where it can be
 			return _wire(val, n, "value")
 		"assign":
 			return _assign(st)
@@ -1299,12 +1443,18 @@ func _match(st: Dictionary, last: bool) -> bool:
 	var default_at := -1
 	for i in st.arms.size():
 		var arm: Dictionary = st.arms[i]
-		if not bool(arm.plain):
-			return _fail("a match pattern that binds a name")
 		var pattern := String(arm.pattern)
 		for nm in _scope:
 			if Compiler._replace_word(pattern, String(nm), "\u0001") != pattern:
 				return _fail("a match pattern that uses a local variable")
+		# `var name` in a pattern: the arm's own variable, which the nodes under it read by name
+		arm["binds"] = []
+		if not bool(arm.plain):
+			for found in RegEx.create_from_string("\\bvar\\s+([A-Za-z_][A-Za-z_0-9]*)").search_all(Parser.new()._blank_strings(pattern)):
+				var bound := found.get_string(1)
+				if _clash.has(bound) or _g.locals.any(func(l): return String(l.name) == bound):
+					return _fail("a match pattern that binds a name the function also uses for a variable")
+				arm.binds.append(bound)
 		if pattern == "_":
 			default_at = i
 		else:
@@ -1331,7 +1481,11 @@ func _match(st: Dictionary, last: bool) -> bool:
 		_cx = bx
 		if i > 0:
 			_cy = _low + 70.0
+		for bound in st.arms[i].binds:
+			_scope[bound] = {"k": "bound", "name": bound, "t": "any"}
 		_block(st.arms[i].body)
+		for bound in st.arms[i].binds:
+			_scope.erase(bound)
 	if not last:
 		_cx = float(seq.x) + 250.0
 		_cy = _low + 70.0
@@ -1362,8 +1516,9 @@ func _await(e: Dictionary, depth: int, want: bool) -> Dictionary:
 			return {}
 		var n: Dictionary = _last_call
 		n.p["await"] = true
-		if _pending.any(func(it): return it[0] == n) and _inline_mode == 0:
+		if _pending.any(func(it): return it[0] == n) and _inline_mode == 0 and not bool(n.p.get("inline", false)):
 			# marked as changing nothing, but it has to be waited for: it is a step
+			# (a call told to run where its value is read is waited for there, and must not also run as a step)
 			n.p["exec"] = true
 			for i in range(_pending.size() - 1, -1, -1):
 				if _pending[i][0] == n:
@@ -1514,7 +1669,13 @@ func _for(st: Dictionary) -> bool:
 		if av.is_empty():
 			return false
 		var et := _iter_type(it)
+		# `for item: Type in list`: the loop variable has the type the script gave it
+		var written := _norm(String(st.get("var_type", "")))
+		if written != "" and written != "any" and T.hint(written) == written:
+			et = written
 		n = _exec("for_each", {"t": et}, "exec", "body")
+		if written != "" and written != "any" and T.hint(written) != written:
+			n.p["hint"] = String(st.var_type)   # a type no pin has (an enum, an inner class): kept in the loop's header
 		if not _wire(av, n, "array"):
 			return false
 		_scope[String(st["var"])] = {"k": "pin", "t": et, "n": n, "pin": "element"}
@@ -1530,9 +1691,71 @@ func is_range_step(it: Dictionary) -> bool:
 	return it.k == "call" and it.fn.k == "name" and String(it.fn.v) == "range" and it.args.size() == 3 and not _funcs.has("range")
 
 
+## True when a type written in the script is an enum: one of the script's own, of an engine class, of a class
+## of the project (Class.Enum), or of the global scope.
+func _is_enum_type(written: String) -> bool:
+	var t := _norm(written)
+	if t in GLOBAL_ENUMS or (_enum_names.has(t) and not bool(_enum_names[t])):
+		return true
+	if ClassDB.class_exists(_cls) and ClassDB.class_has_enum(_cls, t):
+		return true
+	if not t.contains("."):
+		return false
+	var owner := t.get_slice(".", 0)
+	var last := t.get_slice(".", t.get_slice_count(".") - 1)
+	if ClassDB.class_exists(owner):
+		return ClassDB.class_has_enum(owner, last)
+	var path := String(T.script_entry(owner).get("path", ""))
+	if path == "" and _const_init.get(owner) is Dictionary and _const_init[owner].get("k", "") == "call" and not _const_init[owner].args.is_empty() 			and _const_init[owner].args[0] is Dictionary and _const_init[owner].args[0].get("k", "") == "str":
+		path = String(_const_init[owner].args[0].v).trim_prefix("\"").trim_suffix("\"")   # const Owner := preload("res://owner.gd")
+	if path != "" and ResourceLoader.exists(path):
+		var scr := load(path) as Script
+		if scr != null:
+			var guard := 0
+			while scr != null and guard < 16:
+				var consts := scr.get_script_constant_map()
+				if consts.has(last):
+					return consts[last] is Dictionary
+				scr = scr.get_base_script()
+				guard += 1
+	return false
+
+
+## What a variable declared as `var x: type` with no value holds, as an expression.
+func _default_value(written: String) -> Dictionary:
+	var t := _norm(written)
+	var base := t.get_slice("[", 0)
+	match base:
+		"", "any":
+			return {"k": "null"}
+		"int":
+			return {"k": "num", "v": "0", "f": false}
+		"float":
+			return {"k": "num", "v": "0.0", "f": true}
+		"bool":
+			return {"k": "bool", "v": "false"}
+		"String":
+			return {"k": "str", "v": "\"\""}
+		"StringName":
+			return {"k": "str", "v": "&\"\""}
+		"NodePath":
+			return {"k": "str", "v": "^\"\""}
+		"Array":
+			return {"k": "array", "items": []}
+		"Dictionary":
+			return {"k": "dict", "pairs": []}
+	if _is_enum_type(t):
+		return {"k": "const_text", "src": "(0 as %s)" % t, "t": "int"}   # an enum starts at 0, stated as that enum
+	if T.hint(base) != "" and not T.is_object(base):
+		return {"k": "call", "fn": {"k": "name", "v": base}, "args": []}   # Vector3(), Color(), PackedInt32Array() ...
+	return {"k": "null"}
+
+
 func _loop_body(n: Dictionary, body: Array) -> bool:
 	_cx = float(n.x) + 320.0
+	_loop_depth += 1
 	_block(body)
+	_loop_depth -= 1
 	_cursor = [n, "completed"]
 	_cx = float(n.x) + 320.0
 	_cy = _low + 70.0
@@ -1932,6 +2155,8 @@ func _lower(e: Variant, depth: int) -> Dictionary:
 	match String(e.k):
 		"paren":
 			return _lower(e.a, depth)
+		"const_text":
+			return {"n": _data("const", {"expr": String(e.src), "label": String(e.src), "t": String(e.get("t", "any"))}, depth), "pin": "value", "t": String(e.get("t", "any"))}
 		"num", "str", "bool":
 			return {"lit": String(e.v), "t": _type(e)}
 		"null":
@@ -2061,6 +2286,15 @@ func _name(nm: String, depth: int) -> Dictionary:
 		var s: Dictionary = _scope[nm]
 		if s.k == "local":
 			return {"n": _data("local_get", {"name": String(s.name)}, depth), "pin": "value", "t": String(s.t)}
+		if s.k in ["pin", "param"] and s.get("n") is Dictionary and is_same(s.n, _entry) and String(s.get("pin", "")).begins_with("p_") 				and (_cx - float(_entry.x) > FAR or _cy - float(_entry.y) > FAR * 0.5):
+			# A parameter of the event or function, read a long way from where it comes in: a small node
+			# with its name stands next to the reader, instead of a wire running the length of the graph.
+			# (It is written as the bare name, which is what the wire would have been written as.)
+			var param_name := String(s.pin).trim_prefix("p_")
+			return {"n": _data("const", {"expr": param_name, "label": param_name, "t": String(s.t)}, depth), "pin": "value", "t": String(s.t)}
+		if s.k == "bound":
+			# a name a match pattern binds: it exists where the arm's nodes are written, and is read by name
+			return {"n": _data("const", {"expr": String(s.name), "label": String(s.name), "t": "any"}, depth), "pin": "value", "t": "any"}
 		return {"n": s.n, "pin": String(s.pin), "t": String(s.t)}
 	if _alias.has(nm):
 		var a: Dictionary = _alias[nm]
@@ -2242,7 +2476,7 @@ func _lambda(e: Dictionary, depth: int) -> Dictionary:
 	var ast_params: Array = e.params.duplicate()
 	for prm in e.params:
 		var pt := _norm(String(prm.type))
-		if pt == "" and prm.default != null:
+		if pt == "" and prm.default != null and bool(prm.get("infer", false)):
 			pt = _type(prm.default)
 		var entry := [String(prm.name), pt if pt != "" else "any"]
 		if prm.default != null:
@@ -2252,6 +2486,10 @@ func _lambda(e: Dictionary, depth: int) -> Dictionary:
 			while entry.size() < 3:
 				entry.append("")
 			entry.append(String(prm.type))
+		elif String(prm.type) == "":
+			while entry.size() < 3:
+				entry.append("")
+			entry.append(":=" if bool(prm.get("infer", false)) else "-")   # untyped as written (see _declare_functions)
 		params.append(entry)
 	var has_default: bool = e.params.any(func(prm): return prm.default != null)
 	for nm in captured:
@@ -2284,6 +2522,8 @@ func _lambda(e: Dictionary, depth: int) -> Dictionary:
 			fg["ret_hint"] = declared
 			fg.outputs = [["result", "any"]]
 			_funcs[fname].ret = "any"
+	if declared == "":
+		fg["ret_hint"] = "-"   # written without a return type
 	if bool(keep.g.get("static", false)):
 		fg["static"] = true
 	fg.nodes.remove_at(1)
@@ -2338,7 +2578,10 @@ func _call(e: Dictionary, depth: int, want: bool) -> Dictionary:
 		if _scope.has(nm) or _members.has(nm):
 			_fail("calling a variable")
 			return {}
-		if _funcs.has(nm):
+		# A function of the script named like one of GDScript's own (log, range, len ...) does not hide it: the
+		# bare name is still GDScript's, and only self.name() reaches the script's.
+		var gd_own := _funcs.has(nm) and not bool(fn.get("own", false)) and (Compiler.GD_FUNCTIONS.has(nm) or not R.util(nm).is_empty())
+		if _funcs.has(nm) and not gd_own:
 			if bool(_funcs[nm].event):
 				_fail("calling an event directly")
 				return {}
@@ -2363,7 +2606,19 @@ func _call(e: Dictionary, depth: int, want: bool) -> Dictionary:
 			"get_node":
 				if _is_get_node(e):
 					return _lower({"k": "node", "path": String(args[0].v).trim_prefix("^").trim_prefix("\"").trim_suffix("\"")}, depth)
-			"int", "float", "bool", "preload", "super", "range":
+			"range":
+				# range() as a value (not the list a loop goes through): the Range node, which always has all three
+				if args.size() >= 1 and args.size() <= 3:
+					var bounds := args.duplicate()
+					if bounds.size() == 1:
+						bounds.push_front({"k": "num", "v": "0", "f": false})
+					return _finish(_data("tpl", {"id": "range"}, depth), bounds, depth, {}, want, true)
+				_fail("range()")
+				return {}
+			"len", "char", "ord", "is_instance_of", "type_exists", "get_stack", "print_stack", "assert":
+				var gd_node := _data("tpl", {"id": "gd_" + nm}, depth)
+				return _finish(gd_node, args, depth, {}, want, not nm in ["print_stack", "assert"])
+			"int", "float", "bool", "preload", "super":
 				_fail("%s()" % nm)
 				return {}
 		if not R.util(nm).is_empty():
@@ -2384,7 +2639,7 @@ func _call(e: Dictionary, depth: int, want: bool) -> Dictionary:
 	if obj.is_empty():
 		return {}
 	if obj.has("self"):
-		return _call({"k": "call", "fn": {"k": "name", "v": m}, "args": args}, depth, want)
+		return _call({"k": "call", "fn": {"k": "name", "v": m, "own": true}, "args": args}, depth, want)
 	if obj.has("typeref"):
 		var tr := String(obj.typeref)
 		if m == "new" and args.is_empty():
