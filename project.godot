@@ -10,12 +10,12 @@ config_version=5
 
 [application]
 
-config/name="Blueprints"
+config/name="Schematic"
 config/features=PackedStringArray("4.8")
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/blueprints/plugin.cfg")
+enabled=PackedStringArray("res://addons/schematic/plugin.cfg")
 
 [input]
 

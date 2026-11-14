@@ -1,9 +1,9 @@
 extends SceneTree
-## Dry run of the GDScript -> Blueprint converter over another project's folders (reads only, writes nothing).
+## Dry run of the GDScript -> Schematic converter over another project's folders (reads only, writes nothing).
 ##   godot --headless --path . --script res://tests/survey_project.gd -- <project dir> <folder> [<folder>...]
-const Importer := preload("res://addons/blueprints/core/bp_importer.gd")
-const R := preload("res://addons/blueprints/core/bp_registry.gd")
-const T := preload("res://addons/blueprints/core/bp_types.gd")
+const Importer := preload("res://addons/schematic/core/sc_importer.gd")
+const R := preload("res://addons/schematic/core/sc_registry.gd")
+const T := preload("res://addons/schematic/core/sc_types.gd")
 
 func find(dir_path: String, out: Array) -> void:
 	var dir := DirAccess.open(dir_path)

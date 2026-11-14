@@ -1,12 +1,12 @@
 extends SceneTree
-## Generates a small complete game made only of blueprints (res://demo/game): a player you move with the
-## arrow keys, coins spawned by a game blueprint, and a HUD that listens to the player's event dispatcher.
-## Blueprints refer to each other by class name, so run it, import, and run it again until it says "complete":
+## Generates a small complete game made only of schematics (res://demo/game): a player you move with the
+## arrow keys, coins spawned by a game schematic, and a HUD that listens to the player's event dispatcher.
+## Schematics refer to each other by class name, so run it, import, and run it again until it says "complete":
 ##   godot --headless --path . --script res://tests/make_game.gd ; godot --headless --path . --import
-const Model := preload("res://addons/blueprints/core/bp_model.gd")
-const Compiler := preload("res://addons/blueprints/core/bp_compiler.gd")
-const R := preload("res://addons/blueprints/core/bp_registry.gd")
-const T := preload("res://addons/blueprints/core/bp_types.gd")
+const Model := preload("res://addons/schematic/core/sc_model.gd")
+const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
+const R := preload("res://addons/schematic/core/sc_registry.gd")
+const T := preload("res://addons/schematic/core/sc_types.gd")
 
 const DIR := "res://demo/game/"
 var problems := 0
@@ -37,8 +37,8 @@ func _init() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(DIR))
 	T.refresh_globals()
 
-	# ------------------------------------------------------------ BP_Player
-	var pl := Model.new_blueprint("CharacterBody2D", "BP_Player")
+	# ------------------------------------------------------------ SC_Player
+	var pl := Model.new_schematic("CharacterBody2D", "SC_Player")
 	pl.description = "Top-down player. Arrow keys move it; coins call Add Score."
 	pl.variables.append({"name": "speed", "type": "float", "default": "220.0", "export": true, "category": "Movement", "tooltip": "Pixels per second."})
 	pl.variables.append({"name": "score", "type": "int", "default": "", "export": false, "category": "", "tooltip": ""})
@@ -73,22 +73,22 @@ func _init() -> void:
 	wire(pf, pf_add, "ret", pf_set, "value")
 	wire(pf, pf_set, "then", pf_emit, "exec")
 	wire(pf, pf_set, "out", pf_emit, "a_new_score")
-	save(pl, "BP_Player.gd")
-	if not T.class_known("BP_Player"):
-		print("phase 1 written (BP_Player). Import the project and run again.")
+	save(pl, "SC_Player.gd")
+	if not T.class_known("SC_Player"):
+		print("phase 1 written (SC_Player). Import the project and run again.")
 		quit()
 		return
 
-	# ------------------------------------------------------------ BP_Coin
-	var co := Model.new_blueprint("Area2D", "BP_Coin")
+	# ------------------------------------------------------------ SC_Coin
+	var co := Model.new_schematic("Area2D", "SC_Coin")
 	co.description = "Gives its value to the player that touches it, then removes itself."
 	co.variables.append({"name": "value", "type": "int", "default": "5", "export": true, "spawn": true, "category": "", "tooltip": "Score given when collected."})
 	var cg: Dictionary = co.graphs[0]
 	cg.nodes.clear()
 	var c_ev := Model.add_node(cg, "signal_event", Vector2(80, 80), {"path": ".", "signal": "body_entered", "cls": "Area2D", "args": [["body", "Node2D"]]})
-	var c_cast := Model.add_node(cg, "cast", Vector2(380, 80), {"cls": "BP_Player"})
+	var c_cast := Model.add_node(cg, "cast", Vector2(380, 80), {"cls": "SC_Player"})
 	var c_val := Model.add_node(cg, "var_get", Vector2(520, 280), {"name": "value"})
-	var c_add := Model.add_node(cg, "call", Vector2(700, 80), {"cls": "BP_Player", "method": "add_score"})
+	var c_add := Model.add_node(cg, "call", Vector2(700, 80), {"cls": "SC_Player", "method": "add_score"})
 	var c_die := Model.add_node(cg, "tpl", Vector2(980, 80), {"id": "destroy_node"})
 	wire(cg, c_ev, "then", c_cast, "exec")
 	wire(cg, c_ev, "p_body", c_cast, "obj")
@@ -96,10 +96,10 @@ func _init() -> void:
 	wire(cg, c_cast, "as", c_add, "target")
 	wire(cg, c_val, "value", c_add, "a0")
 	wire(cg, c_add, "then", c_die, "exec")
-	save(co, "BP_Coin.gd")
+	save(co, "SC_Coin.gd")
 	text("coin.tscn", """[gd_scene load_steps=3 format=3]
 
-[ext_resource type="Script" path="res://demo/game/BP_Coin.gd" id="1"]
+[ext_resource type="Script" path="res://demo/game/SC_Coin.gd" id="1"]
 
 [sub_resource type="CircleShape2D" id="shape"]
 radius = 12.0
@@ -111,16 +111,16 @@ script = ExtResource("1")
 shape = SubResource("shape")
 """)
 
-	# ------------------------------------------------------------ BP_HUD
-	var hud := Model.new_blueprint("Label", "BP_HUD")
+	# ------------------------------------------------------------ SC_HUD
+	var hud := Model.new_schematic("Label", "SC_HUD")
 	hud.description = "Shows the player's score by listening to its score_changed dispatcher."
 	var hg: Dictionary = hud.graphs[0]
 	var h_ready: Dictionary = hg.nodes[0]
 	hg.nodes.remove_at(1)
 	var h_find := Model.add_node(hg, "tpl", Vector2(80, 260), {"id": "get_first_node_in_group"})
 	h_find.d["group"] = "&\"player\""
-	var h_cast := Model.add_node(hg, "cast", Vector2(340, 80), {"cls": "BP_Player"})
-	var h_bind := Model.add_node(hg, "bind_signal", Vector2(660, 80), {"cls": "BP_Player", "signal": "score_changed"})
+	var h_cast := Model.add_node(hg, "cast", Vector2(340, 80), {"cls": "SC_Player"})
+	var h_bind := Model.add_node(hg, "bind_signal", Vector2(660, 80), {"cls": "SC_Player", "signal": "score_changed"})
 	var h_ref := Model.add_node(hg, "event_ref", Vector2(420, 280), {"fn": "OnScoreChanged"})
 	var h_ev := Model.add_node(hg, "custom_event", Vector2(80, 460), {"name": "OnScoreChanged", "params": [["new_score", "int"]]})
 	var h_fmt := Model.add_node(hg, "format", Vector2(300, 600), {"text": "Score: {score}"})
@@ -133,15 +133,15 @@ shape = SubResource("shape")
 	wire(hg, h_ev, "then", h_set, "exec")
 	wire(hg, h_ev, "p_new_score", h_fmt, "f_score")
 	wire(hg, h_fmt, "ret", h_set, "value")
-	save(hud, "BP_HUD.gd")
+	save(hud, "SC_HUD.gd")
 
-	if not T.class_known("BP_Coin"):
-		print("phase 2 written (BP_Coin, BP_HUD). Import the project and run again.")
+	if not T.class_known("SC_Coin"):
+		print("phase 2 written (SC_Coin, SC_HUD). Import the project and run again.")
 		quit()
 		return
 
-	# ------------------------------------------------------------ BP_Game
-	var gm := Model.new_blueprint("Node2D", "BP_Game")
+	# ------------------------------------------------------------ SC_Game
+	var gm := Model.new_schematic("Node2D", "SC_Game")
 	gm.description = "Spawns a row of coins worth 10, 20 and 30."
 	var gg: Dictionary = gm.graphs[0]
 	var g_ready: Dictionary = gg.nodes[0]
@@ -176,12 +176,12 @@ shape = SubResource("shape")
 	wire(gg, g_spawn, "then", g_pos, "exec")
 	wire(gg, g_spawn, "ret", g_pos, "target")
 	wire(gg, g_vec, "ret", g_pos, "value")
-	save(gm, "BP_Game.gd")
+	save(gm, "SC_Game.gd")
 	text("main.tscn", """[gd_scene load_steps=5 format=3]
 
-[ext_resource type="Script" path="res://demo/game/BP_Game.gd" id="1"]
-[ext_resource type="Script" path="res://demo/game/BP_Player.gd" id="2"]
-[ext_resource type="Script" path="res://demo/game/BP_HUD.gd" id="3"]
+[ext_resource type="Script" path="res://demo/game/SC_Game.gd" id="1"]
+[ext_resource type="Script" path="res://demo/game/SC_Player.gd" id="2"]
+[ext_resource type="Script" path="res://demo/game/SC_HUD.gd" id="3"]
 
 [sub_resource type="CircleShape2D" id="shape"]
 radius = 14.0

@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-label="Schematic: visual scripting for Godot">
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#24272d" stroke-width="1"/>
+    </pattern>
+    <linearGradient id="event" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#b3261e"/><stop offset="1" stop-color="#5a1512"/>
+    </linearGradient>
+    <linearGradient id="call" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2a6fd0"/><stop offset="1" stop-color="#173a6e"/>
+    </linearGradient>
+    <clipPath id="frame"><rect width="1200" height="320" rx="22"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#frame)">
+    <rect width="1200" height="320" fill="#17191d"/>
+    <rect width="1200" height="320" fill="url(#grid)"/>
+
+    <!-- data wire -->
+    <path d="M196 196 C 250 196, 236 214, 292 214" fill="none" stroke="#7ee04a" stroke-width="4" stroke-linecap="round"/>
+    <!-- exec wire, with the dots that run along it while the game plays -->
+    <path id="exec" d="M196 150 C 250 150, 236 168, 292 168" fill="none" stroke="#ffb833" stroke-width="7" stroke-linecap="round"/>
+    <circle cx="214" cy="151" r="5" fill="#fff3d6"/>
+    <circle cx="244" cy="159" r="5" fill="#fff3d6"/>
+    <circle cx="274" cy="167" r="5" fill="#fff3d6"/>
+
+    <!-- event node -->
+    <rect x="70" y="104" width="128" height="116" rx="9" fill="#0d0e10" stroke="#000" stroke-opacity=".6"/>
+    <path d="M70 113a9 9 0 0 1 9-9h110a9 9 0 0 1 9 9v19H70z" fill="url(#event)"/>
+    <path d="M84 118l7-7 7 7-7 7z" fill="none" stroke="#fff" stroke-width="2.4"/>
+    <rect x="106" y="114" width="60" height="8" rx="4" fill="#fff" fill-opacity=".85"/>
+    <path d="M176 142h12l8 8-8 8h-12z" fill="#fff"/>
+    <circle cx="188" cy="196" r="6" fill="#7ee04a"/>
+    <rect x="124" y="192" width="48" height="7" rx="3.5" fill="#fff" fill-opacity=".35"/>
+
+    <!-- function node -->
+    <rect x="290" y="122" width="150" height="116" rx="9" fill="#0d0e10" stroke="#000" stroke-opacity=".6"/>
+    <path d="M290 131a9 9 0 0 1 9-9h132a9 9 0 0 1 9 9v19H290z" fill="url(#call)"/>
+    <rect x="304" y="132" width="76" height="8" rx="4" fill="#fff" fill-opacity=".85"/>
+    <path d="M298 160h12l8 8-8 8h-12z" fill="#fff"/>
+    <path d="M412 160h12l8 8-8 8h-12z" fill="none" stroke="#fff" stroke-width="2.4"/>
+    <circle cx="304" cy="214" r="6" fill="#7ee04a"/>
+    <rect x="320" y="210" width="54" height="7" rx="3.5" fill="#fff" fill-opacity=".35"/>
+
+    <text x="500" y="182" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="104" font-weight="700" textLength="600" lengthAdjust="spacingAndGlyphs" fill="#ffffff">Schematic</text>
+    <text x="504" y="232" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="30" font-weight="500" fill="#9aa3ad">Visual scripting for Godot</text>
+  </g>
+</svg>

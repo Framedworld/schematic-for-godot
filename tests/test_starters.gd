@@ -1,12 +1,12 @@
 extends SceneTree
-## Checks every starter Blueprint: all nodes valid, every wire lands on a real pin, it compiles and loads,
+## Checks every starter Schematic: all nodes valid, every wire lands on a real pin, it compiles and loads,
 ## and then plays them together headless to see that they do what they say.
 ## Run: godot --headless --path . --script res://tests/test_starters.gd
-const Model := preload("res://addons/blueprints/core/bp_model.gd")
-const Compiler := preload("res://addons/blueprints/core/bp_compiler.gd")
-const R := preload("res://addons/blueprints/core/bp_registry.gd")
-const T := preload("res://addons/blueprints/core/bp_types.gd")
-const Starters := preload("res://addons/blueprints/core/bp_starters.gd")
+const Model := preload("res://addons/schematic/core/sc_model.gd")
+const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
+const R := preload("res://addons/schematic/core/sc_registry.gd")
+const T := preload("res://addons/schematic/core/sc_types.gd")
+const Starters := preload("res://addons/schematic/core/sc_starters.gd")
 
 var fails := 0
 var scripts := {}
@@ -82,14 +82,14 @@ func _init() -> void:
 
 	# ---------------------------------------------------------------- every starter builds, compiles and loads
 	for s in Starters.LIST:
-		var bp := Starters.build(s.id, "BP_T_Lib" if s.id in ["function_library", "data_asset", "interface"] else "")
+		var bp := Starters.build(s.id, "SC_T_Lib" if s.id in ["function_library", "data_asset", "interface"] else "")
 		var problems := structure(s.id, bp)
 		var c := Compiler.new()
 		var code := c.compile(bp)
 		for e in c.errors:
 			problems.append("compile: " + String(e.m))
 		var scr := GDScript.new()
-		scr.source_code = code.replace("class_name BP_T_Lib", "#")
+		scr.source_code = code.replace("class_name SC_T_Lib", "#")
 		var err := scr.reload()
 		if err != OK:
 			problems.append("generated script does not load (error %d)" % err)
@@ -267,7 +267,7 @@ func _init() -> void:
 	var target := StaticBody2D.new()
 	target.position = Vector2(200, 0)
 	shape2d(target, 40.0)
-	# the body forwards take_damage to its Health child, as a user's blueprint would
+	# the body forwards take_damage to its Health child, as a user's schematic would
 	var fwd := GDScript.new()
 	fwd.source_code = "extends StaticBody2D\nfunc take_damage(amount):\n\tget_node(\"Health\").take_damage(amount)\n"
 	fwd.reload()

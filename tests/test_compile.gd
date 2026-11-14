@@ -1,9 +1,9 @@
 extends SceneTree
-## Headless compiler test: builds blueprints in code, compiles them, loads the generated GDScript and runs it.
+## Headless compiler test: builds schematics in code, compiles them, loads the generated GDScript and runs it.
 ## Run: godot --headless --path . --script res://tests/test_compile.gd
-const Model := preload("res://addons/blueprints/core/bp_model.gd")
-const Compiler := preload("res://addons/blueprints/core/bp_compiler.gd")
-const R := preload("res://addons/blueprints/core/bp_registry.gd")
+const Model := preload("res://addons/schematic/core/sc_model.gd")
+const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
+const R := preload("res://addons/schematic/core/sc_registry.gd")
 
 var fails := 0
 
@@ -36,7 +36,7 @@ func build(bp: Dictionary, label: String) -> Object:
 
 func _init() -> void:
 	# --- 1: events, branch, sequence, loops, vars, math, function with outputs, do once, flip flop
-	var bp := Model.new_blueprint("Node", "")
+	var bp := Model.new_schematic("Node", "")
 	bp.variables.append({"name": "health", "type": "float", "default": "100.0", "export": true, "category": "Stats", "tooltip": "Current health."})
 	bp.variables.append({"name": "log", "type": "Array", "default": "", "export": false})
 	bp.dispatchers.append({"name": "died", "params": [["who", "Node"]]})
@@ -117,8 +117,8 @@ func _init() -> void:
 			fails += 1
 		o.free()
 
-	# --- 2: CharacterBody3D blueprint: engine calls, properties, delay, input, signal event, cast, make/break
-	var b2 := Model.new_blueprint("CharacterBody3D", "")
+	# --- 2: CharacterBody3D schematic: engine calls, properties, delay, input, signal event, cast, make/break
+	var b2 := Model.new_schematic("CharacterBody3D", "")
 	var g2: Dictionary = b2.graphs[0]
 	var ready: Dictionary = g2.nodes[0]
 	var proc: Dictionary = g2.nodes[1]
@@ -183,7 +183,7 @@ func _init() -> void:
 		await process_frame
 
 	# --- 3: macros - expanded per call site, each with its own Do Once state, data in/out
-	var b3 := Model.new_blueprint("Node", "")
+	var b3 := Model.new_schematic("Node", "")
 	b3.variables.append({"name": "log", "type": "Array", "default": "", "export": false})
 	var g3: Dictionary = b3.graphs[0]
 	g3.nodes.clear()
@@ -227,7 +227,7 @@ func _init() -> void:
 		o3.free()
 
 	# --- 4: timeline - plays a float track, fires Update each frame and Finished at the end
-	var b4 := Model.new_blueprint("Node", "")
+	var b4 := Model.new_schematic("Node", "")
 	b4.variables.append({"name": "vals", "type": "Array", "default": "", "export": false})
 	b4.variables.append({"name": "done", "type": "bool", "default": "", "export": false})
 	var g4: Dictionary = b4.graphs[0]
@@ -263,7 +263,7 @@ func _init() -> void:
 		await process_frame
 
 	# --- 5: template nodes (Godot tie-ins): groups, timer by event, message call, tween
-	var b5 := Model.new_blueprint("Node2D", "")
+	var b5 := Model.new_schematic("Node2D", "")
 	b5.variables.append({"name": "ticks", "type": "int", "default": "", "export": false})
 	b5.variables.append({"name": "found", "type": "int", "default": "", "export": false})
 	b5.variables.append({"name": "tweened", "type": "bool", "default": "", "export": false})
@@ -317,9 +317,9 @@ func _init() -> void:
 		o5.queue_free()
 		await process_frame
 
-	# --- 6: child blueprint of a blueprint class (BP_Demo): override an event and a function, call parent
-	if ClassDB.class_exists("Node3D") and ResourceLoader.exists("res://demo/BP_Demo.gd"):
-		var b6 := Model.new_blueprint("BP_Demo", "")
+	# --- 6: child schematic of a schematic class (SC_Demo): override an event and a function, call parent
+	if ClassDB.class_exists("Node3D") and ResourceLoader.exists("res://demo/SC_Demo.gd"):
+		var b6 := Model.new_schematic("SC_Demo", "")
 		var g6: Dictionary = b6.graphs[0]
 		g6.nodes.clear()
 		var rd6 := Model.add_node(g6, "event", Vector2(), {"name": "_ready"})
@@ -333,18 +333,18 @@ func _init() -> void:
 		wf.outputs = [["height", "float"]]
 		wf.nodes[1].d["r_height"] = "7.0"
 		wire(wf, wf.nodes[0], "then", wf.nodes[1], "exec")
-		print("overridable has wave: ", R.blueprint_actions(b6, g6).any(func(a): return a.k == "call_parent" and a.p.method == "wave"))
-		var o6 := build(b6, "child blueprint")
+		print("overridable has wave: ", R.schematic_actions(b6, g6).any(func(a): return a.k == "call_parent" and a.p.method == "wave"))
+		var o6 := build(b6, "child schematic")
 		if o6:
 			var h: float = o6.wave(1.0)
-			print("child wave -> ", h, "  is BP_Demo: ", o6 is BP_Demo)
+			print("child wave -> ", h, "  is SC_Demo: ", o6 is SC_Demo)
 			if h != 7.0:
 				print("  WRONG RESULT")
 				fails += 1
 			o6.free()
 
 	# --- 7: wildcard math, format string, multigate, dictionary / reverse loops, increments, key events
-	var b7 := Model.new_blueprint("Node", "")
+	var b7 := Model.new_schematic("Node", "")
 	b7.variables.append({"name": "log", "type": "Array", "default": "", "export": false})
 	b7.variables.append({"name": "count", "type": "int", "default": "", "export": false})
 	b7.variables.append({"name": "v", "type": "Vector3", "default": "Vector3(1, 2, 3)", "export": false})
@@ -443,7 +443,7 @@ func _init() -> void:
 		o7.free()
 
 	# --- 8: Construction Script, Notify On Change, Expose on Spawn
-	var b8 := Model.new_blueprint("Node2D", "")
+	var b8 := Model.new_schematic("Node2D", "")
 	b8.variables.append({"name": "size", "type": "int", "default": "2", "export": true, "spawn": true})
 	b8.variables.append({"name": "hp", "type": "int", "default": "", "export": false, "notify": true})
 	b8.variables.append({"name": "log", "type": "Array", "default": "", "export": false})
@@ -489,7 +489,7 @@ func _init() -> void:
 			fails += 1
 		o8.queue_free()
 		await process_frame
-	# Save that blueprint + a scene using it, then spawn it from another blueprint with the exposed pin set.
+	# Save that schematic + a scene using it, then spawn it from another schematic with the exposed pin set.
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://tests/tmp"))
 	var fgd := FileAccess.open("res://tests/tmp/spawn_me.gd", FileAccess.WRITE)
 	fgd.store_string(Model.build_source(code8, b8))
@@ -501,7 +501,7 @@ func _init() -> void:
 	packed.pack(root_node)
 	ResourceSaver.save(packed, "res://tests/tmp/spawn_me.tscn")
 	root_node.free()
-	var b9 := Model.new_blueprint("Node2D", "")
+	var b9 := Model.new_schematic("Node2D", "")
 	var g9: Dictionary = b9.graphs[0]
 	g9.nodes.clear()
 	var e9 := Model.add_node(g9, "custom_event", Vector2(), {"name": "go", "params": []})
@@ -524,7 +524,7 @@ func _init() -> void:
 		await process_frame
 
 	# --- 10: exec wire looping back (plain and through a Delay), values read from another event, macro locals
-	var b10 := Model.new_blueprint("Node", "")
+	var b10 := Model.new_schematic("Node", "")
 	b10.variables.append({"name": "count", "type": "int", "default": "", "export": false})
 	b10.variables.append({"name": "ticks", "type": "int", "default": "", "export": false})
 	b10.variables.append({"name": "log", "type": "Array", "default": "", "export": false})
@@ -621,8 +621,8 @@ func _init() -> void:
 		o10.queue_free()
 		await process_frame
 
-	# --- 11: blueprint enums (typed variable, literals, switch) and split struct pins (input and output)
-	var b11 := Model.new_blueprint("Node2D", "")
+	# --- 11: schematic enums (typed variable, literals, switch) and split struct pins (input and output)
+	var b11 := Model.new_schematic("Node2D", "")
 	b11["enums"] = [{"name": "Mood", "values": ["Calm", "Angry", "Scared"]}]
 	b11.variables.append({"name": "mood", "type": "int", "enum": "Mood", "default": "1", "export": true})
 	b11.variables.append({"name": "log", "type": "Array", "default": "", "export": false})
@@ -668,7 +668,7 @@ func _init() -> void:
 		o11.free()
 
 	# --- 12: replicated custom events (run locally when offline), exec reroute, animation-tree nodes compile
-	var b12 := Model.new_blueprint("Node", "")
+	var b12 := Model.new_schematic("Node", "")
 	b12.variables.append({"name": "log", "type": "Array", "default": "", "export": false})
 	b12.variables.append({"name": "tree", "type": "AnimationTree", "default": "", "export": true})
 	var g12: Dictionary = b12.graphs[0]
@@ -716,8 +716,8 @@ func _init() -> void:
 	b12["trace"] = true
 	var traced_12 := Compiler.new().compile(b12)
 	b12["trace"] = false
-	print("trace on adds calls: ", traced_12.contains("__bp_trace(1, "), "  off: ", not code12.contains("__bp_trace"))
-	if not traced_12.contains("__bp_trace(1, ") or code12.contains("__bp_trace"):
+	print("trace on adds calls: ", traced_12.contains("__sc_trace(1, "), "  off: ", not code12.contains("__sc_trace"))
+	if not traced_12.contains("__sc_trace(1, ") or code12.contains("__sc_trace"):
 		print("  WRONG RESULT")
 		fails += 1
 	print("trace sends pin values: ", traced_12.contains(", {\""))
@@ -731,7 +731,7 @@ func _init() -> void:
 		fails += 1
 
 	# --- 13: timeline event track fires once when playback crosses its key, before Finished
-	var b13 := Model.new_blueprint("Node", "")
+	var b13 := Model.new_schematic("Node", "")
 	b13.variables.append({"name": "log", "type": "Array", "default": "", "export": false})
 	var g13: Dictionary = b13.graphs[0]
 	g13.nodes.clear()

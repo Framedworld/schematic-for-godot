@@ -1,12 +1,12 @@
 extends RefCounted
 ## Records the frames of the README's animation: the demo running with Show Flow and Values on.
-## Run: godot --path . --editor -- --bp-selftest=res://tests/shot_readme_gif.gd
+## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_readme_gif.gd
 ## then: python tools/make_gif.py   (joins tests/out/gif_frames/*.png into docs/images/live_flow.gif)
 
-const DEMO := "res://demo/BP_Demo.gd"
+const DEMO := "res://demo/SC_Demo.gd"
 const FRAMES_DIR := "res://tests/out/gif_frames/"
 const COUNT := 30   # six passes of a dot from one place to the next, five frames each, so it loops cleanly
-const FRAME_SEC := 46.0 / 150.0 / 5.0   # dot spacing / dot speed (see bp_flow_overlay.gd) / frames per pass
+const FRAME_SEC := 46.0 / 150.0 / 5.0   # dot spacing / dot speed (see sc_flow_overlay.gd) / frames per pass
 const WIDTH := 1200
 
 var plugin: EditorPlugin
@@ -42,8 +42,8 @@ func run(p: EditorPlugin) -> void:
 		cleanup()
 		tree.quit())
 	await wait(2.5)
-	EditorInterface.set_main_screen_editor("Blueprint")
-	ed.open_blueprint(DEMO)
+	EditorInterface.set_main_screen_editor("Schematic")
+	ed.open_schematic(DEMO)
 	ed.doc.graph_id = int(ed.doc.bp.graphs[0].id)
 	ed._refresh_graph_tabs()
 	ed._refresh_graph()

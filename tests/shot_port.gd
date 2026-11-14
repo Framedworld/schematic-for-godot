@@ -1,5 +1,5 @@
 extends RefCounted
-## Editor self-test for the converted platformer: every converted script opens as a Blueprint with no errors.
+## Editor self-test for the converted platformer: every converted script opens as a Schematic with no errors.
 var tree: SceneTree
 var ed
 
@@ -22,9 +22,9 @@ func run(p: EditorPlugin) -> void:
 		note("watchdog quit")
 		tree.quit())
 	await tree.create_timer(3.0).timeout
-	EditorInterface.set_main_screen_editor("Blueprint")
+	EditorInterface.set_main_screen_editor("Schematic")
 	for path in ["res://objects/cloud.gd", "res://objects/coin.gd", "res://objects/platform_falling.gd", "res://scripts/audio.gd", "res://scripts/hud.gd", "res://scripts/view.gd", "res://scripts/player.gd"]:
-		var ok: bool = ed.open_blueprint(path)
+		var ok: bool = ed.open_schematic(path)
 		await tree.create_timer(0.5).timeout
 		var nodes := 0
 		var code_nodes := 0
@@ -48,7 +48,7 @@ func run(p: EditorPlugin) -> void:
 	ed._view.zoom = 0.8
 	ed._view.scroll_offset = Vector2(0, 0)
 	await shot("player_jump")
-	ed.open_blueprint("res://objects/coin.gd")
+	ed.open_schematic("res://objects/coin.gd")
 	ed.open_member_graph("_on_body_entered")
 	await tree.create_timer(0.3).timeout
 	ed._view.zoom = 0.7

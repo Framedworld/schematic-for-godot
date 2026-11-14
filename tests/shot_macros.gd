@@ -1,6 +1,6 @@
 extends RefCounted
 ## Editor self-test for macros and timelines.
-## Run: godot --path . --editor -- --bp-selftest=res://tests/shot_macros.gd
+## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_macros.gd
 
 var plugin: EditorPlugin
 
@@ -31,8 +31,8 @@ func run(p: EditorPlugin) -> void:
 		tree.quit())
 	await tree.create_timer(2.5).timeout
 	var ed = p.editor
-	note("open: %s" % ed.open_blueprint("res://demo/BP_Demo.gd"))
-	EditorInterface.set_main_screen_editor("Blueprint")
+	note("open: %s" % ed.open_schematic("res://demo/SC_Demo.gd"))
+	EditorInterface.set_main_screen_editor("Schematic")
 	await tree.create_timer(0.8).timeout
 	# select the demo's timeline node -> details shows the track editor
 	var g: Dictionary = ed.cur_graph()
@@ -52,7 +52,7 @@ func run(p: EditorPlugin) -> void:
 	ed._refresh_details()
 	await tree.create_timer(0.3).timeout
 	note("compile with 2 tracks: %s %s" % [ed.compile_doc(ed.doc, false), ed.doc.errors])
-	note("code samples Tint: %s" % ed.doc.preview.contains("_Tint = __bp_sample("))
+	note("code samples Tint: %s" % ed.doc.preview.contains("_Tint = __sc_sample("))
 	await shot("06_timeline_two_tracks")
 	# macro graph
 	ed.open_member_graph("LogTwice")

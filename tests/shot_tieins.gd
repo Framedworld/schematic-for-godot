@@ -1,6 +1,6 @@
 extends RefCounted
 ## Editor self-test for Promote to Variable and the Godot tie-in nodes in the action menu.
-## Run: godot --path . --editor -- --bp-selftest=res://tests/shot_tieins.gd
+## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_tieins.gd
 
 var plugin: EditorPlugin
 
@@ -31,8 +31,8 @@ func run(p: EditorPlugin) -> void:
 		tree.quit())
 	await tree.create_timer(2.5).timeout
 	var ed = p.editor
-	note("open: %s" % ed.open_blueprint("res://demo/BP_Demo.gd"))
-	EditorInterface.set_main_screen_editor("Blueprint")
+	note("open: %s" % ed.open_schematic("res://demo/SC_Demo.gd"))
+	EditorInterface.set_main_screen_editor("Schematic")
 	await tree.create_timer(0.8).timeout
 	ed._view._open_palette(Vector2(500, 300), {})
 	await tree.create_timer(0.3).timeout

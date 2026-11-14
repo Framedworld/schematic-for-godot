@@ -1,7 +1,7 @@
 extends RefCounted
-## Editor self-test: opens the demo blueprint, exercises the UI and saves screenshots.
-## Run: godot --path . --editor -- --bp-selftest=res://tests/shot.gd
-const Model := preload("res://addons/blueprints/core/bp_model.gd")
+## Editor self-test: opens the demo schematic, exercises the UI and saves screenshots.
+## Run: godot --path . --editor -- --sc-selftest=res://tests/shot.gd
+const Model := preload("res://addons/schematic/core/sc_model.gd")
 
 var plugin: EditorPlugin
 
@@ -32,8 +32,8 @@ func run(p: EditorPlugin) -> void:
 		tree.quit())
 	await tree.create_timer(2.5).timeout
 	var ed = p.editor
-	note("open: %s" % ed.open_blueprint("res://demo/BP_Demo.gd"))
-	EditorInterface.set_main_screen_editor("Blueprint")
+	note("open: %s" % ed.open_schematic("res://demo/SC_Demo.gd"))
+	EditorInterface.set_main_screen_editor("Schematic")
 	await tree.create_timer(1.0).timeout
 	await shot("01_event_graph")
 	# palette
@@ -77,12 +77,12 @@ func run(p: EditorPlugin) -> void:
 	note("after 3 undos: nodes=%d" % ed.cur_graph().nodes.size())
 	# opening through the editor's normal resource path (double-click in FileSystem)
 	EditorInterface.set_main_screen_editor("3D")
-	EditorInterface.edit_resource(load("res://demo/BP_Demo.gd"))
+	EditorInterface.edit_resource(load("res://demo/SC_Demo.gd"))
 	await tree.create_timer(0.6).timeout
-	note("edit_resource -> blueprint screen visible: %s" % ed.is_visible_in_tree())
+	note("edit_resource -> schematic screen visible: %s" % ed.is_visible_in_tree())
 	EditorInterface.open_scene_from_path("res://demo/demo.tscn")
 	await tree.create_timer(0.8).timeout
-	EditorInterface.set_main_screen_editor("Blueprint")
+	EditorInterface.set_main_screen_editor("Schematic")
 	await tree.create_timer(0.3).timeout
 	note("host found: %s, component rows: %d" % [ed.find_host(), ed._components.get_root().get_child_count()])
 	await shot("02_with_scene")

@@ -1,7 +1,7 @@
 extends RefCounted
 ## Editor self-test for the look of the graph: saves full-resolution crops of the canvas, the action menu and
 ## the side panels so the styling can be compared with Unreal's.
-## Run: godot --path . --editor -- --bp-selftest=res://tests/shot_look.gd
+## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_look.gd
 
 var plugin: EditorPlugin
 var tree: SceneTree
@@ -36,11 +36,11 @@ func run(p: EditorPlugin) -> void:
 		tree.quit())
 	await tree.create_timer(2.5).timeout
 	ed = p.editor
-	ed.open_blueprint("res://demo/BP_Demo.gd")
-	EditorInterface.set_main_screen_editor("Blueprint")
+	ed.open_schematic("res://demo/SC_Demo.gd")
+	EditorInterface.set_main_screen_editor("Schematic")
 	EditorInterface.open_scene_from_path("res://demo/demo.tscn")
 	await tree.create_timer(1.0).timeout
-	EditorInterface.set_main_screen_editor("Blueprint")
+	EditorInterface.set_main_screen_editor("Schematic")
 	var view: GraphEdit = ed._view
 	await crop("look_1_graph", view)
 	# live values, as the running game would report them
@@ -171,7 +171,7 @@ func run(p: EditorPlugin) -> void:
 		if mit.visible and typeof(mit.get_metadata(0)) == TYPE_DICTIONARY:
 			vis.append(mit.get_text(0))
 		mit = mit.get_next_in_tree()
-	note("%s  My Blueprint search 'spin' shows %s" % ["PASS" if vis == ["spin_speed"] else "FAIL", vis])
+	note("%s  My Schematic search 'spin' shows %s" % ["PASS" if vis == ["spin_speed"] else "FAIL", vis])
 	ed._members_search.text = ""
 	ed._members_search.text_changed.emit("")
 	ed._select({"kind": "var", "name": "spin_speed"})
@@ -252,7 +252,7 @@ func run(p: EditorPlugin) -> void:
 	await tree.create_timer(0.3).timeout
 	var after: bool = ed.doc.bp.variables.filter(func(v): return v.name == "time")[0].get("export", false)
 	note("%s  eye toggles Instance Editable (%s -> %s)" % ["PASS" if before != after else "FAIL", before, after])
-	note("%s  blueprint still compiles: %s" % ["PASS" if ed.compile_doc(ed.doc, false) else "FAIL", ed.doc.errors])
+	note("%s  schematic still compiles: %s" % ["PASS" if ed.compile_doc(ed.doc, false) else "FAIL", ed.doc.errors])
 	var ur: UndoRedo = plugin.get_undo_redo().get_history_undo_redo(EditorUndoRedoManager.GLOBAL_HISTORY)
 	for i in 18:
 		ur.undo()

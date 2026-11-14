@@ -1,6 +1,6 @@
 extends RefCounted
 ## Editor self-test for node breakpoints: sets one, runs the demo scene, expects the game to stop on that node.
-## Run: godot --path . --editor -- --bp-selftest=res://tests/shot_debug.gd
+## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_debug.gd
 
 var plugin: EditorPlugin
 
@@ -21,7 +21,7 @@ func shot(name: String) -> void:
 
 
 func cleanup(ed) -> void:
-	EditorInterface.get_editor_settings().set_project_metadata("blueprints", "breakpoints", {})
+	EditorInterface.get_editor_settings().set_project_metadata("schematics", "breakpoints", {})
 	if EditorInterface.is_playing_scene():
 		EditorInterface.stop_playing_scene()
 	if not ed.doc.is_empty():
@@ -39,19 +39,19 @@ func run(p: EditorPlugin) -> void:
 		cleanup(ed)
 		tree.quit())
 	await tree.create_timer(2.5).timeout
-	EditorInterface.get_editor_settings().set_project_metadata("blueprints", "breakpoints", {})
-	note("open: %s" % ed.open_blueprint("res://demo/BP_Demo.gd"))
-	EditorInterface.set_main_screen_editor("Blueprint")
+	EditorInterface.get_editor_settings().set_project_metadata("schematics", "breakpoints", {})
+	note("open: %s" % ed.open_schematic("res://demo/SC_Demo.gd"))
+	EditorInterface.set_main_screen_editor("Schematic")
 	await tree.create_timer(0.8).timeout
 	# node 3 is the first Print String after Event Ready; node 8 is a pure variable getter
 	ed.toggle_breakpoints([8])
-	note("pure node rejected: %s" % ed._breaks("res://demo/BP_Demo.gd").is_empty())
+	note("pure node rejected: %s" % ed._breaks("res://demo/SC_Demo.gd").is_empty())
 	ed.toggle_breakpoints([3])
 	var lines: PackedStringArray = p._get_breakpoints()
 	note("breakpoints: %s" % [lines])
 	if lines.size() == 1:
 		var ln := int(lines[0].get_slice(":", lines[0].get_slice_count(":") - 1))
-		var text := FileAccess.get_file_as_string("res://demo/BP_Demo.gd").split("\n")[ln - 1]
+		var text := FileAccess.get_file_as_string("res://demo/SC_Demo.gd").split("\n")[ln - 1]
 		note("that line is: %s" % text.strip_edges())
 	await shot("08_breakpoint")
 	EditorInterface.play_custom_scene("res://demo/demo.tscn")
@@ -61,7 +61,7 @@ func run(p: EditorPlugin) -> void:
 		waited += 0.25
 	note("paused at: %s after %.1fs" % [ed._paused, waited])
 	await tree.create_timer(0.5).timeout
-	note("blueprint screen visible while paused: %s" % ed.is_visible_in_tree())
+	note("schematic screen visible while paused: %s" % ed.is_visible_in_tree())
 	await shot("09_paused_on_node")
 	for s in p._debugger.get_sessions():
 		if s.is_active():
@@ -72,12 +72,12 @@ func run(p: EditorPlugin) -> void:
 	EditorInterface.stop_playing_scene()
 	await tree.create_timer(0.8).timeout
 	# Live execution flow: turn it on, run again without breakpoints, expect the game to report running nodes.
-	EditorInterface.get_editor_settings().set_project_metadata("blueprints", "breakpoints", {})
+	EditorInterface.get_editor_settings().set_project_metadata("schematics", "breakpoints", {})
 	ed.mutate("Toggle Execution Flow", func(): ed.doc.bp["trace"] = true)
 	ed.compile_doc(ed.doc, true)
 	ed.flow_hits = 0
 	ed.flow_edges = 0
-	EditorInterface.set_main_screen_editor("Blueprint")
+	EditorInterface.set_main_screen_editor("Schematic")
 	EditorInterface.play_custom_scene("res://demo/demo.tscn")
 	waited = 0.0
 	while ed.flow_hits == 0 and waited < 15.0:
@@ -102,18 +102,18 @@ func run(p: EditorPlugin) -> void:
 	await tree.create_timer(0.8).timeout
 	ed.mutate("Toggle Execution Flow", func(): ed.doc.bp["trace"] = false)
 	ed.compile_doc(ed.doc, true)
-	note("flow off again, file has no trace calls: %s" % (not FileAccess.get_file_as_string("res://demo/BP_Demo.gd").contains("__bp_trace(")))
-	var head := FileAccess.get_file_as_string("res://demo/BP_Demo.gd")
+	note("flow off again, file has no trace calls: %s" % (not FileAccess.get_file_as_string("res://demo/SC_Demo.gd").contains("__sc_trace(")))
+	var head := FileAccess.get_file_as_string("res://demo/SC_Demo.gd")
 	note("%s  nothing about the icon is written into the script" % ["PASS" if not head.contains("@icon") else "FAIL"])
-	EditorInterface.get_file_system_dock().navigate_to_path("res://demo/BP_Demo.gd")
+	EditorInterface.get_file_system_dock().navigate_to_path("res://demo/SC_Demo.gd")
 	await tree.create_timer(1.5).timeout
 	var sel: TreeItem = plugin._fs_tree.get_selected()
-	note("%s  the FileSystem dock shows the Blueprint icon on BP_Demo.gd (%d rows marked)" % ["PASS" if sel != null and String(sel.get_metadata(0)) == "res://demo/BP_Demo.gd" and sel.get_icon(0) == plugin.BP_ICON else "FAIL", plugin.fs_icons_set])
-	var plain: TreeItem = sel.get_next() if sel else null
-	note("%s  other files keep their own icon (%s)" % ["PASS" if plain != null and plain.get_icon(0) != plugin.BP_ICON else "FAIL", plain.get_text(0) if plain else "-"])
-	await shot("20_blueprint_icon")
+	note("%s  the FileSystem dock shows the Schematic icon on SC_Demo.gd (%d rows marked)" % ["PASS" if sel != null and String(sel.get_metadata(0)) == "res://demo/SC_Demo.gd" and sel.get_icon(0) == plugin.SC_ICON else "FAIL", plugin.fs_icons_set])
+	var plain: TreeItem = (sel.get_next() if sel.get_next() else sel.get_prev()) if sel else null
+	note("%s  other files keep their own icon (%s)" % ["PASS" if plain != null and plain.get_icon(0) != plugin.SC_ICON else "FAIL", plain.get_text(0) if plain else "-"])
+	await shot("20_schematic_icon")
 	var after: TreeItem = plugin._fs_tree.get_selected()
-	note("%s  the icon is still there after the dock's previews arrived" % ["PASS" if after != null and after.get_icon(0) == plugin.BP_ICON else "FAIL"])
+	note("%s  the icon is still there after the dock's previews arrived" % ["PASS" if after != null and after.get_icon(0) == plugin.SC_ICON else "FAIL"])
 	cleanup(ed)
 	note("done")
 	tree.quit()

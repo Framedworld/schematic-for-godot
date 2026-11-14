@@ -1,12 +1,12 @@
 extends SceneTree
-## GDScript -> Blueprint importer, tested by difference: every sample script is run as written and again
+## GDScript -> Schematic importer, tested by difference: every sample script is run as written and again
 ## after conversion, and the two must end in the same state.
 ## Run: godot --headless --path . --script res://tests/test_import.gd
-const Model := preload("res://addons/blueprints/core/bp_model.gd")
-const Compiler := preload("res://addons/blueprints/core/bp_compiler.gd")
-const R := preload("res://addons/blueprints/core/bp_registry.gd")
-const T := preload("res://addons/blueprints/core/bp_types.gd")
-const Importer := preload("res://addons/blueprints/core/bp_importer.gd")
+const Model := preload("res://addons/schematic/core/sc_model.gd")
+const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
+const R := preload("res://addons/schematic/core/sc_registry.gd")
+const T := preload("res://addons/schematic/core/sc_types.gd")
+const Importer := preload("res://addons/schematic/core/sc_importer.gd")
 
 var fails := 0
 
@@ -499,7 +499,7 @@ func _init() -> void:
 		if converted == null:
 			print(code)
 			continue
-		# the blueprint survives a save and load
+		# the schematic survives a save and load
 		var again := Model.parse_source(Model.build_source(code, bp))
 		var c2 := Compiler.new()
 		check("%s: same code after save and load" % name, c2.compile(again) == code)

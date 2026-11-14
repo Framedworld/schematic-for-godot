@@ -1,4 +1,4 @@
-# Blueprints for Godot Licence
+# Schematic Licence
 
 Version 1.0
 
@@ -6,12 +6,12 @@ Copyright (c) 2026 Matthew Kean. All rights reserved except as granted below.
 
 ## 1. What these words mean
 
-- **The Plugin** is the software in the `addons/blueprints` folder of this repository, in source form, together
+- **The Plugin** is the software in the `addons/schematic` folder of this repository, in source form, together
   with the demo project, tests, tools and documentation distributed with it.
 - **You** are the person or organisation using the Plugin.
 - **Output** is anything the Plugin writes for you: the GDScript it generates, the graph data stored in those
   script files, Data Table files, and any other file it creates or changes in your project.
-- **Runtime Files** are the files in `addons/blueprints/runtime`.
+- **Runtime Files** are the files in `addons/schematic/runtime`.
 - **Your Product** is a game or application you make with the help of the Plugin, whose main purpose is not
   to give other people the Plugin or a tool that does what the Plugin does.
 

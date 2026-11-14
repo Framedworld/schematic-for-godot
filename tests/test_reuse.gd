@@ -1,12 +1,12 @@
 extends SceneTree
-## Reuse (core/bp_reuse.gd): repeated groups of nodes become macros, and the generated script stays the same.
+## Reuse (core/sc_reuse.gd): repeated groups of nodes become macros, and the generated script stays the same.
 ## Run: godot --headless --path . --script res://tests/test_reuse.gd
-const Model := preload("res://addons/blueprints/core/bp_model.gd")
-const Compiler := preload("res://addons/blueprints/core/bp_compiler.gd")
-const R := preload("res://addons/blueprints/core/bp_registry.gd")
-const T := preload("res://addons/blueprints/core/bp_types.gd")
-const Importer := preload("res://addons/blueprints/core/bp_importer.gd")
-const Reuse := preload("res://addons/blueprints/core/bp_reuse.gd")
+const Model := preload("res://addons/schematic/core/sc_model.gd")
+const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
+const R := preload("res://addons/schematic/core/sc_registry.gd")
+const T := preload("res://addons/schematic/core/sc_types.gd")
+const Importer := preload("res://addons/schematic/core/sc_importer.gd")
+const Reuse := preload("res://addons/schematic/core/sc_reuse.gd")
 
 const DIR := "res://tests/tmp/reuse"
 const LIB := "res://tests/tmp/reuse/shared_macros.gd"
@@ -252,7 +252,7 @@ func _init() -> void:
 	var d2 := "func f():\n\tfor item_6 in list:\n\t\tprint(item_6)\n\n\nfunc g():\n\tfor item_9 in list:\n\t\tprint(item_9)\n"
 	check("each function is compared by itself", Reuse.same_code(d, d2))
 
-	# ---------------------------------------------------------------- inside one Blueprint
+	# ---------------------------------------------------------------- inside one Schematic
 	var bp := converted(ONE)
 	var before := compiled(bp)
 	var nodes_before := count(bp)
@@ -294,7 +294,7 @@ func _init() -> void:
 	var rep2 := r2.run([{"path": DIR + "/one.gd", "bp": again}], "")
 	check("one file: a second run changes nothing", rep2.changed.is_empty() and compiled(again) == after and count(again) == count(bp), "; ".join(r2.notes))
 
-	# ---------------------------------------------------------------- between Blueprints
+	# ---------------------------------------------------------------- between Schematics
 	var fa := {"path": DIR + "/two_a.gd", "bp": converted(TWO_A)}
 	var fb := {"path": DIR + "/two_b.gd", "bp": converted(TWO_B)}
 	var code_a := compiled(fa.bp)
@@ -315,7 +315,7 @@ func _init() -> void:
 		for n in g.nodes:
 			if n.kind in Reuse.OWN:
 				own = false
-	check("two files: nothing in the library belongs to one Blueprint", own)
+	check("two files: nothing in the library belongs to one Schematic", own)
 	var state_a: String = await state_of(compiled(fa.bp))
 	check("two files: it runs to the same state", state_a == await state_of(code_a) and state_a.contains("(5.0, 7.0, 9.0)"), state_a)
 
@@ -342,7 +342,7 @@ func _init() -> void:
 			first_macro = String(g.name)
 	r6.run([{"path": DIR + "/two_a.gd", "bp": converted(TWO_A)}, {"path": DIR + "/two_b.gd", "bp": converted(TWO_B)}], LIB, {first_macro: true})
 	var lib4 := Model.load_file(LIB)
-	check("converted again: a macro another Blueprint uses stays", not Model.graph_named(lib4, first_macro).is_empty() and lib4.graphs.size() == lib3.graphs.size() + 1, str(lib4.graphs.size()))
+	check("converted again: a macro another Schematic uses stays", not Model.graph_named(lib4, first_macro).is_empty() and lib4.graphs.size() == lib3.graphs.size() + 1, str(lib4.graphs.size()))
 
 	# a file that reuse did not make is never written over
 	var mine := "extends Node\n# my own script\n"

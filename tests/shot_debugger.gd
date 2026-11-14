@@ -1,10 +1,10 @@
 extends RefCounted
-## Editor self-test for the Blueprint debugger: call stack, values on pins while paused, watches and stepping
+## Editor self-test for the Schematic debugger: call stack, values on pins while paused, watches and stepping
 ## one node at a time.
-## Run: godot --path . --editor -- --bp-selftest=res://tests/shot_debugger.gd
+## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_debugger.gd
 
 const LOG := "res://tests/out/selftest_debugger.log"
-const BP := "res://demo/BP_Demo.gd"
+const BP := "res://demo/SC_Demo.gd"
 
 var plugin: EditorPlugin
 var ed
@@ -34,8 +34,8 @@ func shot(name: String) -> void:
 
 
 func cleanup() -> void:
-	EditorInterface.get_editor_settings().set_project_metadata("blueprints", "breakpoints", {})
-	EditorInterface.get_editor_settings().set_project_metadata("blueprints", "watches", [])
+	EditorInterface.get_editor_settings().set_project_metadata("schematics", "breakpoints", {})
+	EditorInterface.get_editor_settings().set_project_metadata("schematics", "watches", [])
 	if EditorInterface.is_playing_scene():
 		EditorInterface.stop_playing_scene()
 	if not ed.doc.is_empty():
@@ -96,10 +96,10 @@ func run(p: EditorPlugin) -> void:
 		cleanup()
 		tree.quit())
 	await tree.create_timer(2.5).timeout
-	EditorInterface.get_editor_settings().set_project_metadata("blueprints", "breakpoints", {})
+	EditorInterface.get_editor_settings().set_project_metadata("schematics", "breakpoints", {})
 	panel.watches.clear()
-	note("open: %s" % ed.open_blueprint(BP))
-	EditorInterface.set_main_screen_editor("Blueprint")
+	note("open: %s" % ed.open_schematic(BP))
+	EditorInterface.set_main_screen_editor("Schematic")
 	await tree.create_timer(0.8).timeout
 
 	var rotate_line := line_of("rotate_y((deg_to_rad(spin_speed) * delta))")
@@ -118,7 +118,7 @@ func run(p: EditorPlugin) -> void:
 
 	# --- stopped at the breakpoint
 	check(await settle(), "the game stopped and the probe answered (%s)" % top())
-	check(top() == "BP_Demo.gd:%d _process" % rotate_line, "top frame is the rotate node's line in _process")
+	check(top() == "SC_Demo.gd:%d _process" % rotate_line, "top frame is the rotate node's line in _process")
 	check(ed._paused.size() == 3 and int(ed._paused[2]) == rotate_id, "the graph marks that node as paused: %s" % [ed._paused])
 	check(panel.visible and ed._step_tools[1].visible, "the debug panel and the step buttons are showing")
 	note("locals: %s" % [panel._locals])
@@ -146,7 +146,7 @@ func run(p: EditorPlugin) -> void:
 	var time_line := line_of("time = (time + delta)")
 	panel.step("next")
 	check(await settle(), "step over stopped again (%s)" % top())
-	check(top() == "BP_Demo.gd:%d _process" % time_line, "step over went to the next node (line %d)" % time_line)
+	check(top() == "SC_Demo.gd:%d _process" % time_line, "step over went to the next node (line %d)" % time_line)
 	check(int(ed._paused[2]) == int(key_at(time_line).get_slice(":", 1)), "and the graph shows that node as paused")
 	check(ed._view.flow_overlay.count() == 1, "the wire the step followed is animated: %d wire" % ed._view.flow_overlay.count())
 	await tree.create_timer(0.15).timeout
@@ -154,7 +154,7 @@ func run(p: EditorPlugin) -> void:
 	var wave_line := line_of("position = Vector3(0.0, wave(time), 0.0)")
 	panel.step("next")
 	check(await settle(), "step over stopped again (%s)" % top())
-	check(top() == "BP_Demo.gd:%d _process" % wave_line, "second step over went to the node after it (line %d)" % wave_line)
+	check(top() == "SC_Demo.gd:%d _process" % wave_line, "second step over went to the node after it (line %d)" % wave_line)
 
 	# --- step into the function that node calls
 	panel.step("step")
@@ -190,7 +190,7 @@ func run(p: EditorPlugin) -> void:
 	check(String(panel.frames[0][2]) != "wave", "step out left the wave function: %s" % top())
 
 	# --- a node made of several generated lines is one step
-	EditorInterface.get_editor_settings().set_project_metadata("blueprints", "breakpoints", {})
+	EditorInterface.get_editor_settings().set_project_metadata("schematics", "breakpoints", {})
 	note("line map around _ready: %s" % [_map_dump(line_of("func _ready() -> void:"), 14)])
 
 	# --- resume
@@ -207,7 +207,7 @@ func run(p: EditorPlugin) -> void:
 	await tree.create_timer(1.0).timeout
 
 	# --- second run: a node made of several generated lines is one step
-	var hello_line := line_of("print(\"Hello from a Blueprint!\")")
+	var hello_line := line_of("print(\"Hello from a Schematic!\")")
 	var after_line := line_of("print(\"Sequence does not wait for the Delay\")")
 	ed.doc.graph_id = int(key_at(hello_line).get_slice(":", 0))
 	ed._refresh_graph()

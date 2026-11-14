@@ -1,5 +1,5 @@
 extends SceneTree
-## Plays the blueprint-only sample game headless and checks it behaves as a game.
+## Plays the schematic-only sample game headless and checks it behaves as a game.
 ## Run: godot --headless --path . --script res://tests/test_game.gd
 
 var fails := 0
@@ -23,13 +23,13 @@ func _init() -> void:
 	var player: Node = game.get_node("Player")
 	var hud: Label = game.get_node("HUD")
 	var coins := game.get_children().filter(func(c): return c is Area2D)
-	check("game blueprint spawned three coins", coins.size() == 3, str(coins.size()))
+	check("game schematic spawned three coins", coins.size() == 3, str(coins.size()))
 	var values := coins.map(func(c): return c.value)
 	var xs := coins.map(func(c): return c.position.x)
 	check("expose-on-spawn values arrived", str(values) == "[10, 20, 30]", str(values))
 	check("coins placed by the loop", str(xs) == "[200.0, 280.0, 360.0]", str(xs))
 	check("player joined its group in Ready", player.is_in_group("player"))
-	# Hold "right": the player blueprint reads the input vector and moves.
+	# Hold "right": the player schematic reads the input vector and moves.
 	var x0: float = player.position.x
 	Input.action_press("ui_right")
 	await physics(20)

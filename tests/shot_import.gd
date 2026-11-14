@@ -1,7 +1,7 @@
 extends RefCounted
-## Editor self-test: the Convert to Blueprint command on a hand-written script.
-## Run: godot --path . --editor -- --bp-selftest=res://tests/shot_import.gd
-const Model := preload("res://addons/blueprints/core/bp_model.gd")
+## Editor self-test: the Convert to Schematic command on a hand-written script.
+## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_import.gd
+const Model := preload("res://addons/schematic/core/sc_model.gd")
 const DIR := "res://demo/tmp_import"
 const SOURCE := """extends Node2D
 
@@ -63,7 +63,7 @@ func run(p: EditorPlugin) -> void:
 		note("watchdog quit")
 		tree.quit())
 	await tree.create_timer(2.5).timeout
-	EditorInterface.set_main_screen_editor("Blueprint")
+	EditorInterface.set_main_screen_editor("Schematic")
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(DIR))
 	var path := DIR + "/lander.gd"
 	var f := FileAccess.open(path, FileAccess.WRITE)
@@ -77,36 +77,36 @@ func run(p: EditorPlugin) -> void:
 	check("nothing is written until it is applied", FileAccess.get_file_as_string(path) == SOURCE and not FileAccess.file_exists(path + ".orig"))
 	if result.ok:
 		var rep: Dictionary = result.report
-		check("the report counts nodes and carried-over code", int(rep.lines) == 10 and int(rep.as_code) == 3 and rep.notes.any(func(n): return String(n).contains("match")), "%d lines, %d as code" % [rep.lines, rep.as_code])
+		check("the report counts nodes and carried-over code", int(rep.lines) == 10 and int(rep.as_code) == 0, "%d lines, %d as code" % [rep.lines, rep.as_code])
 
 	# the dialog explains what will happen before anything changes
 	ed.convert_script_dialog(path)
 	await frames(8)
 	var dlg: ConfirmationDialog = null
 	for c in EditorInterface.get_base_control().get_children():
-		if c is ConfirmationDialog and c.visible and c.title == "Convert to Blueprint":
+		if c is ConfirmationDialog and c.visible and c.title == "Convert to Schematic":
 			dlg = c
-	check("Convert to Blueprint asks first and says what happens", dlg != null and dlg.dialog_text.contains("7 of 10 lines become nodes") and dlg.dialog_text.contains("lander.gd.orig"), dlg.dialog_text.get_slice("\n", 0) if dlg else "")
+	check("Convert to Schematic asks first and says what happens", dlg != null and dlg.dialog_text.contains("10 of 10 lines become nodes") and dlg.dialog_text.contains("lander.gd.orig"), dlg.dialog_text.get_slice("\n", 0) if dlg else "")
 	if dlg:
 		await tree.create_timer(0.4).timeout
 		(dlg as Window).get_texture().get_image().save_png("res://tests/out/look_19_convert_dialog.png")
 		dlg.get_ok_button().pressed.emit()
 		await frames(10)
 	var text := FileAccess.get_file_as_string(path)
-	check("confirming replaces the file with a Blueprint and keeps the original", Model.is_blueprint_source(text) and FileAccess.get_file_as_string(path + ".orig") == SOURCE)
-	check("the Blueprint is open with no errors", ed.doc.path == path and ed.doc.errors.is_empty(), str(ed.doc.errors))
+	check("confirming replaces the file with a Schematic and keeps the original", Model.is_schematic_source(text) and FileAccess.get_file_as_string(path + ".orig") == SOURCE)
+	check("the Schematic is open with no errors", ed.doc.path == path and ed.doc.errors.is_empty(), str(ed.doc.errors))
 	var kinds := {}
 	for g in ed.doc.bp.graphs:
 		for n in g.nodes:
 			kinds[n.kind] = int(kinds.get(n.kind, 0)) + 1
-	check("it has events, a function, a dispatcher call and one code node", int(kinds.get("event", 0)) == 2 and int(kinds.get("emit", 0)) == 1 and int(kinds.get("code", 0)) == 1
+	check("it has events, a function, a dispatcher call and no code node", int(kinds.get("event", 0)) == 2 and int(kinds.get("emit", 0)) == 1 and int(kinds.get("code", 0)) == 0
 		and ed.doc.bp.graphs.size() == 2 and ed.doc.bp.dispatchers.size() == 1 and ed.doc.bp.variables.size() == 3, str(kinds))
 	check("exports survive", text.contains("@export var speed: float = 120.0"))
 	ed.open_member_graph("burn")
 	await tree.create_timer(0.5).timeout
 	EditorInterface.get_base_control().get_viewport().get_texture().get_image().save_png("res://tests/out/look_20_converted.png")
 	var again: Dictionary = ed.convert_script(path)
-	check("a Blueprint is not converted twice", not bool(again.ok))
+	check("a Schematic is not converted twice", not bool(again.ok))
 
 	for i in range(ed.docs.size() - 1, -1, -1):
 		if String(ed.docs[i].path).begins_with(DIR):

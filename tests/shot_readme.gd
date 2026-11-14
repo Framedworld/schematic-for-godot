@@ -1,13 +1,13 @@
 extends RefCounted
 ## Takes the pictures the README shows (docs/images). Every picture is the real editor: nothing is drawn in.
-## Run: godot --path . --editor -- --bp-selftest=res://tests/shot_readme.gd
+## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_readme.gd
 
-const Model := preload("res://addons/blueprints/core/bp_model.gd")
-const R := preload("res://addons/blueprints/core/bp_registry.gd")
-const Starters := preload("res://addons/blueprints/core/bp_starters.gd")
+const Model := preload("res://addons/schematic/core/sc_model.gd")
+const R := preload("res://addons/schematic/core/sc_registry.gd")
+const Starters := preload("res://addons/schematic/core/sc_starters.gd")
 const OUT := "res://docs/images/"
 const TMP := "res://demo/tmp_readme"
-const DEMO := "res://demo/BP_Demo.gd"
+const DEMO := "res://demo/SC_Demo.gd"
 const MAX_WIDTH := 1800
 
 const PATROL := """extends CharacterBody2D
@@ -62,7 +62,7 @@ func save(img: Image, name: String) -> void:
 	note("saved %s %s" % [name, img.get_size()])
 
 
-## The part of the editor a picture shows: "full" (the whole Blueprint editor), "work" (graph and the panel
+## The part of the editor a picture shows: "full" (the whole Schematic editor), "work" (graph and the panel
 ## on its right) or "graph" (the graph with the panels under it).
 func area(part: String) -> Rect2:
 	var full: Rect2 = plugin._screen.get_global_rect()
@@ -73,7 +73,7 @@ func area(part: String) -> Rect2:
 	return full
 
 
-## The Blueprint editor as it is on screen.
+## The Schematic editor as it is on screen.
 func shot(name: String, of: Control = null, part := "full") -> void:
 	var img: Image = await grab()
 	var r := Rect2(of.get_global_rect()) if of != null else area(part)
@@ -142,7 +142,7 @@ func node_at_line(text: String) -> int:
 
 
 func open_graph(path: String, graph := "") -> void:
-	ed.open_blueprint(path)
+	ed.open_schematic(path)
 	if graph != "":
 		ed.open_member_graph(graph)
 	else:
@@ -162,8 +162,8 @@ func wide_code(on: bool) -> void:
 
 
 func cleanup() -> void:
-	EditorInterface.get_editor_settings().set_project_metadata("blueprints", "breakpoints", {})
-	EditorInterface.get_editor_settings().set_project_metadata("blueprints", "watches", [])
+	EditorInterface.get_editor_settings().set_project_metadata("schematics", "breakpoints", {})
+	EditorInterface.get_editor_settings().set_project_metadata("schematics", "watches", [])
 	if EditorInterface.is_playing_scene():
 		EditorInterface.stop_playing_scene()
 	for i in range(ed.docs.size() - 1, -1, -1):
@@ -194,13 +194,13 @@ func run(p: EditorPlugin) -> void:
 		cleanup()
 		tree.quit())
 	await wait(2.5)
-	EditorInterface.get_editor_settings().set_project_metadata("blueprints", "breakpoints", {})
+	EditorInterface.get_editor_settings().set_project_metadata("schematics", "breakpoints", {})
 	panel.watches.clear()
 
 	# ---- the FileSystem dock, before the docks are hidden
-	EditorInterface.set_main_screen_editor("Blueprint")
+	EditorInterface.set_main_screen_editor("Schematic")
 	await open_graph(DEMO)
-	EditorInterface.get_file_system_dock().navigate_to_path("res://demo/game/BP_Player.gd")
+	EditorInterface.get_file_system_dock().navigate_to_path("res://demo/game/SC_Player.gd")
 	await wait(1.5)
 	await shot("file_icon", EditorInterface.get_file_system_dock())
 
@@ -254,7 +254,7 @@ func run(p: EditorPlugin) -> void:
 	ed._select({"kind": "class"})
 
 	# ---- starters
-	ed.new_blueprint_dialog()
+	ed.new_schematic_dialog()
 	await wait(0.8)
 	for w in EditorInterface.get_base_control().find_children("*", "ItemList", true, false):
 		var win := (w as Control).get_window()
@@ -296,7 +296,7 @@ func run(p: EditorPlugin) -> void:
 	await settle()
 	await frame([], 1.0)
 	await shot("debug_call_stack", null, "graph")
-	EditorInterface.get_editor_settings().set_project_metadata("blueprints", "breakpoints", {})
+	EditorInterface.get_editor_settings().set_project_metadata("schematics", "breakpoints", {})
 	EditorInterface.stop_playing_scene()
 	await wait(1.0)
 	panel.watches.clear()
@@ -325,15 +325,15 @@ func run(p: EditorPlugin) -> void:
 	ed.compile_doc(ed.doc, true)
 
 	# ---- interfaces
-	var iface := Starters.build("interface", "BPI_Interactable")
+	var iface := Starters.build("interface", "SCI_Interactable")
 	var prompt := Model.new_graph(iface, "get_prompt", "function")
 	prompt.outputs = [["prompt", "String"]]
-	_write(TMP + "/BPI_Interactable.gd", iface)
-	var door := Model.new_blueprint("Node3D", "BP_Door")
+	_write(TMP + "/SCI_Interactable.gd", iface)
+	var door := Model.new_schematic("Node3D", "SC_Door")
 	door["description"] = "A door the player can open."
-	_write(TMP + "/BP_Door.gd", door)
-	var hero := Model.new_blueprint("CharacterBody3D", "BP_Hero")
-	_write(TMP + "/BP_Hero.gd", hero)
+	_write(TMP + "/SC_Door.gd", door)
+	var hero := Model.new_schematic("CharacterBody3D", "SC_Hero")
+	_write(TMP + "/SC_Hero.gd", hero)
 	R.invalidate_libraries()
 	EditorInterface.get_resource_filesystem().scan()
 	await wait(1.0)
@@ -341,19 +341,19 @@ func run(p: EditorPlugin) -> void:
 		await wait(0.2)
 	await wait(1.5)
 	EditorInterface.set_distraction_free_mode(true)
-	await open_graph(TMP + "/BP_Door.gd")
-	ed.implement_interface("BPI_Interactable")
+	await open_graph(TMP + "/SC_Door.gd")
+	ed.implement_interface("SCI_Interactable")
 	ed.compile_doc(ed.doc, true)
-	await open_graph(TMP + "/BP_Hero.gd")
+	await open_graph(TMP + "/SC_Hero.gd")
 	ed.mutate("Use the interface", func():
 		var g: Dictionary = ed.cur_graph()
 		var ev := Model.add_node(g, "input_action", Vector2(40, 420), {"action": "ui_accept"})
 		var looked := Model.add_node(g, "call", Vector2(40, 640), {"cls": "Node", "method": "get_parent"})
-		var has := Model.add_node(g, "iface_has", Vector2(400, 640), {"iface": "BPI_Interactable"})
+		var has := Model.add_node(g, "iface_has", Vector2(400, 640), {"iface": "SCI_Interactable"})
 		var br := Model.add_node(g, "branch", Vector2(640, 420), {})
-		var ask := Model.add_node(g, "iface_call", Vector2(930, 400), {"iface": "BPI_Interactable", "fn": "get_prompt"})
+		var ask := Model.add_node(g, "iface_call", Vector2(930, 400), {"iface": "SCI_Interactable", "fn": "get_prompt"})
 		var say := Model.add_node(g, "print", Vector2(1230, 400), {})
-		var go := Model.add_node(g, "iface_call", Vector2(1530, 400), {"iface": "BPI_Interactable", "fn": "interact"})
+		var go := Model.add_node(g, "iface_call", Vector2(1530, 400), {"iface": "SCI_Interactable", "fn": "interact"})
 		g.wires.append([int(ev.id), "pressed", int(br.id), "exec"])
 		g.wires.append([int(looked.id), "ret", int(has.id), "target"])
 		g.wires.append([int(has.id), "ret", int(br.id), "cond"])
@@ -376,7 +376,7 @@ func run(p: EditorPlugin) -> void:
 	await shot("interface_message", null, "work")
 	await wide_code(false)
 
-	# ---- a hand-written script turned into a Blueprint
+	# ---- a hand-written script turned into a Schematic
 	var patrol := TMP + "/patrol.gd"
 	var f := FileAccess.open(patrol, FileAccess.WRITE)
 	f.store_string(PATROL)
@@ -398,11 +398,11 @@ func run(p: EditorPlugin) -> void:
 		await shot("converted_script", null, "work")
 		await wide_code(false)
 
-	# ---- a game made of Blueprints, and a data table
-	await open_graph("res://demo/game/BP_Player.gd")
+	# ---- a game made of Schematics, and a data table
+	await open_graph("res://demo/game/SC_Player.gd")
 	ed._select({"kind": "class"})
 	await frame([], 1.0)
-	await shot("game_blueprint", null, "graph")
+	await shot("game_schematic", null, "graph")
 	EditorInterface.edit_resource(load("res://demo/data/DT_Items.tres"))
 	await wait(1.0)
 	EditorInterface.set_distraction_free_mode(true)
@@ -424,7 +424,7 @@ func run(p: EditorPlugin) -> void:
 
 
 func _write(path: String, bp: Dictionary) -> void:
-	var c: RefCounted = load("res://addons/blueprints/core/bp_compiler.gd").new()
+	var c: RefCounted = load("res://addons/schematic/core/sc_compiler.gd").new()
 	var code: String = c.compile(bp)
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	f.store_string(Model.build_source(code, bp))

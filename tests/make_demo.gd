@@ -1,8 +1,8 @@
 extends SceneTree
-## Generates the demo blueprint (res://demo/BP_Demo.gd).
+## Generates the demo schematic (res://demo/SC_Demo.gd).
 ## Run: godot --headless --path . --script res://tests/make_demo.gd
-const Model := preload("res://addons/blueprints/core/bp_model.gd")
-const Compiler := preload("res://addons/blueprints/core/bp_compiler.gd")
+const Model := preload("res://addons/schematic/core/sc_model.gd")
+const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
 
 
 func wire(g, a, ap, b, bp_) -> void:
@@ -10,8 +10,8 @@ func wire(g, a, ap, b, bp_) -> void:
 
 
 func _init() -> void:
-	var bp := Model.new_blueprint("Node3D", "BP_Demo")
-	bp.description = "Demo blueprint: spins and bounces its node. Press Space (jump) to change speed."
+	var bp := Model.new_schematic("Node3D", "SC_Demo")
+	bp.description = "Demo schematic: spins and bounces its node. Press Space (jump) to change speed."
 	bp.variables.append({"name": "spin_speed", "type": "float", "default": "90.0", "export": true, "category": "Motion", "tooltip": "Degrees per second."})
 	bp.variables.append({"name": "bounce_height", "type": "float", "default": "0.5", "export": true, "category": "Motion", "tooltip": "How high the node bounces."})
 	bp.variables.append({"name": "time", "type": "float", "default": "", "export": false, "category": "", "tooltip": ""})
@@ -24,7 +24,7 @@ func _init() -> void:
 
 	# Ready -> Print -> Sequence -> (Delay -> Print) / Print
 	var pr := Model.add_node(g, "print", Vector2(300, 60), {})
-	pr.d["text"] = "\"Hello from a Blueprint!\""
+	pr.d["text"] = "\"Hello from a Schematic!\""
 	var seq := Model.add_node(g, "sequence", Vector2(600, 60), {"n": 2})
 	var dl := Model.add_node(g, "delay", Vector2(820, 30), {})
 	dl.d["duration"] = "1.0"
@@ -142,7 +142,7 @@ func _init() -> void:
 	for e in c.errors:
 		print("ERROR: ", e)
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://demo"))
-	var f := FileAccess.open("res://demo/BP_Demo.gd", FileAccess.WRITE)
+	var f := FileAccess.open("res://demo/SC_Demo.gd", FileAccess.WRITE)
 	f.store_string(Model.build_source(code, bp))
 	f.close()
 	print(code)

@@ -1,7 +1,7 @@
 extends RefCounted
-## Editor self-test that drives the Blueprint editor with real input events (mouse buttons, motion, keys)
+## Editor self-test that drives the Schematic editor with real input events (mouse buttons, motion, keys)
 ## sent through Godot's input pipeline, instead of calling editor functions directly.
-## Run: godot --path . --editor -- --bp-selftest=res://tests/shot_input.gd
+## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_input.gd
 
 var plugin: EditorPlugin
 var tree: SceneTree
@@ -169,8 +169,8 @@ func run(p: EditorPlugin) -> void:
 	var cursor_in := win_rect.has_point(DisplayServer.mouse_get_position())
 	note("environment: editor window focused=%s, real cursor over it=%s%s" % [DisplayServer.window_is_focused(), cursor_in,
 		"" if cursor_in and DisplayServer.window_is_focused() else "  <- keyboard and popup steps below are unreliable in this run"])
-	ed.open_blueprint("res://demo/BP_Demo.gd")
-	EditorInterface.set_main_screen_editor("Blueprint")
+	ed.open_schematic("res://demo/SC_Demo.gd")
+	EditorInterface.set_main_screen_editor("Schematic")
 	await tree.create_timer(0.8).timeout
 	# Hover (which decides who gets keyboard focus on a click) follows the real cursor, so put it on the canvas.
 	# When the real cursor is elsewhere (another monitor, a covering window) the window believes the mouse is

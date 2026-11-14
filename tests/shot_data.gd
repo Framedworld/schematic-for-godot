@@ -1,14 +1,14 @@
 extends RefCounted
 ## Editor self-test: a Data Asset, a Data Table edited in the table editor, and a graph that reads it.
-## Run: godot --path . --editor -- --bp-selftest=res://tests/shot_data.gd
-## With `-- --bp-selftest=res://tests/shot_data.gd --keep-demo` it writes the same things to res://demo/data
+## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_data.gd
+## With `-- --sc-selftest=res://tests/shot_data.gd --keep-demo` it writes the same things to res://demo/data
 ## and leaves them there as a sample.
-const Model := preload("res://addons/blueprints/core/bp_model.gd")
-const R := preload("res://addons/blueprints/core/bp_registry.gd")
-const T := preload("res://addons/blueprints/core/bp_types.gd")
+const Model := preload("res://addons/schematic/core/sc_model.gd")
+const R := preload("res://addons/schematic/core/sc_registry.gd")
+const T := preload("res://addons/schematic/core/sc_types.gd")
 
 var DIR := "res://demo/tmp_data"
-var ROW := "BP_TRow"
+var ROW := "SC_TRow"
 var keep := false
 var passed := 0
 var failed := 0
@@ -39,7 +39,7 @@ func frames(n: int) -> void:
 
 
 func create(parent: String, starter: String, file: String) -> String:
-	ed._new_blueprint_file(parent, null, starter)
+	ed._new_schematic_file(parent, null, starter)
 	await frames(6)
 	var path := "%s/%s.gd" % [DIR, file]
 	for c in EditorInterface.get_base_control().get_children():
@@ -81,14 +81,14 @@ func run(p: EditorPlugin) -> void:
 	keep = OS.get_cmdline_user_args().has("--keep-demo")
 	if keep:
 		DIR = "res://demo/data"
-		ROW = "BP_ItemRow"
+		ROW = "SC_ItemRow"
 	note("--- start%s" % (" (writing the sample to demo/data)" if keep else ""))
 	tree.create_timer(110.0).timeout.connect(func():
 		note("watchdog quit")
 		cleanup()
 		tree.quit())
 	await tree.create_timer(2.5).timeout
-	EditorInterface.set_main_screen_editor("Blueprint")
+	EditorInterface.set_main_screen_editor("Schematic")
 	await tree.create_timer(0.6).timeout
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(DIR))
 	var te = p.table_editor
@@ -217,14 +217,14 @@ func run(p: EditorPlugin) -> void:
 	# 8. Close goes back to graphs; opening the file comes back
 	te.close_requested.emit()
 	await frames(4)
-	check("Close returns to the Blueprint editor", ed.visible and not te.visible)
+	check("Close returns to the Schematic editor", ed.visible and not te.visible)
 	EditorInterface.edit_resource(load(table_path))
 	await frames(8)
 	check("opening the table file shows the table editor again", te.visible and not ed.visible and te.table.resource_path == table_path)
 	plugin.show_table(false)
 
 	# 9. a graph reads the table
-	var user_path := await create("Node", "", "BP_Shop" if keep else "BP_TUser")
+	var user_path := await create("Node", "", "SC_Shop" if keep else "SC_TUser")
 	var ids := {}
 	ed.mutate("Read the table", func():
 		var bp: Dictionary = ed.doc.bp
@@ -259,7 +259,7 @@ func run(p: EditorPlugin) -> void:
 		check("picking a row sets the Row Name pin", String(look_node.d.get("row", "")) == "&\"sword\"", String(look_node.d.get("row", "")))
 	var ok: bool = ed.compile_doc(ed.doc, true)
 	var user_code := FileAccess.get_file_as_string(user_path)
-	check("the blueprint compiles against the real classes", ok and ed.doc.errors.is_empty() and user_code.contains(".get_row(&\"sword\") as " + ROW), str(ed.doc.errors))
+	check("the schematic compiles against the real classes", ok and ed.doc.errors.is_empty() and user_code.contains(".get_row(&\"sword\") as " + ROW), str(ed.doc.errors))
 	var look_gn: GraphNode = ed._view.get_node_or_null("n%d" % ids.look)
 	check("the node is drawn with the table's name", look_gn != null and look_gn.title == "Get Data Table Row")
 	await tree.create_timer(0.5).timeout

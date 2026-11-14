@@ -1,11 +1,11 @@
 extends SceneTree
-## Blueprint Interfaces: the interface asset, a blueprint that implements one, Message nodes and
+## Schematic Interfaces: the interface asset, a schematic that implements one, Message nodes and
 ## Does Implement Interface. Run: godot --headless --path . --script res://tests/test_interfaces.gd
-const Model := preload("res://addons/blueprints/core/bp_model.gd")
-const Compiler := preload("res://addons/blueprints/core/bp_compiler.gd")
-const R := preload("res://addons/blueprints/core/bp_registry.gd")
-const T := preload("res://addons/blueprints/core/bp_types.gd")
-const Starters := preload("res://addons/blueprints/core/bp_starters.gd")
+const Model := preload("res://addons/schematic/core/sc_model.gd")
+const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
+const R := preload("res://addons/schematic/core/sc_registry.gd")
+const T := preload("res://addons/schematic/core/sc_types.gd")
+const Starters := preload("res://addons/schematic/core/sc_starters.gd")
 
 const DIR := "res://tests/tmp/iface/"
 var fails := 0
@@ -44,7 +44,7 @@ func script_from(code: String) -> GDScript:
 		if lines[i].begins_with("class_name "):
 			lines[i] = "#"
 	var scr := GDScript.new()
-	scr.source_code = "\n".join(lines).replace("BPI_Test.", "preload(\"%sBPI_Test.gd\")." % DIR)
+	scr.source_code = "\n".join(lines).replace("SCI_Test.", "preload(\"%sSCI_Test.gd\")." % DIR)
 	return scr if scr.reload() == OK else null
 
 
@@ -54,7 +54,7 @@ func _init() -> void:
 	R.ensure_api()
 
 	# ================================================================ the interface
-	var iface := Model.new_blueprint("RefCounted", "BPI_Test")
+	var iface := Model.new_schematic("RefCounted", "SCI_Test")
 	iface["library"] = "interface"
 	var i_interact := Model.new_graph(iface, "interact", "function")
 	i_interact.inputs = [["instigator", "Node"]]
@@ -62,21 +62,21 @@ func _init() -> void:
 	i_prompt.outputs = [["prompt", "String"]]
 	var i_stats := Model.new_graph(iface, "stats", "function")
 	i_stats.outputs = [["count", "int"], ["weight", "float"]]
-	var iface_code := write("BPI_Test.gd", iface)
+	var iface_code := write("SCI_Test.gd", iface)
 	print(iface_code)
 	check("interface compiles", build(iface)[1].is_empty(), str(build(iface)[1]))
 	check("it lists its functions", iface_code.contains("const FUNCTIONS: Array[StringName] = [&\"interact\", &\"get_prompt\", &\"stats\"]"))
 	check("it has no function bodies of its own", not iface_code.contains("func interact"))
 	var iface_scr := script_from(iface_code)
 	check("interface script loads", iface_scr != null)
-	check("the registry finds it", R.interfaces().has("BPI_Test") and R.interface_functions("BPI_Test").size() == 3, str(R.interfaces()))
-	var nameless := Model.new_blueprint("RefCounted", "")
+	check("the registry finds it", R.interfaces().has("SCI_Test") and R.interface_functions("SCI_Test").size() == 3, str(R.interfaces()))
+	var nameless := Model.new_schematic("RefCounted", "")
 	nameless["library"] = "interface"
 	check("an interface without a class name is an error", not build(nameless)[1].is_empty())
 
-	# ================================================================ a blueprint that implements it
-	var door := Model.new_blueprint("Node", "BP_TDoor")
-	door["interfaces"] = ["BPI_Test"]
+	# ================================================================ a schematic that implements it
+	var door := Model.new_schematic("Node", "SC_TDoor")
+	door["interfaces"] = ["SCI_Test"]
 	var d_prompt := Model.new_graph(door, "get_prompt", "function")
 	d_prompt.outputs = [["prompt", "String"]]
 	d_prompt.nodes[1].d["r_prompt"] = "\"Open\""
@@ -91,30 +91,30 @@ func _init() -> void:
 	var door_scr := script_from(door_code)
 	check("implementer script loads", door_scr != null)
 
-	var wrong := Model.new_blueprint("Node", "BP_TWrong")
-	wrong["interfaces"] = ["BPI_Test"]
+	var wrong := Model.new_schematic("Node", "SC_TWrong")
+	wrong["interfaces"] = ["SCI_Test"]
 	var w_prompt := Model.new_graph(wrong, "get_prompt", "function")
 	w_prompt.outputs = [["prompt", "int"]]
 	var wrong_errs: Array = build(wrong)[1]
 	check("a function with other outputs than the interface is an error", wrong_errs.size() == 1 and String(wrong_errs[0]).contains("() -> (String)"), str(wrong_errs))
-	var missing := Model.new_blueprint("Node", "BP_TMissing")
-	missing["interfaces"] = ["BPI_Nowhere"]
+	var missing := Model.new_schematic("Node", "SC_TMissing")
+	missing["interfaces"] = ["SCI_Nowhere"]
 	check("implementing an interface that does not exist is an error", build(missing)[1].size() == 1)
-	var by_event := Model.new_blueprint("Node", "BP_TByEvent")
-	by_event["interfaces"] = ["BPI_Test"]
+	var by_event := Model.new_schematic("Node", "SC_TByEvent")
+	by_event["interfaces"] = ["SCI_Test"]
 	Model.add_node(by_event.graphs[0], "custom_event", Vector2(100, 100), {"name": "interact", "params": [["instigator", "Node"]]})
 	var ev_out := build(by_event)
 	check("a custom event can stand in for an interface function", ev_out[1].is_empty() and String(ev_out[0]).count("func interact(") == 1, str(ev_out[1]))
 
 	# ================================================================ calling through the interface
-	var user := Model.new_blueprint("Node", "BP_TUser")
+	var user := Model.new_schematic("Node", "SC_TUser")
 	var ask := Model.new_graph(user, "ask", "function")
 	ask.inputs = [["target", "Object"]]
 	ask.outputs = [["text", "String"], ["yes", "bool"], ["weight", "float"]]
-	var m_interact := Model.add_node(ask, "iface_call", Vector2(300, 120), {"iface": "BPI_Test", "fn": "interact"})
-	var m_prompt := Model.add_node(ask, "iface_call", Vector2(520, 120), {"iface": "BPI_Test", "fn": "get_prompt"})
-	var m_stats := Model.add_node(ask, "iface_call", Vector2(740, 120), {"iface": "BPI_Test", "fn": "stats"})
-	var has := Model.add_node(ask, "iface_has", Vector2(520, 320), {"iface": "BPI_Test"})
+	var m_interact := Model.add_node(ask, "iface_call", Vector2(300, 120), {"iface": "SCI_Test", "fn": "interact"})
+	var m_prompt := Model.add_node(ask, "iface_call", Vector2(520, 120), {"iface": "SCI_Test", "fn": "get_prompt"})
+	var m_stats := Model.add_node(ask, "iface_call", Vector2(740, 120), {"iface": "SCI_Test", "fn": "stats"})
+	var has := Model.add_node(ask, "iface_has", Vector2(520, 320), {"iface": "SCI_Test"})
 	var a_in: Dictionary = ask.nodes[0]
 	var a_out: Dictionary = ask.nodes[1]
 	wire(ask, a_in, "then", m_interact, "exec")
@@ -152,12 +152,12 @@ func _init() -> void:
 		plain.free()
 
 	# ================================================================ starter and action menu
-	var starter := Starters.build("interface", "BP_Interactable")
-	check("the Blueprint Interface starter compiles", build(starter)[1].is_empty() and String(starter.get("library", "")) == "interface", str(build(starter)[1]))
+	var starter := Starters.build("interface", "SC_Interactable")
+	check("the Schematic Interface starter compiles", build(starter)[1].is_empty() and String(starter.get("library", "")) == "interface", str(build(starter)[1]))
 	var labels := []
-	for act in R.blueprint_actions(user, ask):
+	for act in R.schematic_actions(user, ask):
 		labels.append(String(act.l))
-	check("the action menu offers the messages", labels.has("Get Prompt (Message)") and labels.has("Does Implement Interface: BPI_Test"))
+	check("the action menu offers the messages", labels.has("Get Prompt (Message)") and labels.has("Does Implement Interface: SCI_Test"))
 
 	print("INTERFACE FAILS: %d" % fails)
 	quit(1 if fails > 0 else 0)

@@ -1,9 +1,9 @@
 extends RefCounted
 ## Editor self-test: function and macro libraries end to end, with real class registration.
-## Run: godot --path . --editor -- --bp-selftest=res://tests/shot_libs.gd
-const Model := preload("res://addons/blueprints/core/bp_model.gd")
-const R := preload("res://addons/blueprints/core/bp_registry.gd")
-const T := preload("res://addons/blueprints/core/bp_types.gd")
+## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_libs.gd
+const Model := preload("res://addons/schematic/core/sc_model.gd")
+const R := preload("res://addons/schematic/core/sc_registry.gd")
+const T := preload("res://addons/schematic/core/sc_types.gd")
 const DIR := "res://demo/tmp_libs"
 
 var passed := 0
@@ -35,7 +35,7 @@ func frames(n: int) -> void:
 
 
 func create(parent: String, starter: String, file: String) -> String:
-	ed._new_blueprint_file(parent, null, starter)
+	ed._new_schematic_file(parent, null, starter)
 	await frames(6)
 	var path := "%s/%s.gd" % [DIR, file]
 	for c in EditorInterface.get_base_control().get_children():
@@ -78,31 +78,31 @@ func run(p: EditorPlugin) -> void:
 		cleanup()
 		tree.quit())
 	await tree.create_timer(2.5).timeout
-	EditorInterface.set_main_screen_editor("Blueprint")
+	EditorInterface.set_main_screen_editor("Schematic")
 	await tree.create_timer(0.6).timeout
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(DIR))
 
 	# 1. a function library from the starter
-	var lib_path := await create("RefCounted", "function_library", "BP_LibMath")
+	var lib_path := await create("RefCounted", "function_library", "SC_LibMath")
 	check("Function Library starter opens with no errors", ed.doc.path == lib_path and ed.doc.errors.is_empty() and ed.doc.bp.get("library", "") == "function", str(ed.doc.errors))
 	var type_box: OptionButton = null
 	for ob in ed._details.find_children("*", "OptionButton", true, false):
-		if ob.item_count == 4 and ob.get_item_text(1) == "Function Library":
+		if ob.item_count == 5 and ob.get_item_text(1) == "Function Library":
 			type_box = ob
-	check("Class Settings shows Blueprint Type: Function Library", type_box != null and type_box.selected == 1)
+	check("Class Settings shows Schematic Type: Function Library", type_box != null and type_box.selected == 1)
 	check("generated code is static", FileAccess.get_file_as_string(lib_path).contains("static func percent(value: float, maximum: float) -> float:"))
 	# switching the type back and forth through the dropdown
 	if type_box:
 		type_box.item_selected.emit(0)
 		await frames(4)
-		check("Blueprint Type dropdown turns it back into a class", not ed.doc.bp.has("library") and not String(ed.doc.preview).contains("static func"))
+		check("Schematic Type dropdown turns it back into a class", not ed.doc.bp.has("library") and not String(ed.doc.preview).contains("static func"))
 		ed.undo() if ed.has_method("undo") else p.get_undo_redo().get_history_undo_redo(EditorUndoRedoManager.GLOBAL_HISTORY).undo()
 		await frames(4)
 		check("undo makes it a library again", ed.doc.bp.get("library", "") == "function", str(ed.doc.bp.get("library", "")))
 		ed.compile_doc(ed.doc, true)
 
 	# 2. a macro library from the starter
-	var mac_path := await create("RefCounted", "macro_library", "BP_LibMacros")
+	var mac_path := await create("RefCounted", "macro_library", "SC_LibMacros")
 	check("Macro Library starter opens with no errors", ed.doc.path == mac_path and ed.doc.errors.is_empty() and ed.doc.bp.get("library", "") == "macro", str(ed.doc.errors))
 
 	# wait for Godot to register the new class
@@ -112,19 +112,19 @@ func run(p: EditorPlugin) -> void:
 		await tree.create_timer(0.5).timeout
 		waited += 0.5
 		T.refresh_globals()
-		if T.globals().has("BP_LibMath") and not EditorInterface.get_resource_filesystem().is_scanning():
+		if T.globals().has("SC_LibMath") and not EditorInterface.get_resource_filesystem().is_scanning():
 			break
-	check("the library's class is registered", T.globals().has("BP_LibMath"), "after %.1fs" % waited)
+	check("the library's class is registered", T.globals().has("SC_LibMath"), "after %.1fs" % waited)
 
-	# 3. another blueprint finds and uses both
-	var user_path := await create("Node", "", "BP_LibUser")
+	# 3. another schematic finds and uses both
+	var user_path := await create("Node", "", "SC_LibUser")
 	ed._view._open_palette(Vector2(400, 200), {})
 	await tree.create_timer(0.4).timeout
 	var hit := search("percent")
 	var found_fn := false
 	var it := hit
 	while it:
-		if it.get_text(0) == "Percent" and it.get_parent().get_text(0).contains("BP_LibMath"):
+		if it.get_text(0) == "Percent" and it.get_parent().get_text(0).contains("SC_LibMath"):
 			found_fn = true
 		it = it.get_next_in_tree()
 	check("'percent' offers the library function under Function Libraries", found_fn, hit.get_text(0) if hit else "none")
@@ -132,11 +132,11 @@ func run(p: EditorPlugin) -> void:
 	var found_macro := false
 	it = hit
 	while it:
-		if it.get_text(0) == "Repeat" and it.get_parent().get_text(0).contains("BP_LibMacros"):
+		if it.get_text(0) == "Repeat" and it.get_parent().get_text(0).contains("SC_LibMacros"):
 			found_macro = true
 		it = it.get_next_in_tree()
 	check("'repeat' offers the library macro", found_macro, hit.get_text(0) if hit else "none")
-	ed._palette._search.text = "BP_Lib"
+	ed._palette._search.text = "SC_Lib"
 	ed._palette._fill()
 	await tree.create_timer(0.3).timeout
 	ed._palette.get_texture().get_image().save_png("res://tests/out/look_17_library_menu.png")
@@ -151,7 +151,7 @@ func run(p: EditorPlugin) -> void:
 		var rep := Model.add_node(g, "macro", Vector2(340, 80), {"name": "Repeat", "lib": mac_path})
 		rep.d["i_Times"] = "3"
 		var inc := Model.add_node(g, "var_inc", Vector2(640, 80), {"name": "hits", "by": 1})
-		var pct := Model.add_node(g, "call", Vector2(340, 330), {"cls": "BP_LibMath", "method": "percent"})
+		var pct := Model.add_node(g, "call", Vector2(340, 330), {"cls": "SC_LibMath", "method": "percent"})
 		pct.d["a1"] = "3.0"
 		var fmt := Model.add_node(g, "format", Vector2(620, 330), {"text": "{p} percent"})
 		var pr := Model.add_node(g, "print", Vector2(900, 200), {})
@@ -166,7 +166,7 @@ func run(p: EditorPlugin) -> void:
 	await frames(6)
 	var ok: bool = ed.compile_doc(ed.doc, true)
 	var user_code := FileAccess.get_file_as_string(user_path)
-	check("a blueprint using both libraries compiles (checked by GDScript with the real class)", ok and ed.doc.errors.is_empty() and user_code.contains("BP_LibMath.percent(") and user_code.contains("for "), str(ed.doc.errors))
+	check("a schematic using both libraries compiles (checked by GDScript with the real class)", ok and ed.doc.errors.is_empty() and user_code.contains("SC_LibMath.percent(") and user_code.contains("for "), str(ed.doc.errors))
 	var pct_node: GraphNode = ed._view.get_node_or_null("n%d" % ids.pct)
 	var rep_node: GraphNode = ed._view.get_node_or_null("n%d" % ids.rep)
 	check("library nodes are drawn", pct_node != null and rep_node != null and rep_node.title == "Repeat")
@@ -189,12 +189,12 @@ func run(p: EditorPlugin) -> void:
 	change.call("0")
 	ed.compile_doc(ed.doc, true)
 	await frames(6)
-	check("saving the macro library recompiles an open blueprint that uses it", FileAccess.get_file_as_string(user_path) != user_code and FileAccess.get_file_as_string(user_path).contains("- 0"))
+	check("saving the macro library recompiles an open schematic that uses it", FileAccess.get_file_as_string(user_path) != user_code and FileAccess.get_file_as_string(user_path).contains("- 0"))
 	# ...and a closed one
 	var ui: int = ed.docs.find(ed._find_doc(user_path))
 	ed._close_doc(ui)
 	await frames(4)
-	ed.open_blueprint(mac_path)
+	ed.open_schematic(mac_path)
 	ed.open_member_graph("Repeat")
 	change.call("2")   # ("1" would compile to range(Times), with nothing to look for)
 	ed.compile_doc(ed.doc, true)
@@ -203,7 +203,7 @@ func run(p: EditorPlugin) -> void:
 	check("and a closed one", closed_code.contains("- 2") and not closed_code.contains("- 0") and not Model.load_file(user_path).is_empty())
 
 	# 6. Expand Node works on a library macro
-	ed.open_blueprint(user_path)
+	ed.open_schematic(user_path)
 	await frames(6)
 	var before: int = ed.cur_graph().nodes.size()
 	ed._view.expand_macro(ids.rep)

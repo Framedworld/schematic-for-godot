@@ -1,8 +1,8 @@
 extends RefCounted
 ## Editor self-test: Unreal names typed into the action menu find the Godot node.
-## Run: godot --path . --editor -- --bp-selftest=res://tests/shot_alias.gd
-const R := preload("res://addons/blueprints/core/bp_registry.gd")
-const Aliases := preload("res://addons/blueprints/core/bp_aliases.gd")
+## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_alias.gd
+const R := preload("res://addons/schematic/core/sc_registry.gd")
+const Aliases := preload("res://addons/schematic/core/sc_aliases.gd")
 
 var passed := 0
 var failed := 0
@@ -39,8 +39,8 @@ func run(p: EditorPlugin) -> void:
 		note("watchdog quit")
 		tree.quit())
 	await tree.create_timer(2.5).timeout
-	ed.open_blueprint("res://demo/BP_Demo.gd")
-	EditorInterface.set_main_screen_editor("Blueprint")
+	ed.open_schematic("res://demo/SC_Demo.gd")
+	EditorInterface.set_main_screen_editor("Schematic")
 	await tree.create_timer(0.8).timeout
 	ed._view._open_palette(Vector2(400, 200), {})
 	await tree.create_timer(0.5).timeout
@@ -74,7 +74,7 @@ func run(p: EditorPlugin) -> void:
 	ed._palette.hide()
 	# every alias must point at a node that exists somewhere
 	var keys := {}
-	for act in R.static_actions() + R.all_class_actions() + R.blueprint_actions(ed.doc.bp, ed.cur_graph()):
+	for act in R.static_actions() + R.all_class_actions() + R.schematic_actions(ed.doc.bp, ed.cur_graph()):
 		keys[Aliases.key_for(String(act.k), act.p)] = true
 	var dead := []
 	for k in Aliases.TABLE:

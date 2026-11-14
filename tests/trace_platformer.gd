@@ -1,6 +1,6 @@
 extends Node
 ## Plays the platformer starter kit with a fixed script of inputs and prints what happens, so the original
-## and the Blueprint port can be compared line for line. It is added to each copy as an autoload:
+## and the Schematic port can be compared line for line. It is added to each copy as an autoload:
 ##   godot --headless --fixed-fps 60 --path <project>
 
 const PLAN := [

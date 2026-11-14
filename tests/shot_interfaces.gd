@@ -1,11 +1,11 @@
 extends RefCounted
-## Editor self-test for Blueprint Interfaces: Class Settings > Interfaces, the functions it adds, and the
+## Editor self-test for Schematic Interfaces: Class Settings > Interfaces, the functions it adds, and the
 ## Message nodes in the action menu. Uses the interface test_interfaces.gd writes, so run that first.
-## Run: godot --path . --editor -- --bp-selftest=res://tests/shot_interfaces.gd
+## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_interfaces.gd
 
-const Model := preload("res://addons/blueprints/core/bp_model.gd")
-const R := preload("res://addons/blueprints/core/bp_registry.gd")
-const T := preload("res://addons/blueprints/core/bp_types.gd")
+const Model := preload("res://addons/schematic/core/sc_model.gd")
+const R := preload("res://addons/schematic/core/sc_registry.gd")
+const T := preload("res://addons/schematic/core/sc_types.gd")
 const LOG := "res://tests/out/selftest_interfaces.log"
 const DIR := "res://tests/tmp/iface/"
 
@@ -43,30 +43,30 @@ func run(p: EditorPlugin) -> void:
 		note("FAIL  watchdog quit")
 		tree.quit())
 	await tree.create_timer(2.5).timeout
-	# a plain blueprint to implement the interface in
-	var path := DIR + "BP_TShelf.gd"
-	var bp := Model.new_blueprint("Node", "")
+	# a plain schematic to implement the interface in
+	var path := DIR + "SC_TShelf.gd"
+	var bp := Model.new_schematic("Node", "")
 	var f := FileAccess.open(path, FileAccess.WRITE)
-	f.store_string(Model.build_source("# @blueprint v1\nextends Node\n", bp))
+	f.store_string(Model.build_source("# @schematic v1\nextends Node\n", bp))
 	f.close()
 	R.invalidate_libraries()
 	T.refresh_globals()
-	check(R.interfaces().has("BPI_Test"), "the editor knows the interface BPI_Test: %s" % [R.interfaces()])
-	check(ed.open_blueprint(path), "opened the blueprint")
-	EditorInterface.set_main_screen_editor("Blueprint")
+	check(R.interfaces().has("SCI_Test"), "the editor knows the interface SCI_Test: %s" % [R.interfaces()])
+	check(ed.open_schematic(path), "opened the schematic")
+	EditorInterface.set_main_screen_editor("Schematic")
 	await tree.create_timer(0.6).timeout
 	ed._select({"kind": "class"})
 	await shot("16_interfaces_before")
-	ed.implement_interface("BPI_Test")
+	ed.implement_interface("SCI_Test")
 	await tree.create_timer(0.4).timeout
 	var names := []
 	for g in ed.doc.bp.graphs:
 		names.append(String(g.name))
-	check(ed.doc.bp.get("interfaces", []) == ["BPI_Test"], "Class Settings lists the interface")
+	check(ed.doc.bp.get("interfaces", []) == ["SCI_Test"], "Class Settings lists the interface")
 	check(names.has("interact") and names.has("get_prompt") and names.has("stats"), "its three functions were added: %s" % [names])
 	var gp: Dictionary = Model.graph_named(ed.doc.bp, "get_prompt")
 	check(gp.outputs == [["prompt", "String"]], "with the interface's outputs: %s" % [gp.get("outputs", [])])
-	check(ed.compile_doc(ed.doc, true), "the blueprint compiles and saves: %s" % [ed.doc.errors])
+	check(ed.compile_doc(ed.doc, true), "the schematic compiles and saves: %s" % [ed.doc.errors])
 	check(FileAccess.get_file_as_string(path).contains("func interact(instigator: Node) -> void:"), "the saved script has interact(instigator: Node)")
 	ed._select({"kind": "class"})
 	await shot("17_interfaces_added")
@@ -74,8 +74,8 @@ func run(p: EditorPlugin) -> void:
 	ed.doc.graph_id = int(ed.doc.bp.graphs[0].id)
 	ed.mutate("Add Message", func():
 		var g: Dictionary = ed.cur_graph()
-		var m := Model.add_node(g, "iface_call", Vector2(420, 260), {"iface": "BPI_Test", "fn": "get_prompt"})
-		var h := Model.add_node(g, "iface_has", Vector2(420, 420), {"iface": "BPI_Test"})
+		var m := Model.add_node(g, "iface_call", Vector2(420, 260), {"iface": "SCI_Test", "fn": "get_prompt"})
+		var h := Model.add_node(g, "iface_has", Vector2(420, 420), {"iface": "SCI_Test"})
 		var ready := {}
 		for n in g.nodes:
 			if n.kind == "event" and String(n.p.name) == "_ready":

@@ -1,7 +1,7 @@
 extends RefCounted
-## Editor self-test: the New Blueprint picker offers the starter blueprints and a picked one opens, compiles
-## and draws. Run: godot --path . --editor -- --bp-selftest=res://tests/shot_starters.gd
-const Starters := preload("res://addons/blueprints/core/bp_starters.gd")
+## Editor self-test: the New Schematic picker offers the starter schematics and a picked one opens, compiles
+## and draws. Run: godot --path . --editor -- --sc-selftest=res://tests/shot_starters.gd
+const Starters := preload("res://addons/schematic/core/sc_starters.gd")
 const DIR := "res://demo/tmp_starters"
 
 var passed := 0
@@ -62,17 +62,17 @@ func run(p: EditorPlugin) -> void:
 		note("watchdog quit")
 		tree.quit())
 	await tree.create_timer(2.5).timeout
-	EditorInterface.set_main_screen_editor("Blueprint")
+	EditorInterface.set_main_screen_editor("Schematic")
 	await tree.create_timer(0.6).timeout
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(DIR))
 
-	# 1. New Blueprint offers Empty plus every starter
-	ed.new_blueprint_dialog()
+	# 1. New Schematic offers Empty plus every starter
+	ed.new_schematic_dialog()
 	await frames(8)
 	var list := picker()
-	check("New Blueprint opens the starter picker", list != null)
+	check("New Schematic opens the starter picker", list != null)
 	if list:
-		check("picker lists Empty and all %d starters" % Starters.LIST.size(), list.item_count == Starters.LIST.size() + 1 and list.get_item_text(0).begins_with("Empty Blueprint"), "%d items, first '%s'" % [list.item_count, list.get_item_text(0)])
+		check("picker lists Empty and all %d starters" % Starters.LIST.size(), list.item_count == Starters.LIST.size() + 1 and list.get_item_text(0).begins_with("Empty Schematic"), "%d items, first '%s'" % [list.item_count, list.get_item_text(0)])
 		check("each starter says what it does", list.get_item_tooltip(2).contains("gravity") and list.get_item_tooltip(2).contains("CharacterBody2D"), list.get_item_tooltip(2))
 		(list.get_window() as Window).get_texture().get_image().save_png("res://tests/out/look_15_starters.png")
 		# typing narrows the list
@@ -85,18 +85,18 @@ func run(p: EditorPlugin) -> void:
 		list.item_activated.emit(0)
 		await frames(10)
 		var fd := file_dialog()
-		check("picking a starter opens the save dialog", fd != null and fd.title.contains("Area2D") and fd.current_file == "BP_Pickup.gd", (fd.title + " / " + fd.current_file) if fd else "")
+		check("picking a starter opens the save dialog", fd != null and fd.title.contains("Area2D") and fd.current_file == "SC_Pickup.gd", (fd.title + " / " + fd.current_file) if fd else "")
 	await close_popups()
 
 	# 2. every starter can be created through the editor, opens without errors and draws
 	for s in Starters.LIST:
-		ed._new_blueprint_file(String(s.parent), null, String(s.id))
+		ed._new_schematic_file(String(s.parent), null, String(s.id))
 		await frames(6)
 		var fd := file_dialog()
 		if fd == null:
 			check("%s: save dialog" % s.name, false)
 			continue
-		var path := "%s/BP_T_%s.gd" % [DIR, s.id]
+		var path := "%s/SC_T_%s.gd" % [DIR, s.id]
 		fd.file_selected.emit(path)
 		fd.hide()
 		await frames(10)
@@ -118,18 +118,18 @@ func run(p: EditorPlugin) -> void:
 	var body := CharacterBody2D.new()
 	body.name = "Hero"
 	EditorInterface.get_base_control().add_child(body)
-	ed.new_blueprint_dialog(body)
+	ed.new_schematic_dialog(body)
 	await frames(8)
 	list = picker()
-	check("attaching to a CharacterBody2D offers the two 2D characters", list != null and list.item_count == 3 and list.get_item_text(0) == "Empty Blueprint (CharacterBody2D)", ("%d items" % list.item_count) if list else "no picker")
+	check("attaching to a CharacterBody2D offers the two 2D characters", list != null and list.item_count == 3 and list.get_item_text(0) == "Empty Schematic (CharacterBody2D)", ("%d items" % list.item_count) if list else "no picker")
 	await close_popups()
 	var sprite := Sprite2D.new()
 	sprite.name = "Pic"
 	EditorInterface.get_base_control().add_child(sprite)
-	ed.new_blueprint_dialog(sprite)
+	ed.new_schematic_dialog(sprite)
 	await frames(8)
 	var direct := file_dialog()
-	check("attaching to a node with no starters goes straight to the save dialog", picker() == null and direct != null and direct.current_file == "BP_Pic.gd", direct.current_file if direct else "")
+	check("attaching to a node with no starters goes straight to the save dialog", picker() == null and direct != null and direct.current_file == "SC_Pic.gd", direct.current_file if direct else "")
 	await close_popups()
 	body.queue_free()
 	sprite.queue_free()

@@ -1,5 +1,5 @@
 extends SceneTree
-## Times the code shapes the Blueprint compiler emits against the hand-written shape they stand for.
+## Times the code shapes the Schematic compiler emits against the hand-written shape they stand for.
 ## Run: godot --headless --path . --script res://tests/bench_patterns.gd
 const N := 400000
 

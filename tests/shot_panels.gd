@@ -1,7 +1,7 @@
 extends RefCounted
-## Editor self-test that clicks through the side panels (My Blueprint, Details, toolbar) with real input events
-## and walks the New Blueprint flow.
-## Run: godot --path . --editor -- --bp-selftest=res://tests/shot_panels.gd
+## Editor self-test that clicks through the side panels (My Schematic, Details, toolbar) with real input events
+## and walks the New Schematic flow.
+## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_panels.gd
 
 var plugin: EditorPlugin
 var tree: SceneTree
@@ -182,8 +182,8 @@ func run(p: EditorPlugin) -> void:
 	var cursor_in := win_rect.has_point(DisplayServer.mouse_get_position())
 	note("environment: editor window focused=%s, real cursor over it=%s%s" % [DisplayServer.window_is_focused(), cursor_in,
 		"" if cursor_in and DisplayServer.window_is_focused() else "  <- keyboard and popup steps below are unreliable in this run"])
-	ed.open_blueprint("res://demo/BP_Demo.gd")
-	EditorInterface.set_main_screen_editor("Blueprint")
+	ed.open_schematic("res://demo/SC_Demo.gd")
+	EditorInterface.set_main_screen_editor("Schematic")
 	await tree.create_timer(0.8).timeout
 	# Hover (which decides who gets keyboard focus on a click) follows the real cursor, so put it on the canvas.
 	# When the real cursor is elsewhere (another monitor, a covering window) the window believes the mouse is
@@ -247,7 +247,7 @@ func run(p: EditorPlugin) -> void:
 	await frames(4)
 	check("default value is stored", String(ed.doc.bp.variables[-1].get("default", "")) == "3", String(ed.doc.bp.variables[-1].get("default", "")))
 
-	# 6. Ctrl-drag the variable from My Blueprint into the graph -> Get node.
+	# 6. Ctrl-drag the variable from My Schematic into the graph -> Get node.
 	ed._view.scroll_offset = Vector2(2600, 200)
 	await frames(4)
 	var nodes_before: int = ed.cur_graph().nodes.size()
@@ -278,27 +278,27 @@ func run(p: EditorPlugin) -> void:
 	ed.compile_doc(ed.doc, true)
 	check("undo returns the demo to its original variables", ed.doc.bp.variables.size() == count, str(ed.doc.bp.variables.size()))
 
-	# 9. New Blueprint flow: parent class -> file dialog -> file on disk, opened, compiles.
+	# 9. New Schematic flow: parent class -> file dialog -> file on disk, opened, compiles.
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://demo/tmp_new"))
-	ed._new_blueprint_file("Node2D", null)
+	ed._new_schematic_file("Node2D", null)
 	await frames(6)
 	var dialog: EditorFileDialog = null
 	for c in EditorInterface.get_base_control().get_children():
 		if c is EditorFileDialog and c.visible:
 			dialog = c
-	check("New Blueprint opens a save dialog", dialog != null, dialog.title if dialog else "")
+	check("New Schematic opens a save dialog", dialog != null, dialog.title if dialog else "")
 	if dialog:
-		dialog.file_selected.emit("res://demo/tmp_new/BP_Fresh.gd")
+		dialog.file_selected.emit("res://demo/tmp_new/SC_Fresh.gd")
 		dialog.hide()
 		await frames(8)
-		var text := FileAccess.get_file_as_string("res://demo/tmp_new/BP_Fresh.gd")
-		check("blueprint file is written", text.begins_with("# @blueprint") and text.contains("class_name BP_Fresh") and text.contains("extends Node2D"))
-		check("new blueprint is open with Ready and Process events", ed.doc.path == "res://demo/tmp_new/BP_Fresh.gd" and ed.cur_graph().nodes.size() == 2 and ed.doc.errors.is_empty(), str(ed.doc.errors))
+		var text := FileAccess.get_file_as_string("res://demo/tmp_new/SC_Fresh.gd")
+		check("schematic file is written", text.begins_with("# @schematic") and text.contains("class_name SC_Fresh") and text.contains("extends Node2D"))
+		check("new schematic is open with Ready and Process events", ed.doc.path == "res://demo/tmp_new/SC_Fresh.gd" and ed.cur_graph().nodes.size() == 2 and ed.doc.errors.is_empty(), str(ed.doc.errors))
 		var idx: int = ed.docs.find(ed.doc)
 		ed.doc.dirty = false
 		ed._close_doc(idx)
-	DirAccess.remove_absolute(ProjectSettings.globalize_path("res://demo/tmp_new/BP_Fresh.gd"))
-	DirAccess.remove_absolute(ProjectSettings.globalize_path("res://demo/tmp_new/BP_Fresh.gd.uid"))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("res://demo/tmp_new/SC_Fresh.gd"))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("res://demo/tmp_new/SC_Fresh.gd.uid"))
 	DirAccess.remove_absolute(ProjectSettings.globalize_path("res://demo/tmp_new"))
 	EditorInterface.get_resource_filesystem().scan()
 	await tree.create_timer(1.0).timeout

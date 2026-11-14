@@ -1,6 +1,6 @@
 extends RefCounted
 ## Editor self-test for Collapse to Macro: collapsing nodes must not change the generated code.
-## Run: godot --path . --editor -- --bp-selftest=res://tests/shot_collapse.gd
+## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_collapse.gd
 
 var plugin: EditorPlugin
 
@@ -40,8 +40,8 @@ func run(p: EditorPlugin) -> void:
 			ed.doc.dirty = false
 		tree.quit())
 	await tree.create_timer(2.5).timeout
-	note("open: %s" % ed.open_blueprint("res://demo/BP_Demo.gd"))
-	EditorInterface.set_main_screen_editor("Blueprint")
+	note("open: %s" % ed.open_schematic("res://demo/SC_Demo.gd"))
+	EditorInterface.set_main_screen_editor("Schematic")
 	await tree.create_timer(0.8).timeout
 	ed.compile_doc(ed.doc, false)
 	var before: String = body(ed.doc.preview)
