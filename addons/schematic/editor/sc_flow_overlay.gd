@@ -24,7 +24,16 @@ func _init() -> void:
 ## Lights the wire between two ports for a moment.
 func pulse(from_node: StringName, from_port: int, to_node: StringName, to_port: int) -> void:
 	_active["%s:%d>%s:%d" % [from_node, from_port, to_node, to_port]] = [from_node, from_port, to_node, to_port, LIFE]
+	_follow()
 	set_process(true)
+
+
+## A Control is only drawn while its own rectangle is on screen, so this one is kept over the part of the graph
+## being looked at. Without it the wires only lit up while the graph's origin was in view.
+func _follow() -> void:
+	if view != null:
+		position = view.scroll_offset
+		size = view.size
 
 
 func clear() -> void:
@@ -44,12 +53,14 @@ func _process(delta: float) -> void:
 			_active.erase(key)
 	if _active.is_empty():
 		set_process(false)
+	_follow()
 	queue_redraw()
 
 
 func _draw() -> void:
 	if view == null:
 		return
+	draw_set_transform(-position)      # what is drawn stays in the wires' coordinates (see _follow)
 	var z := view.zoom
 	for key in _active:
 		var e: Array = _active[key]

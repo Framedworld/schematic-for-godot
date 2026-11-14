@@ -138,6 +138,10 @@ other projects and are not in the repository.
 6. `demo/arcade/arcade.tscn` is the coin-collecting game from the video: five starters (character, pickup, spawner,
    game state, score HUD) and two scenes, with no script written by hand. Arrow keys to move.
 7. `demo/game/main.tscn` is a smaller game built node by node in a test (player, coins, HUD): arrow keys to move.
+8. `demo/machine/machine.tscn` is a chain reaction in 3D: a marble, a trapdoor, a launcher, dominoes, and a cannon
+   that knocks a tower down. One schematic on the scene's root runs all of it, one frame of the graph per part.
+   Open `SC_Machine.gd`, turn on Show Flow and Values, and play the scene to watch each part light up as it runs
+   ([video](docs/video/schematic_machine.mp4)).
 
 ### Editor
 
@@ -238,6 +242,8 @@ godot --headless --path . --script res://tests/test_reuse.gd
 godot --headless --path . --script res://tests/test_starters.gd
 godot --headless --path . --script res://tests/test_game.gd
 godot --headless --path . --script res://tests/make_arcade.gd      # rebuilds demo/arcade from the starters
+godot --headless --path . --script res://tests/make_machine.gd     # rebuilds demo/machine
+godot --headless --fixed-fps 60 --path . --script res://tests/test_machine.gd   # runs the chain reaction to the end
 ```
 
 ## Extending

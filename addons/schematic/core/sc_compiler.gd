@@ -991,6 +991,7 @@ func _chain(nid: int, pin: String, ind: int, scope: Dictionary) -> bool:
 			_member("var __sc_last: int = 0", 0)
 			_member("var __sc_vals: Dictionary = {}", 0)
 			_member("var __sc_edges: Dictionary = {}", 0)
+			_member("var __sc_wait: bool = false", 0)
 			_helpers["__sc_trace"] = ["func __sc_trace(graph_id: int, node_id: int, values: Dictionary = {}, from: int = 0) -> void:", [
 				[1, "if not EngineDebugger.is_active():", 0, 0], [2, "return", 0, 0],
 				[1, "__sc_hits[graph_id * 100000 + node_id] = true", 0, 0],
@@ -998,19 +999,28 @@ func _chain(nid: int, pin: String, ind: int, scope: Dictionary) -> bool:
 				[2, "__sc_edges[(graph_id * 100000 + from) * 100000 + node_id] = true", 0, 0],
 				[1, "if not values.is_empty():", 0, 0],
 				[2, "__sc_vals[graph_id * 100000 + node_id] = values", 0, 0],
-				[1, "var now := Time.get_ticks_msec()", 0, 0],
-				[1, "if now - __sc_last > 100:", 0, 0],
-				[2, "__sc_last = now", 0, 0],
-				[2, "var shown := {}", 0, 0],
-				[2, "for key in __sc_vals:", 0, 0],
-				[3, "var row := {}", 0, 0],
-				[3, "for pin in __sc_vals[key]:", 0, 0],
-				[4, "row[pin] = str(__sc_vals[key][pin]).left(60)", 0, 0],
-				[3, "shown[key] = row", 0, 0],
-				[2, "EngineDebugger.send_message(\"schematic:exec\", [(get_script() as Script).resource_path, __sc_hits.keys(), shown, __sc_edges.keys()])", 0, 0],
-				[2, "__sc_hits.clear()", 0, 0],
-				[2, "__sc_edges.clear()", 0, 0],
-				[2, "__sc_vals.clear()", 0, 0]]]
+				# at most ten messages a second: the first node is reported at once, the ones after it a moment later
+				[1, "if Time.get_ticks_msec() - __sc_last > 100:", 0, 0],
+				[2, "__sc_flush()", 0, 0],
+				[1, "elif not __sc_wait:", 0, 0],
+				[2, "var loop := Engine.get_main_loop() as SceneTree", 0, 0],
+				[2, "if loop != null:", 0, 0],
+				[3, "__sc_wait = true", 0, 0],
+				[3, "loop.create_timer(0.1).timeout.connect(__sc_flush)", 0, 0]]]
+			_helpers["__sc_flush"] = ["func __sc_flush() -> void:", [
+				[1, "__sc_wait = false", 0, 0],
+				[1, "if __sc_hits.is_empty():", 0, 0], [2, "return", 0, 0],
+				[1, "__sc_last = Time.get_ticks_msec()", 0, 0],
+				[1, "var shown := {}", 0, 0],
+				[1, "for key in __sc_vals:", 0, 0],
+				[2, "var row := {}", 0, 0],
+				[2, "for pin in __sc_vals[key]:", 0, 0],
+				[3, "row[pin] = str(__sc_vals[key][pin]).left(60)", 0, 0],
+				[2, "shown[key] = row", 0, 0],
+				[1, "EngineDebugger.send_message(\"schematic:exec\", [(get_script() as Script).resource_path, __sc_hits.keys(), shown, __sc_edges.keys()])", 0, 0],
+				[1, "__sc_hits.clear()", 0, 0],
+				[1, "__sc_edges.clear()", 0, 0],
+				[1, "__sc_vals.clear()", 0, 0]]]
 			# The values arriving on this node's wired input pins go along, so the editor can show them on the pins.
 			# (Not for nodes inside an expanded macro: their pins are not the ones on screen.)
 			var watch := ""

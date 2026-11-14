@@ -1016,6 +1016,12 @@ func debug_continue() -> void:
 		var ev := (sc.events[0] as InputEventKey).duplicate() as InputEventKey
 		ev.pressed = true
 		EditorInterface.get_base_control().get_viewport().push_input(ev)
+		# Godot's button only hears its shortcut while the Debugger panel is open. If the game is still stopped at
+		# the same place a moment later, ask it to go on directly.
+		var stopped_at: int = debug_panel.pause_id
+		get_tree().create_timer(0.25).timeout.connect(func():
+			if debug_panel.paused and debug_panel.pause_id == stopped_at:
+				debug_panel._send("continue", []))
 		return
 	debug_panel._send("continue", [])
 
