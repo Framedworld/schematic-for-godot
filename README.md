@@ -101,6 +101,12 @@ interfaces). The limits of the debugger are listed under Debugging below.
 The pictures on this page are taken from the running editor by `tests/shot_readme.gd`, and the animation by
 `tests/shot_readme_gif.gd` and `tools/make_gif.py`.
 
+## Licence
+
+Free to use, including in commercial games. What you make with it is yours: the scripts it generates carry no
+restrictions. You may change the plugin for your own use and ship it inside your game, but you may not
+distribute modified versions of the plugin or sell the plugin itself. The full terms are in `LICENSE.md`.
+
 ## Installing it in your own project
 
 1. Copy the `addons/blueprints` folder into your project's `addons` folder (make `addons` if there is none).
