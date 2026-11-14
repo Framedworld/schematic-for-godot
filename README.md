@@ -1,13 +1,102 @@
 # Blueprints for Godot
 
-Unreal-style Blueprint visual scripting as a pure editor plugin (`addons/blueprints`). No engine changes.
+**Unreal-style Blueprints for Godot 4. You wire nodes; it writes the GDScript you would have written.**
 
-**Core idea:** a Blueprint *is* a `.gd` file. The graph compiles to plain, readable GDScript and the graph data
-is stored in the same file as a trailing comment block (one node to a line, so it diffs well and loads fast). So a Blueprint attaches to nodes, exports variables to the
-Inspector, registers a `class_name`, is callable from hand-written GDScript, runs at GDScript speed and ships in
-exports with no runtime plugin - exactly like any other script.
+![The Blueprint editor with an event graph open](docs/images/editor.png)
+
+Blueprints for Godot is an editor plugin. There is no custom engine build, no runtime library and no new file
+type: a Blueprint is an ordinary `.gd` script, so it attaches to nodes, exports variables to the Inspector,
+registers a `class_name`, and is called from hand-written code like any other script.
 
 Tested on stock Godot 4.7.1 and on a 4.8 development build. It needs Godot 4.5 or later (not tried on 4.5 or 4.6).
+
+## A Blueprint is a GDScript file
+
+![A graph beside the GDScript it compiles to](docs/images/graph_to_code.png)
+
+The graph compiles to plain, readable GDScript, and the graph itself is kept in the same file as a comment
+block. What runs in your game is the code on the right: no interpreter and no per-node cost. Turn the plugin
+off and your Blueprints still run.
+
+## Find any node by typing
+
+![The action menu filtered by the word rotate](docs/images/action_menu.png)
+
+Right-click, or drag off a pin, and type. The menu lists every function of every Godot class, your own
+functions, variables, macros and libraries, filtered to what fits the pin you dragged from. Unreal names work
+too: typing `BeginPlay` finds Event Ready.
+
+## Start from something that works
+
+![The New Blueprint dialog listing the starters](docs/images/starters.png)
+
+New Blueprint offers ready-wired starters beside Empty: 2D and 3D characters, pickups, trigger volumes,
+projectiles, spawners, a health component, a game state and a score HUD, plus function libraries, macro
+libraries, data assets and interfaces. A small complete game built only from Blueprints is in `demo/game`.
+
+![The player Blueprint of the demo game](docs/images/game_blueprint.png)
+
+## Debug on the graph
+
+![The game stopped at a node, with values on the pins and a watch list](docs/images/debug_values.png)
+
+Put a breakpoint on a node with F9. When the game stops there, every wired pin of that function shows its
+value, and Step Into, Step Over and Step Out move one node at a time. Watch any variable or expression, or
+right-click a node and watch one of its pins.
+
+![Stepped into a function, with the call stack showing both functions](docs/images/debug_call_stack.png)
+
+The Call Stack lists the functions that are running and the node each is at. Click one to see its graph and its
+values.
+
+## Watch it run
+
+![Exec wires lit up with moving dots while the game runs](docs/images/live_flow.png)
+
+Turn on Show Flow and Values and play: the wires the game follows light up with moving dots, and each pin
+shows the last value it received. This is opt-in per Blueprint, because it adds trace calls to the generated
+code; with it off, nothing is added.
+
+## Interfaces
+
+![Message nodes calling an interface, beside the code they compile to](docs/images/interface_message.png)
+
+A Blueprint Interface is a list of functions that different Blueprints agree to have. A Message node calls one
+on any object and does nothing if the object does not have it, so a player can Interact with whatever it is
+looking at without knowing its class. It compiles to the `has_method` check you would write yourself.
+
+## Bring the scripts you already have
+
+![A hand-written script converted to a graph](docs/images/converted_script.png)
+
+Right-click a `.gd` file and pick Convert to Blueprint, or convert a whole project from the command line. The
+original is kept beside it. Kenney's 3D platformer starter kit converts with all 110 lines as nodes and plays
+identically; a 42,000-line game converted with three lines left as code, and its own test suites gave the same
+results as before.
+
+## Timelines and data tables
+
+![A timeline node with its curve editor](docs/images/timeline.png)
+
+Timelines animate values over time with a curve editor in the Details panel. Data Assets are structures of
+fields, and Data Tables are rows of them, with CSV import and export.
+
+![The Data Table editor](docs/images/data_table.png)
+
+## Blueprints stand out in your project
+
+![Blueprint files with their own icon in the FileSystem dock](docs/images/file_icon.png)
+
+Blueprint files have their own icon in the FileSystem dock, and double-clicking one opens the graph instead of
+the script editor.
+
+## What it does not do
+
+`PARITY.md` lists every Unreal Blueprint feature and where this plugin stands on it. The main gaps are
+in-graph animation pose editing (Godot's AnimationTree covers that) and interface-typed pins (GDScript has no
+interfaces). The limits of the debugger are listed under Debugging below.
+
+The pictures on this page are taken from the running editor by `tests/shot_readme.gd`.
 
 ## Installing it in your own project
 
