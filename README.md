@@ -13,7 +13,8 @@ Schematic is an editor plugin for building game logic as graphs of nodes and wir
 type: a Schematic is an ordinary `.gd` script, so it attaches to nodes, exports variables to the Inspector,
 registers a `class_name`, and is called from hand-written code like any other script.
 
-Tested on stock Godot 4.7.1 and on a 4.8 development build. It needs Godot 4.5 or later (not tried on 4.5 or 4.6).
+Tested on stock Godot 4.6 and 4.7.1 and on a 4.8 development build. It needs Godot 4.5 or later (4.5 itself has not
+been tried; on 4.3 the plugin does not load).
 
 ## A Schematic is a GDScript file
 
@@ -85,7 +86,7 @@ script it saw before.
 
 Kenney's 3D platformer starter kit converts with all 110 lines as nodes. Rendered with the same input, the original
 and the converted game are the same in all 560 frames, to the pixel. The converter is also run over every script of
-14 projects (5,284 scripts, 693,702 lines of statements, 98.1% of them nodes): wherever the original
+14 projects (5,284 scripts, 693,828 lines of statements, 98.1% of them nodes): wherever the original
 loads, the converted script loads too and offers the same functions, variables, signals and constants.
 
 ## Timelines and data tables
@@ -209,6 +210,11 @@ The **Generated Code** tab shows the GDScript live; selecting a node jumps to it
     **Is / As** nodes; `v.x = ...` on a vector held in a variable or property is a Set node for that member;
   - a lambda becomes a function of the schematic, with what it captured bound to the reference; handed to `connect`
     (or with optional parameters and captured values) it is a **Lambda** node, which makes a separate Callable each time.
+    In the generated code it is written back as the lambda it was, in the place it stood, so calling it costs what it
+    cost before;
+  - an event keeps the parameter names the script gave it (`func _process(dt)` stays `dt`, on the pin and in the code);
+  - a statement that is only an expression still runs what is in it: `a() and b()` is a Branch, `x() if c else y()` is
+    a Branch with a call on each side;
   - a `match` arm that binds names (`[var a, var b]`, `{"hp": var hp}`, `var x when x > 3`) is a Switch case; the
     names it binds are read through small nodes that carry the name;
   - `len`, `range` as a value, `assert`, `ord`, `char`, `is_instance_of`, `type_exists` and `print_stack` have nodes
@@ -258,7 +264,7 @@ The **Generated Code** tab shows the GDScript live; selecting a node jumps to it
 
 ```
 godot --headless --path . --script res://tests/test_compile.gd
-godot --path . --editor -- --sc-selftest=res://tests/shot.gd        # also shot_input, shot_panels, shot_look, shot_alias, shot_macros, shot_tieins, shot_debug, shot_debugger, shot_interfaces, shot_collapse, shot_starters, shot_libs, shot_import, shot_data, shot_reuse
+godot --path . --editor -- --sc-selftest=res://tests/shot.gd        # also shot_input, shot_panels, shot_look, shot_alias, shot_macros, shot_tieins, shot_debug, shot_debugger, shot_interfaces, shot_collapse, shot_starters, shot_libs, shot_import, shot_data, shot_reuse, shot_flow_reroute, shot_edit_converted
 godot --headless --path . --script res://tests/test_data.gd
 godot --headless --path . --script res://tests/test_import.gd
 godot --headless --path . --script res://tests/test_convert.gd     # the converter's torture test: tests/convert/*.gd run as written and converted

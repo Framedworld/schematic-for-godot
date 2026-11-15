@@ -26,6 +26,9 @@ func _ready() -> void:
 	out.append([2 ** -1 ** 2, -2 ** -2, ~2 ** 2, -x * 3, -x ** 2 * 3, 2 --2, 2 - --2, 2 - - -2, - - 2, -2 % 3, - 2 % 3, -7 / 2, - 7 / 2])
 	out.append([!true == false, not true == false, not 1 in [1], not x > 2 and false, 1 | 2 ^ 3 & 4, 1 << 1 + 1, 3 - 1 << 1, true or false and false,
 		not false and false, 1 if false else 2 if false else 3, 5 - 3 if true else 9])
+	# `%` straight in front of a name is still the remainder after something that ends a value
+	var pair := [7, 9]
+	out.append([x %x, 7 %x, (x + 4)%x, pair[1]%x, "%s"%x, "%d" %x, counter %x])
 	out.append([2 * 3 as float, -3 as float, x / 2 as float, x / (2 as float), any_five is int == true, not any_five is String, 1 + x if any_five is int else 0,
 		[1, 2][1] ** 2, (x as float) / 2, -(x as float), "a" + "b" as String])
 	out.append([1 < 2, 2 <= 2, 3 > 4, 4 >= 4, 1 == 1.0, 1 != 2, "a" < "b", [1, 2] == [1, 2], {"a": 1} == {"a": 1}, null == null])

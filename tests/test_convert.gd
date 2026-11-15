@@ -22,6 +22,7 @@ const AS_CODE := {
 	"control_flow": 4,   # a loop over a float, and one over a Vector2i
 	"scoping": 2,   # giving a loop variable a new value
 	"tree": 2,   # calling _input() and _unhandled_input() by hand
+	"review_statements": 1,   # `hit(13) == true` as a statement: the comparison can fail at run time, so it is kept
 }
 
 var fails := 0

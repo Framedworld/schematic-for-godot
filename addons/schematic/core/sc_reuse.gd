@@ -539,7 +539,14 @@ func _sig(f: Dictionary, slot: Dictionary) -> String:
 				var nm := String(node.p.get("name", ""))
 				var which := "%s:%s" % [JSON.stringify(node.get("split", {}), "", true), String(slot.pin)]
 				return ("L:%d:%s" % [int(f.lmap[nm]), which]) if f.lmap.has(nm) else ("local:%s:%s" % [nm, which])
-			return "leaf:%s:%s:%s:%s" % [node.kind, JSON.stringify(node.p, "", true), JSON.stringify(node.get("split", {}), "", true), String(slot.pin)]
+			# (where a name node's name belongs says nothing about its value: two reads of the same name are the
+			# same source wherever the importer noted them)
+			var what: Dictionary = node.p
+			if node.kind == "const" and what.has("of"):
+				what = what.duplicate()
+				for key in ["of", "in", "bound", "arm"]:
+					what.erase(key)
+			return "leaf:%s:%s:%s:%s" % [node.kind, JSON.stringify(what, "", true), JSON.stringify(node.get("split", {}), "", true), String(slot.pin)]
 	if f.nodes.has(int(slot.src)):
 		return "in:%d:%s" % [f.execs.find(int(slot.src)), String(slot.pin)]
 	return "ext:%d:%d:%s" % [int(f.gi), int(slot.src), String(slot.pin)]
@@ -895,6 +902,7 @@ func _apply(c: Dictionary, target: Dictionary, lib_path: String) -> void:
 		if not ref.nodes.has(id) or feeders.has(id):
 			continue
 		var copy: Dictionary = n.duplicate(true)
+		Model.forget_place(copy)   # inside a macro a name is just a name
 		copy.id = int(mg.next_id)
 		mg.next_id = int(mg.next_id) + 1
 		remap[id] = int(copy.id)

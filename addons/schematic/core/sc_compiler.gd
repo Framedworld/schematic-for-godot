@@ -55,23 +55,62 @@ var _headers: Dictionary = {}  # "nid:pin" exec entry points that a wire loops b
 var _active: Dictionary = {}   # loop headers currently being emitted -> lambda depth
 var _lam := 0
 
+# Lambdas written back as lambdas. The importer marks the function graph a lambda became with `lambda` (how
+# many of its last inputs are values it captured). Where such a graph is used from exactly one place (an
+# Event Reference, with a Bind of the captured values when there are some, or a Lambda node), that place is
+# written as the lambda itself, capturing by name, and the graph is not written as a function of its own.
+# Anywhere that can't be proved to mean the same, the function and its bound reference are written as before.
+const LAM_OPEN := "\u0002"     # an inline lambda stands in an expression as LAM_OPEN + its number + LAM_CLOSE,
+const LAM_CLOSE := "\u0003"    # and _line spreads it over the lines of its body
+const KEYWORDS := ["null", "true", "false", "self", "super", "PI", "TAU", "INF", "NAN", "and", "or", "not", "in", "is", "as"]
+## What a captured value may come from to be captured by name: something that is a local of the generated function
+const CAPTURE_SOURCES := ["local_get", "local_set", "fn_entry", "event", "custom_event", "signal_event", "for", "for_each", "for_each_dict",
+	"call", "bcall", "util", "call_parent", "dyn_call", "call_self", "iface_call", "cast", "new", "spawn", "table_row", "await_value", "tpl", "const"]
+var _no_inline: Dictionary = {}    # lambda graph names never written inline ("*": none at all)
+var _lam_graphs: Dictionary = {}   # lambda graph name -> graph, for those that may be written inline
+var _lam_done: Dictionary = {}     # ... written inline at least once
+var _lam_failed: Dictionary = {}   # ... that some use could not write inline (the function is written)
+var _lam_texts: Array = []         # [{head, lines}] for each inline lambda made
+var _lam_seq := 0
+var _rename: Dictionary = {}       # while writing a lambda inline: captured parameter -> the name it is read by
+var _visible: Array = []           # while writing a lambda inline: the names of every function around it
+var _ev_caps: Array = []           # [EventGraph local, lambda name]: captured by name, so it must stay a local
+var _redo: Dictionary = {}         # lambdas to write as functions after all (a capture became a member)
+var lambda_notes: Dictionary = {}  # lambda graph name -> why it was written as a function instead of inline
+var _cap_kind := ""                # the kind of node the last value _capture_name accepted comes from
+
 
 ## Compiles in up to two passes: the first finds values that are read outside the execution path that
 ## produced them (another event's outputs, a node on a different branch); the second stores exactly those
 ## in per-instance members, which is how Unreal Blueprints behave (the last value written is what you read).
+## A lambda that turned out not to be writable inline after all is written again as a function.
 func compile(schematic: Dictionary) -> String:
 	var code := _compile_once(schematic)
-	if _want.is_empty():
+	var redo := _redo.duplicate()
+	if code.contains(LAM_OPEN) or code.contains(LAM_CLOSE):
+		redo = {"*": true}   # an inline lambda ended up somewhere it can't be spread over lines
+	if not redo.is_empty():
+		var again = get_script().new()
+		again._no_inline = _no_inline.merged(redo)
+		again._hoist = _hoist.duplicate()
+		again._pass2 = _pass2
+		return _take(again, again.compile(schematic))
+	if _want.is_empty() or _pass2:
 		return code
 	var second = get_script().new()
 	second._hoist = _want.duplicate()
 	second._pass2 = true
-	code = second._compile_once(schematic)
-	errors = second.errors
-	line_map = second.line_map
-	node_lines = second.node_lines
-	pin_exprs = second.pin_exprs
-	block_lines = second.block_lines
+	second._no_inline = _no_inline.duplicate()
+	return _take(second, second.compile(schematic))
+
+
+func _take(other: Object, code: String) -> String:
+	errors = other.errors
+	line_map = other.line_map
+	node_lines = other.node_lines
+	pin_exprs = other.pin_exprs
+	block_lines = other.block_lines
+	lambda_notes = lambda_notes.merged(other.lambda_notes, true)
 	return code
 
 
@@ -100,8 +139,9 @@ func _compile_once(schematic: Dictionary) -> String:
 		_err(0, 0, "A function library can't have event dispatchers: it is never instanced, so nothing could bind to them")
 
 	var event_locals := []
+	_find_inline_lambdas()
 	for src_graph in bp.graphs:
-		if src_graph.kind == "macro":
+		if src_graph.kind == "macro" or _lam_graphs.has(String(src_graph.name)):
 			continue
 		_load_graph(_expand(src_graph))
 		var g: Dictionary = _g
@@ -127,11 +167,15 @@ func _compile_once(schematic: Dictionary) -> String:
 						_err(_gid, n.id, _d(n).err)
 						continue
 					var args := PackedStringArray()
-					for a in m.args:
+					var arg_names := []
+					for ai in m.args.size():
+						var a: Dictionary = m.args[ai]
 						var h := T.hint(T.from_info(a))
-						args.append(T.ident(String(a.name)) + ((": " + h) if h != "" else ""))
+						arg_names.append(_event_arg(n, ai, String(a.name)))
+						args.append(String(arg_names[-1]) + ((": " + h) if h != "" else ""))
 					if _block(String(n.p.name), "func %s(%s) -> void:" % [n.p.name, ", ".join(args)], n, "then"):
 						_blocks[-1]["event"] = true
+						_blocks[-1]["arg_names"] = arg_names
 				"custom_event":
 					var nm := T.ident(String(n.p.get("name", "")))
 					if _block(nm, "func %s(%s) -> void:" % [nm, _param_list(n.p.get("params", []))], n, "then"):
@@ -179,8 +223,17 @@ func _compile_once(schematic: Dictionary) -> String:
 						var src := "" if path == "." else "get_node(^\"%s\")." % path.c_escape()
 						_ready_pre.append([1, "%s%s.connect(%s)" % [src, n.p.signal, fn], _gid, n.id])
 
+	_lambda_functions()
 	_implement_interfaces()
 	_settle_event_locals(event_locals)
+	for cap in _ev_caps:
+		# an EventGraph local a lambda captured by name became a member: the lambda would read it when called,
+		# where the original took its value when the lambda was made
+		for m in _members:
+			var text := String(m[0])
+			if text.begins_with("var ") and text.substr(4).get_slice(" ", 0).get_slice(":", 0) == String(cap[0]):
+				_redo[String(cap[1])] = true
+				lambda_notes[String(cap[1])] = "%s, which it captures, is a member of the script" % cap[0]
 	_merge_prelude("_ready" if is_node else "_init", "func %s() -> void:" % ("_ready" if is_node else "_init"), _ready_pre)
 	_merge_prelude("_unhandled_input", "func _unhandled_input(event: InputEvent) -> void:", _input_pre)
 	# Construction Script: runs when the node becomes ready (in game and in the editor) and again whenever an
@@ -414,6 +467,10 @@ func _merge_prelude(fn: String, header: String, pre: Array) -> void:
 		return
 	for b in _blocks:
 		if b.name == fn:
+			# the prelude reads the engine's parameter names; an event may call its parameters otherwise
+			var own: Array = b.get("arg_names", [])
+			if fn == "_unhandled_input" and not own.is_empty() and String(own[0]) != "event":
+				pre = pre.map(func(l): return [l[0], _replace_word(String(l[1]), "event", String(own[0])), l[2], l[3]])
 			b.lines = pre + b.lines
 			return
 	_blocks.push_front({"name": fn, "header": header, "lines": pre, "gid": 0, "nid": 0})
@@ -655,8 +712,58 @@ func _err(gid: int, nid: int, msg: String, warn := false) -> void:
 
 
 func _line(ind: int, text: String, nid: int) -> void:
-	_out.append([ind, text, _gid, int(_origin.get(nid, nid))])
+	if text.contains(LAM_OPEN):
+		_lambda_lines(ind, text, _gid, int(_origin.get(nid, nid)))
+	else:
+		_out.append([ind, text, _gid, int(_origin.get(nid, nid))])
 	_stmts += 1
+
+
+## A line holding an inline lambda: the line runs up to the lambda's header, the lambda's body follows on lines
+## of its own (each still the line of the node in the lambda's graph it came from, for the debugger), and what
+## came after the lambda goes on on the next line. Inside brackets GDScript reads that as one statement; outside
+## them, the lambda is put in brackets of its own.
+func _lambda_lines(ind: int, text: String, gid: int, nid: int, open := 0) -> void:
+	var a := text.find(LAM_OPEN)
+	var b := text.find(LAM_CLOSE, a)
+	var lam: Dictionary = _lam_texts[int(text.substr(a + 1, b - a - 1))]
+	var before := text.substr(0, a)
+	var after := text.substr(b + 1)
+	var depth := open + _open_brackets(before)
+	var rest := after.strip_edges()
+	if rest != "" and (depth <= 0 or rest[0] in [".", "(", "["]):   # (something done with the lambda itself, like .call())
+		before += "("
+		after = ")" + after
+		depth += 1
+	_out.append([ind, before + String(lam.head), gid, nid, true] if open != 0 else [ind, before + String(lam.head), gid, nid])
+	for l in lam.lines:
+		_out.append([ind + int(l[0])] + l.slice(1))
+	if after.contains(LAM_OPEN):
+		_lambda_lines(ind, after, gid, nid, depth)
+	elif after != "":
+		_out.append([ind, after, gid, nid, true])
+
+
+## How many brackets are open at the end of a piece of GDScript text (strings skipped).
+static func _open_brackets(text: String) -> int:
+	var depth := 0
+	var quote := ""
+	var i := 0
+	while i < text.length():
+		var c := text[i]
+		if quote != "":
+			if c == "\\":
+				i += 1
+			elif c == quote:
+				quote = ""
+		elif c == "\"" or c == "'":
+			quote = c
+		elif c in ["(", "[", "{"]:
+			depth += 1
+		elif c in [")", "]", "}"]:
+			depth -= 1
+		i += 1
+	return depth
 
 
 func _member(text: String, nid: int) -> void:
@@ -691,7 +798,7 @@ func _block(name: String, header: String, entry: Dictionary, start_pin: String) 
 			var pname := String(hk).substr(prefix.length())
 			var mname := "__p%d_%s_g%d" % [int(entry.id), pname, _gid]
 			_member("var %s = %s" % [mname, T.default_literal(String(_hoist[hk]))], int(entry.id))
-			_line(1, "%s = %s" % [mname, pname], int(entry.id))
+			_line(1, "%s = %s" % [mname, _event_pin_name(entry, pname)], int(entry.id))
 	_chain_from = int(entry.id)
 	_chain(tgt[0], tgt[1], 1, {})
 	_cur_block = ""
@@ -915,6 +1022,315 @@ func _compile_function(g: Dictionary) -> void:
 		_err(_gid, 0, "Function '%s' has no entry node" % g.name)
 		return
 	_in_function = true
+	var ret := _function_ret(g)
+	var header := "%sfunc %s(%s) -> %s:" % ["static " if (bool(g.get("static", false)) and not _lib) else "", fname, _param_list(g.inputs), ret]
+	if ret == "-":
+		header = header.replace(" -> -:", ":")   # an imported function written without a return type stays without one
+	if not _block(fname, header, entry, "then"):
+		return
+	var b: Dictionary = _blocks[-1]
+	if not g.get("pre", []).is_empty():
+		b["pre"] = g.pre.duplicate()
+	b.lines = _function_body(g, entry, b.lines)
+	_in_function = false
+
+
+# ---------------------------------------------------------------- lambdas written inline
+
+## The lambda graphs (see LAM_OPEN) that may be written where they are used: used from one place only, by an
+## Event Reference or a Lambda node in a graph that is not a macro, and named nowhere else (text nodes,
+## variables, code carried over as written). Anything else about them is checked where they are used.
+func _find_inline_lambdas() -> void:
+	_lam_graphs = {}
+	if _no_inline.has("*") or _lib:
+		return
+	for g in bp.graphs:
+		if String(g.kind) == "function" and g.has("lambda") and not _no_inline.has(String(g.name)) and g.get("pre", []).is_empty() \
+				and int(g.lambda) >= 0 and int(g.lambda) <= g.inputs.size():
+			_lam_graphs[String(g.name)] = g
+	if _lam_graphs.is_empty():
+		return
+	var uses := {}
+	var bad := {}
+	var texts := PackedStringArray([String(bp.get("extra_code", ""))])
+	for v in bp.variables:
+		texts.append(String(v.get("raw", "")))
+		texts.append(String(v.get("default", "")))
+	for g in bp.graphs:
+		for n in g.nodes:
+			var fn := String(n.get("p", {}).get("fn", ""))
+			if _lam_graphs.has(fn):
+				uses[fn] = int(uses.get(fn, 0)) + 1
+				if String(g.kind) == "macro" or not String(n.kind) in ["event_ref", "closure"]:
+					bad[fn] = true
+			if String(n.kind) in ["code", "expr"]:
+				texts.append(String(n.get("p", {}).get("code", "")))
+	var all_text := "\n".join(texts)
+	for nm in _lam_graphs.keys():
+		if int(uses.get(nm, 0)) != 1 or bad.has(nm) or (all_text.contains(nm) and _replace_word(all_text, nm, "\u0001") != all_text):
+			_lam_graphs.erase(nm)
+			lambda_notes[nm] = "it is used from %d places, or from a macro or text" % int(uses.get(nm, 0))
+
+
+## The lambda graphs that some use did not write inline, or that nothing wrote, are written as functions, as
+## they always were.
+func _lambda_functions() -> void:
+	var written := {}
+	for round_no in 2:
+		var again := true
+		while again:
+			again = false
+			for g in bp.graphs:
+				var nm := String(g.name)
+				if not _lam_graphs.has(nm) or written.has(nm):
+					continue
+				if _lam_failed.has(nm) or (round_no == 1 and not _lam_done.has(nm)):
+					written[nm] = true
+					if not _lam_failed.has(nm):
+						lambda_notes[nm] = "the place it is used is never written"
+					again = true
+					_load_graph(_expand(g))
+					_compile_function(_g)
+
+
+## A Bind of a lambda graph's captured values onto an Event Reference to it, written as the lambda. "" if not.
+func _lambda_from_bind(n: Dictionary, scope: Dictionary) -> String:
+	var tk := "%d:target" % int(n.id)
+	if not _inw.has(tk) or _origin.has(int(n.id)):
+		return ""
+	var ref: Dictionary = _nodes.get(int(_inw[tk][0]), {})
+	if ref.is_empty() or String(ref.kind) != "event_ref" or _origin.has(int(ref.id)) or _outw.get("%d:fn" % int(ref.id), []).size() != 1:
+		return ""
+	var lg: Dictionary = _lam_graphs.get(String(ref.p.get("fn", "")), {})
+	if lg.is_empty() or int(lg.lambda) == 0 or int(n.p.get("n", 0)) != int(lg.lambda):
+		return ""
+	var exprs := []
+	var pins := []
+	for i in int(lg.lambda):
+		pins.append("v%d" % i)
+		exprs.append(_in(n, "v%d" % i, scope))
+	return _inline_lambda(lg, exprs, [n, pins], scope)
+
+
+## A Lambda node (a lambda with default values, or one handed to connect()) written as the lambda. "" if not.
+func _lambda_from_closure(n: Dictionary, scope: Dictionary) -> String:
+	var lg: Dictionary = _lam_graphs.get(String(n.p.get("fn", "")), {})
+	if lg.is_empty():
+		return ""
+	if _origin.has(int(n.id)) or lg.inputs.size() - int(n.p.get("n", 0)) != int(lg.lambda):
+		_lam_failed[String(lg.name)] = true
+		lambda_notes[String(lg.name)] = "its Lambda node is inside a macro" if _origin.has(int(n.id)) else "its Lambda node does not pass the values it captures"
+		return ""
+	var exprs := []
+	var pins := []
+	for i in int(lg.lambda):
+		pins.append("c%d" % i)
+		exprs.append(_in(n, "c%d" % i, scope))
+	var made := _inline_lambda(lg, exprs, [n, pins], scope)
+	return made
+
+
+## The name a captured value is read by, when it is one the inline lambda can capture by that name: a local,
+## parameter or loop variable of the generated function around it (not a member, which a lambda would read when
+## it is called rather than when it is made). "" if not.
+func _capture_name(n: Dictionary, pin: String, expr: String) -> String:
+	var key := "%d:%s" % [int(n.id), pin]
+	if not _inw.has(key) or not expr.is_valid_identifier() or expr.begins_with("__") or expr in KEYWORDS:
+		return ""
+	var src: Dictionary = _nodes.get(int(_inw[key][0]), {})
+	var guard := 0
+	while not src.is_empty() and String(src.kind) == "reroute" and guard < 100:
+		guard += 1
+		var rk := "%d:i" % int(src.id)
+		src = _nodes.get(int(_inw[rk][0]), {}) if _inw.has(rk) else {}
+	if src.is_empty() or not String(src.kind) in CAPTURE_SOURCES:
+		return ""
+	if String(src.kind) == "const" and not src.p.has("of"):
+		return ""   # a name node only (a parameter, or a name a Match case binds)
+	if String(src.kind) == "tpl" and _d(src).pure:
+		return ""   # a template's value written out where it is read, which may be any name
+	for v in bp.variables:
+		if T.ident(String(v.name)) == expr and not String(src.kind) in ["local_get", "local_set", "fn_entry", "const"]:
+			return ""
+	_cap_kind = String(src.kind)
+	return expr
+
+
+## Writes a lambda graph as the lambda it was: its body compiled in place, its captured parameters read by
+## the names the code around it has for them (`outer`, one expression per captured parameter; `at` is
+## [node, [pin per captured value]] they came from). Returns the expression standing for it, or "" (and the
+## graph is then written as a function) when the inline lambda could not be shown to mean the same.
+func _inline_lambda(lg: Dictionary, outer: Array, at: Array, scope: Dictionary) -> String:
+	var name := String(lg.name)
+	var k := int(lg.lambda)
+	var own_n: int = lg.inputs.size() - k
+	var fail := func() -> String:
+		_lam_failed[name] = true
+		return ""
+	if outer.size() != k or own_n < 0:
+		lambda_notes[name] = "its captured values do not match its inputs"
+		return fail.call()
+	var own := {}
+	for i in own_n:
+		own[T.ident(String(lg.inputs[i][0]))] = true
+	# the names the lambda's captured parameters are read by
+	var seq := _lam_seq
+	_lam_seq += 1
+	var rename := {}
+	var outer_names := {}
+	var pairs := []
+	var ev_caps := []
+	for i in k:
+		var cap := T.ident(String(lg.inputs[own_n + i][0]))
+		var o := _capture_name(at[0], String(at[1][i]), String(outer[i]))
+		if o == "" or own.has(o):
+			lambda_notes[name] = "the captured value %s is `%s` where it is made, not a local of its own" % [cap, String(outer[i])] if o == "" \
+				else "a parameter of its own is called %s, the name it captures %s by" % [o, cap]
+			return fail.call()
+		outer_names[o] = cap
+		pairs.append([cap, o])
+		if o != cap:
+			rename[cap] = "zz_sccap_%d_%d" % [seq, i]
+		if _cap_kind in ["local_get", "local_set"] and String(_g.kind) != "function":
+			ev_caps.append([o, name])
+	# every name the code around the lambda has declared where the lambda is made: the lambda may not declare one
+	var visible := {}
+	for key in scope:
+		if not String(key).begins_with("\u0001"):
+			visible[String(key)] = true
+	for l in _g.locals:
+		visible[T.ident(String(l.name))] = true
+	if String(_g.kind) == "function":
+		for inp in _g.inputs:
+			visible[T.ident(String(inp[0]))] = true
+	for before in _visible:
+		visible.merge(before)
+	for o in outer_names:
+		visible[o] = true
+	# compile the lambda's graph in place of the code around it
+	var saved := [_g, _gid, _nodes, _inw, _outw, _desc, _out, _entry_id, _stmts, _path, _in_function, _loop, _origin, _inline,
+		_headers, _active, _lam, _chain_from, _rename, _depth]
+	_visible.append(visible)
+	_load_graph(_expand(lg))
+	var gid := _gid
+	var entry := {}
+	for n in _g.nodes:
+		if String(n.kind) == "fn_entry":
+			entry = n
+	var lines := []
+	var head := ""
+	if not entry.is_empty():
+		_in_function = true
+		_out = []
+		_entry_id = int(entry.id)
+		_stmts = 0
+		_path = {}
+		_loop = 0
+		_lam = 0
+		_active = {}
+		_headers = {}
+		_depth = 0
+		_rename = rename
+		var tgt := _follow(int(entry.id), "then")
+		_mark_headers(tgt[0], tgt[1], {}, {})
+		_chain_from = int(entry.id)
+		_chain(tgt[0], tgt[1], 1, {})
+		lines = _function_body(_g, entry, _out)
+		if lines.is_empty():
+			lines = [[1, "pass", _gid, int(entry.id)]]   # a lambda that does nothing (`func(): pass`) still needs a body
+		var ret := _function_ret(_g)
+		head = "func(%s)%s:" % [_param_list(_g.inputs.slice(0, own_n)), "" if ret == "-" else " -> " + ret]
+	var made_stmts := _stmts
+	_visible.pop_back()
+	_g = saved[0]
+	_gid = saved[1]
+	_nodes = saved[2]
+	_inw = saved[3]
+	_outw = saved[4]
+	_desc = saved[5]
+	_out = saved[6]
+	_entry_id = saved[7]
+	_stmts = int(saved[8]) + made_stmts
+	_path = saved[9]
+	_in_function = saved[10]
+	_loop = saved[11]
+	_origin = saved[12]
+	_inline = saved[13]
+	_headers = saved[14]
+	_active = saved[15]
+	_lam = saved[16]
+	_chain_from = saved[17]
+	_rename = saved[18]
+	_depth = saved[19]
+	var exprs: Dictionary = pin_exprs.get(_cur_block, {})
+	var prefix := "%d:" % gid
+	var why := "it has no entry node" if entry.is_empty() else ""
+	# A name the lambda declares that the code around it has declared already (a loop variable both number by node
+	# id, say) is one GDScript refuses: the lambda's own is given a name of its own. Every use of that name in the
+	# lambda is its own (what it reads from outside comes in under the captured names).
+	var declared := RegEx.create_from_string("(?:^|[^A-Za-z0-9_.])(?:var|for)\\s+([A-Za-z_][A-Za-z0-9_]*)")
+	var renames := {}
+	var all_text := "\n".join(lines.map(func(l): return String(l[1])))
+	for l in lines:
+		for m in declared.search_all(String(l[1])):
+			var dn := m.get_string(1)
+			if visible.has(dn) and not renames.has(dn):
+				var fresh := "%s_l%d" % [dn, seq]
+				var more := 0
+				while visible.has(fresh) or all_text.contains(fresh):
+					more += 1
+					fresh = "%s_l%d_%d" % [dn, seq, more]
+				renames[dn] = fresh
+	# The lambda's body must mean the same with the captured names in it: no captured parameter left under its
+	# own name (in text carried over as written, say), and no name of the lambda's own that is also a name it
+	# captures.
+	for l in lines:
+		var text := _lambda_names(String(l[1]), renames, {})
+		if text.contains(LAM_OPEN) or text.contains(LAM_CLOSE):
+			why = "a lambda inside it could not be written"
+		for cap in rename:
+			if text.contains(cap) and _replace_word(text, cap, "\u0001") != text:
+				why = "its body names the captured value %s directly" % cap
+		for o in outer_names:
+			if rename.has(String(outer_names[o])) and text.contains(o) and _replace_word(text, o, "\u0001") != text:
+				why = "its body has a name of its own that is also %s, which it captures" % o
+		if why != "":
+			break
+	if why != "":
+		for key in exprs.keys():
+			if String(key).begins_with(prefix):
+				exprs.erase(key)
+		lambda_notes[name] = why
+		return fail.call()
+	# the captured parameters are read by the outer names
+	var tokens := {}
+	for pair in pairs:
+		if rename.has(String(pair[0])):
+			tokens[String(rename[String(pair[0])])] = String(pair[1])
+	if not tokens.is_empty() or not renames.is_empty():
+		for l in lines:
+			l[1] = _lambda_names(String(l[1]), renames, tokens)
+		for key in exprs:
+			if String(key).begins_with(prefix):
+				for pid in exprs[key]:
+					exprs[key][pid] = _lambda_names(String(exprs[key][pid]), renames, tokens)
+	_ev_caps.append_array(ev_caps)
+	_lam_done[name] = true
+	_lam_texts.append({"head": head, "lines": lines})
+	return LAM_OPEN + str(_lam_texts.size() - 1) + LAM_CLOSE
+
+
+func _lambda_names(text: String, renames: Dictionary, tokens: Dictionary) -> String:
+	for dn in renames:
+		if text.contains(dn):
+			text = _replace_word(text, dn, String(renames[dn]))
+	for tok in tokens:
+		text = text.replace(tok, String(tokens[tok]))
+	return text
+
+
+## The return type a function graph is written with ("-": none written).
+func _function_ret(g: Dictionary) -> String:
 	var outs: Array = g.outputs
 	var ret := "void"
 	if outs.size() == 1:
@@ -925,14 +1341,13 @@ func _compile_function(g: Dictionary) -> void:
 		ret = "Array"
 	if String(g.get("ret_hint", "")) != "":
 		ret = String(g.ret_hint)
-	var header := "%sfunc %s(%s) -> %s:" % ["static " if (bool(g.get("static", false)) and not _lib) else "", fname, _param_list(g.inputs), ret]
-	if ret == "-":
-		header = header.replace(" -> -:", ":")   # an imported function written without a return type stays without one
-	if not _block(fname, header, entry, "then"):
-		return
-	var b: Dictionary = _blocks[-1]
-	if not g.get("pre", []).is_empty():
-		b["pre"] = g.pre.duplicate()
+	return ret
+
+
+## A function's lines with its locals declared and, when it returns something, a last return.
+func _function_body(g: Dictionary, entry: Dictionary, lines: Array) -> Array:
+	var outs: Array = g.outputs
+	var b := {"lines": lines}
 	var pre := []
 	for l in g.locals:
 		if bool(l.get("param", false)):
@@ -957,7 +1372,7 @@ func _compile_function(g: Dictionary) -> void:
 	if not outs.is_empty():
 		var last_is_return := false
 		for l in b.lines:
-			if l[0] == 1:
+			if l[0] == 1 and l.size() < 5:   # (a fifth item marks the rest of a statement an inline lambda broke up)
 				last_is_return = String(l[1]).begins_with("return")
 		if not last_is_return:
 			var defs := PackedStringArray()
@@ -966,7 +1381,7 @@ func _compile_function(g: Dictionary) -> void:
 			if String(g.get("ret_default", "")) != "" and defs.size() == 1:
 				defs[0] = String(g.ret_default)   # an imported function that returns one of its script's enums
 			b.lines.append([1, "return " + (defs[0] if defs.size() == 1 else "[" + ", ".join(defs) + "]"), _gid, int(entry.id)])
-	_in_function = false
+	return b.lines
 
 
 # ---------------------------------------------------------------- exec flow
@@ -1091,7 +1506,9 @@ func _chain(nid: int, pin: String, ind: int, scope: Dictionary) -> bool:
 				var parts := PackedStringArray()
 				for wpin in _d(_nodes[nid]).ins:
 					if wpin.type != "exec" and _inw.has("%d:%s" % [nid, wpin.id]):
-						parts.append("\"%s\": %s" % [wpin.id, _in(_nodes[nid], String(wpin.id), scope)])
+						var shown_value := _in(_nodes[nid], String(wpin.id), scope)
+						if not shown_value.contains(LAM_OPEN):   # (a lambda being made is not shown: it would be made twice)
+							parts.append("\"%s\": %s" % [wpin.id, shown_value])
 				if not parts.is_empty():
 					watch = ", {%s}" % ", ".join(parts)
 			# and the node execution came from, so the editor can light the wire that was followed
@@ -1099,7 +1516,10 @@ func _chain(nid: int, pin: String, ind: int, scope: Dictionary) -> bool:
 			if came != 0 and came != int(_origin.get(nid, nid)):
 				watch = (watch if watch != "" else ", {}") + ", %d" % came
 			_line(ind, "__sc_trace(%d, %d%s)" % [_gid, int(_origin.get(nid, nid)), watch], nid)
-		from = nid
+		# (a reroute is a knot on the wire, not a place execution stops at: what comes after it was reached from
+		# the node before it, and the editor lights every piece of the wire between the two)
+		if String(_nodes[nid].kind) != "reroute":
+			from = nid
 		var nxt := _step(_nodes[nid], pin, ind, scope)
 		nid = nxt[0]
 		pin = nxt[1]
@@ -1269,15 +1689,18 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 				_line(ind, "%s.%s = %s" % [_prop_expr(n, scope), prop_change[0], prop_change[1]], id)
 			return _follow(id, "then")
 		"var_set", "local_set":
+			var set_name := T.ident(String(p.name))
+			if n.kind == "local_set":
+				set_name = String(_rename.get(set_name, set_name))   # a captured value the lambda being written inline changes
 			if String(p.get("part", "")) != "" or String(p.get("op", "")) != "":
-				var held := T.ident(String(p.name)) + (("." + String(p.part)) if String(p.get("part", "")) != "" else "")
+				var held := set_name + (("." + String(p.part)) if String(p.get("part", "")) != "" else "")
 				_line(ind, "%s %s= %s" % [held, String(p.get("op", "")), _in(n, "value", scope)], id)
 				return _follow(id, "then")
 			var var_change := _member_change(n, scope)
 			if var_change.is_empty():
-				_line(ind, "%s = %s" % [T.ident(String(p.name)), _in(n, "value", scope)], id)
+				_line(ind, "%s = %s" % [set_name, _in(n, "value", scope)], id)
 			else:
-				_line(ind, "%s.%s = %s" % [T.ident(String(p.name)), var_change[0], var_change[1]], id)
+				_line(ind, "%s.%s = %s" % [set_name, var_change[0], var_change[1]], id)
 			return _follow(id, "then")
 		"set_index":
 			_line(ind, "%s[%s] = %s" % [_in(n, "c", scope), _in(n, "k", scope), _in(n, "v", scope)], id)
@@ -1568,9 +1991,9 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 			var cases: Array = p.get("cases", [])
 			for i in cases.size():
 				_line(ind + 1, "%s:" % String(cases[i][1]), id)
-				_sub(id, "case_%d" % i, ind + 2, scope)
+				_sub(id, "case_%d" % i, ind + 2, _arm_scope(scope, id, "case_%d" % i))
 			_line(ind + 1, "_:", id)
-			_sub(id, "default", ind + 2, scope)
+			_sub(id, "default", ind + 2, _arm_scope(scope, id, "default"))
 			return STOP
 		"fn_return":
 			var vals := PackedStringArray()
@@ -1669,7 +2092,7 @@ func _in(n: Dictionary, pid: String, scope: Dictionary) -> String:
 		else:
 			e = _out_expr(src, w[1], scope, int(n.id))
 		_depth -= 1
-		if _cur_block != "" and not _origin.has(int(n.id)):
+		if _cur_block != "" and not _origin.has(int(n.id)) and not e.contains(LAM_OPEN):
 			# remembered for the debugger, which shows this value on the pin while the game is paused
 			var fn_pins: Dictionary = pin_exprs.get_or_add(_cur_block, {})
 			var node_pins: Dictionary = fn_pins.get_or_add("%d:%d" % [_gid, int(n.id)], {})
@@ -1742,6 +2165,37 @@ func _scoped(name: String, src: Dictionary, scope: Dictionary, consumer: int) ->
 	return name
 
 
+## The scope for the nodes under one case of a Match: the scope the Match is in, plus a mark (not a name a
+## variable could have) that says which case of which Match the code being written is inside.
+func _arm_scope(scope: Dictionary, match_id: int, arm: String) -> Dictionary:
+	var inside := scope.duplicate()
+	inside["\u0001arm %d:%s" % [match_id, arm]] = true
+	return inside
+
+
+## A "name node" (a const the converter made to stand for a parameter of an event or function, or for a name a
+## Match case binds: `p.of` says where the name belongs) is only written where that name exists. Returns "" when
+## it does, else the message. A const without `p.of` (made in the editor, or saved before this) is never checked,
+## and nor is one that came out of an expanded macro: its `of` is that of the graph the macro was made from.
+func _name_place(src: Dictionary, scope: Dictionary) -> String:
+	var p: Dictionary = src.p
+	var nm := String(p.get("expr", ""))
+	var home: Variant = _nodes.get(int(p.of))
+	var bound := bool(p.get("bound", false))
+	var elsewhere: bool = p.has("in") and int(p["in"]) != _gid
+	if bound:
+		if elsewhere or home == null or home.kind != "switch":
+			return "'%s' was a name set by a Match case that is not in this graph any more." % nm
+		if not scope.has("\u0001arm %d:%s" % [int(p.of), String(p.get("arm", ""))]):
+			return "'%s' is a name set by one case of a Match. It can only be read inside that case." % nm
+		return ""
+	if elsewhere or home == null or not home.kind in ["event", "custom_event", "signal_event", "fn_entry"]:
+		return "'%s' was a parameter of an event or function that is not in this graph any more." % nm
+	if int(p.of) != _entry_id:
+		return "'%s' is a parameter of %s. It can only be read by nodes that run from that event." % [nm, _title(home)]
+	return ""
+
+
 func _title(n: Dictionary) -> String:
 	var d := _d(n)
 	return d.title if d.title != "" else String(n.kind)
@@ -1768,9 +2222,13 @@ func _out_expr(src: Dictionary, pin: String, scope: Dictionary, consumer: int) -
 				else:
 					_want[pk] = _out_type(src, pin)
 				return "null"
-			return pin.trim_prefix("p_")
-		"var_get", "local_get", "var_set", "local_set":
+			var param_name := _event_pin_name(src, pin.trim_prefix("p_"))
+			return String(_rename.get(param_name, param_name)) if src.kind == "fn_entry" else param_name
+		"var_get", "var_set":
 			return T.ident(String(p.name))
+		"local_get", "local_set":
+			var local_name := T.ident(String(p.name))
+			return String(_rename.get(local_name, local_name))
 		"set_prop", "get_prop":
 			return _prop_expr(src, scope)
 		"self":
@@ -1783,8 +2241,18 @@ func _out_expr(src: Dictionary, pin: String, scope: Dictionary, consumer: int) -
 			var cls := String(p.get("cls", "Node"))
 			return "(%s as %s)" % [e, cls] if (cls != "Node" and T.hint(cls) != "") else e
 		"const":
+			if p.has("of") and not _origin.has(int(src.id)):
+				var misplaced := _name_place(src, scope)
+				if misplaced != "":
+					_err(_gid, int(src.id), misplaced)
+					return "null"
+			if p.has("of") and not bool(p.get("bound", false)) and _rename.has(String(p.expr)):
+				return String(_rename[String(p.expr)])   # a parameter of the lambda being written inline that it captured
 			return String(p.expr)
 		"closure":
+			var as_lambda := _lambda_from_closure(src, scope)
+			if as_lambda != "":
+				return as_lambda
 			var cg := Model.graph_named(bp, String(p.fn))
 			var own := mini(int(p.get("n", 0)), cg.inputs.size())
 			var heads := PackedStringArray()
@@ -1805,6 +2273,16 @@ func _out_expr(src: Dictionary, pin: String, scope: Dictionary, consumer: int) -
 		"await_value":
 			return _scoped("awaited_%d" % src.id, src, scope, consumer)
 		"event_ref":
+			var lg: Dictionary = _lam_graphs.get(String(p.fn), {})
+			if not lg.is_empty() and int(lg.lambda) == 0 and not _origin.has(int(src.id)) and _outw.get("%d:fn" % int(src.id), []).size() == 1:
+				var made := _inline_lambda(lg, [], [], scope)
+				if made != "":
+					return made
+			if not lg.is_empty():
+				_lam_failed[String(p.fn)] = true   # referred to as a function after all: it is written as one
+				if not lambda_notes.has(String(p.fn)):
+					lambda_notes[String(p.fn)] = "its reference (or the Bind of what it captures) is inside a macro or used twice" if _origin.has(int(src.id)) or int(lg.lambda) == 0 \
+						else "it is bound to values that are not all simply what it captures (or inside a macro)"
 			return T.ident(String(p.fn))
 		"op":
 			var op := String(p.op)
@@ -2053,6 +2531,10 @@ func _prop_expr(n: Dictionary, scope: Dictionary) -> String:
 
 func _call_expr(n: Dictionary, scope: Dictionary) -> String:
 	var p: Dictionary = n.p
+	if n.kind == "bcall" and String(p.get("type", "")) == "Callable" and String(p.get("method", "")) == "bind":
+		var as_lambda := _lambda_from_bind(n, scope)
+		if as_lambda != "":
+			return as_lambda
 	var d := _d(n)
 	var pins: Array = d.ins.filter(func(pi): return pi.type != "exec" and pi.id != "target")
 	# Drop trailing arguments that are still at their declared default.
@@ -2113,3 +2595,23 @@ func _call_expr(n: Dictionary, scope: Dictionary) -> String:
 func _blocks_current_name() -> String:
 	var e: Dictionary = _nodes.get(_entry_id, {})
 	return String(e.get("p", {}).get("name", "")) if e.get("kind", "") == "event" else ""
+
+
+## The name the parameter behind an entry node's output pin (`engine_name`, the pin id without its "p_") has
+## in the code: for an event of a converted script, the name that script gave it.
+func _event_pin_name(n: Dictionary, engine_name: String) -> String:
+	if String(n.get("kind", "")) == "event" and n.get("p", {}).has("names"):
+		var m := R.find_method(R.self_class(bp), String(n.p.name))
+		for ai in m.get("args", []).size():
+			if T.ident(String(m.args[ai].name)) == engine_name:
+				return _event_arg(n, ai, String(m.args[ai].name))
+	return engine_name
+
+
+## The name an event's parameter has in its header: the one the script it came from gave it (kept on the node
+## by the importer), else the engine's own.
+func _event_arg(n: Dictionary, index: int, engine_name: String) -> String:
+	var names: Array = n.get("p", {}).get("names", [])
+	if index < names.size() and String(names[index]).is_valid_identifier():
+		return String(names[index])
+	return T.ident(engine_name)

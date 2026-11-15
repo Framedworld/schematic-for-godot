@@ -10,7 +10,9 @@ extends RefCounted
 ##   graphs: [{id, name, kind:"event"|"function", inputs:[[name,type]], outputs:[[name,type]], pure,
 ##             locals:[{name,type,default}], next_id,
 ##             nodes:[{id, kind, x, y, p:{...}, d:{pin_id: literal}}],
-##             wires:[[from_node, from_pin, to_node, to_pin], ...], zoom, sx, sy}]
+##             wires:[[from_node, from_pin, to_node, to_pin], ...], zoom, sx, sy,
+##             lambda (a function graph a converted script's lambda became: how many of its last inputs are the
+##                     values it captures; the compiler writes it back as a lambda where it is used)}]
 ## }
 
 const MARKER := "# @schematic"
@@ -104,6 +106,15 @@ static func find_custom_event(bp: Dictionary, name: String) -> Dictionary:
 			if n.kind == "custom_event" and n.p.get("name", "") == name:
 				return n
 	return {}
+
+
+## A name node (a const the converter made for a parameter or for a name a Match case binds) remembers where its
+## name belongs (`p.of`, `p.in`, `p.bound`, `p.arm`), and the compiler checks it is read there. A copy that goes
+## into a macro, or comes out of one, is no longer in that place: the note is dropped and the copy is a plain name.
+static func forget_place(node: Dictionary) -> void:
+	if String(node.get("kind", "")) == "const" and node.get("p", {}).has("of"):
+		for key in ["of", "in", "bound", "arm"]:
+			node.p.erase(key)
 
 
 static func remove_node(g: Dictionary, id: int) -> void:

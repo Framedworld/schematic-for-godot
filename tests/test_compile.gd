@@ -4,8 +4,244 @@ extends SceneTree
 const Model := preload("res://addons/schematic/core/sc_model.gd")
 const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
 const R := preload("res://addons/schematic/core/sc_registry.gd")
+const Importer := preload("res://addons/schematic/core/sc_importer.gd")
+const T := preload("res://addons/schematic/core/sc_types.gd")
 
 var fails := 0
+
+# A script long enough that the importer gives the far parameter `dt` a node of its own, a second event, a
+# function, and a Match whose first case binds `p` and `q`.
+const V7_SOURCE := "extends Node\n\nfunc _process(dt):\n\tvar a = 1\n\tprint(a)\n\tprint(a)\n\tprint(a)\n\tprint(a)\n\tprint(a)\n\tprint(dt * 2.0)\n\nfunc _physics_process(delta):\n\tprint(\"x\")\n\nfunc helper(x):\n\tprint(x)\n\nfunc _ready():\n\tvar v = [1, 2]\n\tmatch v:\n\t\t[var p, var q]:\n\t\t\tprint(p + q)\n\t\t_:\n\t\t\tprint(\"none\")\n\tprint(\"after\")\n"
+
+
+func v7_check(label: String, ok: bool, detail := "") -> void:
+	if ok:
+		print("  PASS  ", label)
+	else:
+		print("  FAIL  ", label, "  ", detail)
+		fails += 1
+
+
+## The schematic the importer makes from V7_SOURCE.
+func v7_bp() -> Dictionary:
+	return Importer.new().convert(V7_SOURCE, {}).bp
+
+
+func v7_name_nodes(g: Dictionary, bound: bool) -> Array:
+	return g.nodes.filter(func(n): return n.kind == "const" and n.p.has("of") and bool(n.p.get("bound", false)) == bound)
+
+
+## The print node that an event's chain starts with ("x" for _physics_process).
+func v7_node(g: Dictionary, kind: String, key: String, value: Variant) -> Dictionary:
+	for n in g.nodes:
+		if n.kind == kind and (n.p.get(key) == value or n.d.get(key) == value):
+			return n
+	return {}
+
+
+## Makes `src`'s value pin the only thing feeding `reader`'s pin.
+func v7_feed(g: Dictionary, src: Dictionary, reader: Dictionary, pin: String) -> void:
+	g.wires = g.wires.filter(func(w): return not (int(w[2]) == int(reader.id) and w[3] == pin))
+	g.wires.append([int(src.id), "value", int(reader.id), pin])
+
+
+## Compiles and returns [code, errors that are not warnings].
+func v7_compile(bp: Dictionary) -> Array:
+	var c := Compiler.new()
+	var code := c.compile(bp)
+	return [code, c.errors.filter(func(e): return not e.w)]
+
+
+func v7_only(errs: Array, node_id: int, msg: String, label: String) -> void:
+	v7_check(label, errs.size() == 1 and int(errs[0].n) == node_id and String(errs[0].m) == msg,
+		"got %s, wanted node %d: %s" % [str(errs), node_id, msg])
+
+
+func v7_tests() -> void:
+	T.refresh_globals()
+	R.ensure_api()
+	print("==== V7: name nodes read where their name does not exist ====")
+	# a far parameter read in its own event
+	var bp := v7_bp()
+	var g: Dictionary = bp.graphs[0]
+	var far := v7_name_nodes(g, false)
+	v7_check("v7 far parameter: the importer made a name node with `of`", far.size() == 1 and String(far[0].p.expr) == "dt" and int(far[0].p.of) == 1)
+	var res := v7_compile(bp)
+	v7_check("v7 far parameter read in its own event: compiles with no error", res[1].is_empty() and String(res[0]).contains("print((dt * 2.0))"), str(res[1]))
+
+	# the same name node feeding a node of another event
+	bp = v7_bp()
+	g = bp.graphs[0]
+	far = v7_name_nodes(g, false)
+	var other := v7_node(g, "util", "a0", "\"x\"")
+	v7_feed(g, far[0], other, "a0")
+	res = v7_compile(bp)
+	v7_only(res[1], int(far[0].id), "'dt' is a parameter of Event Process. It can only be read by nodes that run from that event.",
+		"v7 name node read in another event: one error, on the name node, naming the event")
+	v7_check("v7 name node read in another event: the compile still completes", String(res[0]).contains("func _physics_process") and String(res[0]).contains("print(null)"), str(res[0]))
+
+	# the name node copied into the function's graph (its entry node has the same id as the event's)
+	bp = v7_bp()
+	g = bp.graphs[0]
+	far = v7_name_nodes(g, false)
+	var fg: Dictionary = bp.graphs[1]
+	var copy: Dictionary = far[0].duplicate(true)
+	copy.id = int(fg.next_id)
+	fg.next_id = int(fg.next_id) + 1
+	fg.nodes.append(copy)
+	var fprint := v7_node(fg, "util", "name", "print")
+	v7_feed(fg, copy, fprint, "a0")
+	res = v7_compile(bp)
+	v7_only(res[1], int(copy.id), "'dt' was a parameter of an event or function that is not in this graph any more.",
+		"v7 name node copied into a function graph: 'not in this graph any more'")
+
+	# a name a Match case binds
+	bp = v7_bp()
+	g = bp.graphs[0]
+	var bound := v7_name_nodes(g, true)
+	v7_check("v7 match: the importer made name nodes with bound, of and arm", bound.size() == 2 and bound.all(func(n): return int(n.p.of) == int(v7_node(g, "switch", "t", "any").id) and n.p.arm == "case_0"))
+	res = v7_compile(bp)
+	v7_check("v7 match name read inside its case: compiles with no error", res[1].is_empty() and String(res[0]).contains("print((p + q))"), str(res[1]))
+	var after := v7_node(g, "util", "a0", "\"after\"")
+	v7_feed(g, bound[0], after, "a0")
+	res = v7_compile(bp)
+	v7_only(res[1], int(bound[0].id), "'p' is a name set by one case of a Match. It can only be read inside that case.",
+		"v7 match name read after the match: the Match message")
+	bp = v7_bp()
+	g = bp.graphs[0]
+	bound = v7_name_nodes(g, true)
+	var none := v7_node(g, "util", "a0", "\"none\"")
+	v7_feed(g, bound[1], none, "a0")
+	res = v7_compile(bp)
+	v7_only(res[1], int(bound[1].id), "'q' is a name set by one case of a Match. It can only be read inside that case.",
+		"v7 match name read in another case: the Match message")
+
+	# a const with no `of`: graphs saved before this, and consts made in the editor
+	bp = v7_bp()
+	g = bp.graphs[0]
+	far = v7_name_nodes(g, false)
+	other = v7_node(g, "util", "a0", "\"x\"")
+	far[0].p.erase("of")
+	far[0].p.erase("in")
+	v7_feed(g, far[0], other, "a0")
+	res = v7_compile(bp)
+	v7_check("v7 const without `of`: no error", res[1].is_empty() and String(res[0]).contains("print(dt)"), str(res[1]))
+
+	# the entry node deleted while the name node stays wired to a reader in another event
+	bp = v7_bp()
+	g = bp.graphs[0]
+	far = v7_name_nodes(g, false)
+	other = v7_node(g, "util", "a0", "\"x\"")
+	v7_feed(g, far[0], other, "a0")
+	g.nodes = g.nodes.filter(func(n): return int(n.id) != 1)
+	g.wires = g.wires.filter(func(w): return int(w[0]) != 1 and int(w[2]) != 1)
+	res = v7_compile(bp)
+	v7_only(res[1], int(far[0].id), "'dt' was a parameter of an event or function that is not in this graph any more.",
+		"v7 entry node deleted: 'not in this graph any more'")
+	var mg := v7_bp()
+	var mgg: Dictionary = mg.graphs[0]
+	bound = v7_name_nodes(mgg, true)
+	v7_feed(mgg, bound[0], v7_node(mgg, "util", "a0", "\"after\""), "a0")
+	mgg.nodes = mgg.nodes.filter(func(n): return n.kind != "switch")
+	res = v7_compile(mg)
+	v7_check("v7 match node deleted: 'not in this graph any more'", res[1].any(func(e): return int(e.n) == int(bound[0].id) and String(e.m) == "'p' was a name set by a Match case that is not in this graph any more."), str(res[1]))
+
+
+
+
+## Lambdas of a converted script are written back as lambdas where they stood; the function and Bind form is
+## kept for graphs made by hand and wherever the inline form could mean something else.
+const LAMBDA_SOURCE := "extends Node\n\nvar out: Array = []\n\nfunc grid_sum(w: int, h: int) -> int:\n\tvar grid := PackedInt32Array()\n\tgrid.resize(w * h)\n\tvar get_cell := func(x: int, y: int) -> int:\n\t\tif x < 0 or y < 0 or x >= w or y >= h:\n\t\t\treturn 1\n\t\treturn grid[y * w + x]\n\tvar total := 0\n\tfor i in w:\n\t\ttotal += get_cell.call(i, 0) + get_cell.call(-1, i)\n\treturn total\n\nfunc _ready():\n\tout.append(grid_sum(4, 3))\n"
+const LAMBDA_RENAME_SOURCE := "extends RefCounted\n\nfunc f(n: int) -> int:\n\tvar off := 1\n\tvar pick := func(a: int) -> int:\n\t\tvar ra := a * 2\n\t\treturn ra + off - 1\n\tvar ra: int = pick.call(n)\n\treturn ra + off\n"
+## An EventGraph local captured by a lambda that has to be a member of the script (it is named in text): the
+## lambda must take its value when it is made, so it keeps the bound form.
+const LAMBDA_MEMBER_SOURCE := "extends Node\n\nvar out: Array = []\n\nfunc _ready():\n\tvar total := 0\n\tfor i in 3:\n\t\ttotal += i\n\tvar g := func(): return total\n\ttotal = 50\n\tout.append(g.call())\n\tset(\"total_ready\", 1)\n"
+
+
+func lambda_tests() -> void:
+	var bp: Dictionary = Importer.new().convert(LAMBDA_SOURCE, {}).bp
+	var c := Compiler.new()
+	var code := c.compile(bp)
+	var lg := Model.graph_named(bp, "_grid_sum_lambda")
+	v7_check("lambda: the importer marks the lambda's graph with its captured values", not lg.is_empty() and int(lg.get("lambda", -1)) == 3, str(lg.get("lambda", null)))
+	v7_check("lambda: written as a lambda where it stood", code.contains("var get_cell := func(x: int, y: int) -> int:") and not code.contains("func _grid_sum_lambda")
+		and not code.contains(".bind(") and not code.contains("_grid_sum_lambda"), code)
+	var gs := GDScript.new()
+	gs.source_code = code
+	v7_check("lambda: the script loads", gs.reload() == OK)
+	var lines := code.split("\n")
+	var body_line := -1
+	var head_line := -1
+	for i in lines.size():
+		if lines[i].contains("var get_cell := func("):
+			head_line = i + 1
+		if lines[i].strip_edges() == "return grid[((y * w) + x)]":
+			body_line = i + 1
+	var lgid := int(lg.get("id", -1))
+	var at: Array = c.line_map.get(body_line, [])
+	var head_at: Array = c.line_map.get(head_line, [])
+	v7_check("lambda: a line of its body belongs to a node of the lambda's graph", body_line != -1 and at.size() == 2 and int(at[0]) == lgid
+		and not Model.find_node(lg, int(at[1])).is_empty() and String(Model.find_node(lg, int(at[1])).kind) == "fn_return", "line %d -> %s" % [body_line, str(at)])
+	v7_check("lambda: its first line belongs to the node it is stored by", head_at.size() == 2 and int(head_at[0]) == int(Model.graph_named(bp, "grid_sum").id), str(head_at))
+	var every_body_line := true
+	for i in range(head_line + 1, head_line + 4):
+		var li: Array = c.line_map.get(i, [])
+		if li.size() != 2 or int(li[0]) != lgid:
+			every_body_line = false
+	v7_check("lambda: every line of its body belongs to the lambda's graph", every_body_line)
+	# live debugging: the trace calls inside the lambda name the lambda's graph
+	bp["trace"] = true
+	var traced := Compiler.new().compile(bp)
+	var tgs := GDScript.new()
+	tgs.source_code = traced
+	v7_check("lambda: with live debugging on, its nodes report from inside the lambda", traced.contains("\t\t__sc_trace(%d, " % lgid) and tgs.reload() == OK, traced)
+	bp.erase("trace")
+	# used from a second place (a call made in the editor, say): it is a function again
+	var gsum := Model.graph_named(bp, "grid_sum")
+	Model.add_node(gsum, "call_self", Vector2(), {"fn": "_grid_sum_lambda"})
+	var twice := Compiler.new().compile(bp)
+	v7_check("lambda: used from two places, it is the function and a Bind", twice.contains("func _grid_sum_lambda(") and twice.contains("_grid_sum_lambda.bind(grid, h, w)"), twice)
+
+	# a graph made by hand: a function with values bound to a reference to it stays exactly that
+	var hb := Model.new_schematic("Node", "")
+	var hg: Dictionary = hb.graphs[0]
+	hg.nodes.clear()
+	var ce := Model.add_node(hg, "custom_event", Vector2(), {"name": "run_bound", "params": [["k", "int"]]})
+	var fg := Model.new_graph(hb, "add_k", "function")
+	fg.inputs = [["x", "int"], ["k", "int"]]
+	fg.outputs = [["sum", "int"]]
+	var add := Model.add_node(fg, "op", Vector2(), {"op": "+", "l": "int", "r": "int", "ret": "int"})
+	wire(fg, fg.nodes[0], "p_x", add, "a")
+	wire(fg, fg.nodes[0], "p_k", add, "b")
+	wire(fg, fg.nodes[0], "then", fg.nodes[1], "exec")
+	wire(fg, add, "ret", fg.nodes[1], "r_sum")
+	var ref := Model.add_node(hg, "event_ref", Vector2(), {"fn": "add_k"})
+	var bnd := Model.add_node(hg, "bcall", Vector2(), {"type": "Callable", "method": "bind", "n": 1})
+	wire(hg, ref, "fn", bnd, "target")
+	wire(hg, ce, "p_k", bnd, "v0")
+	var keep := Model.add_node(hg, "print", Vector2(), {})
+	wire(hg, ce, "then", keep, "exec")
+	wire(hg, bnd, "ret", keep, "text")
+	var hand := Compiler.new().compile(hb)
+	v7_check("lambda: a function bound by hand stays a function and a Bind", hand.contains("func add_k(x: int, k: int) -> int:") and hand.contains("add_k.bind(k)")
+		and not hand.contains("func(x"), hand)
+
+	# a local of the lambda named like a local the function declares after it: GDScript would refuse the two in one
+	# scope once the lambda is inside the function, so the lambda's own is renamed
+	var rb: Dictionary = Importer.new().convert(LAMBDA_RENAME_SOURCE, {}).bp
+	var renamed := Compiler.new().compile(rb)
+	var rgs := GDScript.new()
+	rgs.source_code = renamed
+	var rok := rgs.reload() == OK
+	var robj: Object = rgs.new() if rok else null
+	v7_check("lambda: its own local is renamed where the function has one of that name", rok and renamed.contains("var ra_l") and not renamed.contains(".bind(")
+		and robj != null and int(robj.call("f", 3)) == 7, renamed)
+
+	# a captured EventGraph local that must be a member: the bound form, which takes the value when it is made
+	var mb: Dictionary = Importer.new().convert(LAMBDA_MEMBER_SOURCE, {}).bp
+	var member := Compiler.new().compile(mb)
+	v7_check("lambda: capturing a local that became a member, it stays a function and a Bind", member.contains("var total_ready") and member.contains("_ready_lambda.bind(total_ready)")
+		and member.contains("func _ready_lambda("), member)
 
 
 func wire(g, a, ap, b, bp_) -> void:
@@ -764,5 +1000,7 @@ func _init() -> void:
 
 	print("virtual _process found: ", not R.find_method("Node", "_process").is_empty(), "  static actions: ", R.static_actions().size(),
 		"  chain(CharacterBody3D): ", R.chain_actions("CharacterBody3D").size())
+	v7_tests()
+	lambda_tests()
 	print("FAILS: ", fails)
 	quit(1 if fails else 0)

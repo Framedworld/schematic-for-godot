@@ -1028,6 +1028,7 @@ func expand_macro(nid: int) -> void:
 			if src.kind in ["macro_in", "macro_out"]:
 				continue
 			var c: Dictionary = src.duplicate(true)
+			Model.forget_place(c)   # where the name belonged was a place in the graph the macro was made from
 			c.id = int(graph.next_id)
 			graph.next_id = int(graph.next_id) + 1
 			c.x = float(call.x) + float(src.x) - low.x
@@ -1170,6 +1171,18 @@ func _on_delete_nodes(_nodes: Array) -> void:
 		return
 	editor.mutate("Delete Nodes", func():
 		for id in ids:
+			# a reroute is a knot on a wire: taking it out leaves the wire, joined straight through
+			if String(Model.find_node(graph, id).get("kind", "")) == "reroute":
+				var into := []
+				var out_of := []
+				for w in graph.wires:
+					if int(w[2]) == id and String(w[3]) == "i":
+						into.append(w)
+					elif int(w[0]) == id and String(w[1]) == "o":
+						out_of.append(w)
+				for a in into:
+					for b in out_of:
+						graph.wires.append([int(a[0]), String(a[1]), int(b[2]), String(b[3])])
 			Model.remove_node(graph, id))
 
 

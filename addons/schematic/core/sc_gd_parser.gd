@@ -25,6 +25,7 @@ var _p := 0
 var _saw_raw := false
 var _lambdas: Dictionary = {}   # placeholder name -> the lambda lifted out of a statement's text
 var _open_quote := ""           # the quote the text last given to _open() ends inside, "" when it ends outside any string
+var _open_backslash := false    # the text last given to _open() ends with a line-continuation backslash (outside comments)
 
 
 # ---------------------------------------------------------------- tokenizer
@@ -34,23 +35,24 @@ func _tokenize(source: String) -> void:
 	_lines = []
 	var raw := source.replace("\r\n", "\n").split("\n")
 	var i := 0
+	var widths := [0]   # how far each enclosing block is indented: a line's depth counts blocks, not columns
 	while i < raw.size():
 		var first := i
 		var text := raw[i]
 		var lead := raw[first]
-		var base_tabs := 0
-		while base_tabs < lead.length() and lead[base_tabs] == "\t":
-			base_tabs += 1
+		var base_ws := 0
+		while base_ws < lead.length() and (lead[base_ws] == "\t" or lead[base_ws] == " "):
+			base_ws += 1
 		# keep taking lines while a bracket, a triple-quoted string or a trailing backslash is open
 		while _open(text) and i + 1 < raw.size():
 			i += 1
 			var more := raw[i]
 			var cut := 0
-			while cut < base_tabs and cut < more.length() and more[cut] == "\t":
+			while cut < base_ws and cut < more.length() and more[cut] == lead[cut]:
 				cut += 1
 			if _open_quote != "":
 				text += "\n" + more   # the rest of a string that runs over several lines: exactly as written
-			elif text.strip_edges(false, true).ends_with("\\"):
+			elif _open_backslash:   # (a backslash at the end of a comment continues nothing)
 				if more.strip_edges().begins_with("#"):
 					continue   # a comment between the lines of one statement: the statement goes on after it
 				text = text.strip_edges(false, true).trim_suffix("\\") + " " + more.strip_edges(true, false)
@@ -66,7 +68,11 @@ func _tokenize(source: String) -> void:
 		while col < lead.length() and (lead[col] == "\t" or lead[col] == " "):
 			indent += 4 if lead[col] == "\t" else 1
 			col += 1
-		_lines.append({"indent": indent, "toks": toks, "src": _strip_comment(text).strip_edges(), "line": first + 1})
+		while widths.size() > 1 and indent < int(widths[-1]):
+			widths.pop_back()
+		if indent > int(widths[-1]):
+			widths.append(indent)
+		_lines.append({"indent": indent, "level": widths.size() - 1, "toks": toks, "src": _strip_comment(text).strip_edges(), "line": first + 1})
 
 
 ## True while the text ends inside brackets or a triple-quoted string, or with a line-continuation backslash.
@@ -95,16 +101,33 @@ func _open(text: String) -> bool:
 			var nl := text.find("\n", i)
 			if nl == -1:
 				break
-			i = nl
+			i = nl   # (a comment is not the last thing of the line: what ends a line is what stands before it)
+			continue
 		elif c in ["(", "[", "{"]:
 			depth += 1
 		elif c in [")", "]", "}"]:
 			depth -= 1
-		if c != " " and c != "\t" and c != "\n":
+		if c != " " and c != "\t" and c != "\n" and c != "\r":
 			last = c
 		i += 1
 	_open_quote = quote
+	_open_backslash = quote == "" and last == "\\"
 	return depth > 0 or quote != "" or last == "\\"
+
+
+## Where the triple quote `q` that closes a string begins, looking from `from`; a quote after a backslash
+## does not close it. -1 when the string does not end in the text.
+func _triple_end(text: String, from: int, q: String) -> int:
+	var j := from
+	var n := text.length()
+	while j < n:
+		if text[j] == "\\":
+			j += 2
+			continue
+		if text.substr(j, 3) == q:
+			return j
+		j += 1
+	return -1
 
 
 func _strip_comment(text: String) -> String:
@@ -122,7 +145,7 @@ func _strip_comment(text: String) -> String:
 				quote = ""
 		elif text.substr(i, 3) == "\"\"\"" or text.substr(i, 3) == "'''":
 			# a triple-quoted string is copied through whole
-			var close := text.find(text.substr(i, 3), i + 3)
+			var close := _triple_end(text, i + 3, text.substr(i, 3))
 			if close == -1:
 				close = text.length() - 3
 			out += text.substr(i, close + 3 - i)
@@ -146,17 +169,31 @@ func _strip_comment(text: String) -> String:
 func _scan(text: String, toks: Array, depth: int) -> int:
 	var i := 0
 	var n := text.length()
+	# each token also keeps its text as written ("raw") and whether space stood before it ("sp"), so that a
+	# range of tokens can be given back as source (see _source)
+	var mark := toks.size()
+	var tok_start := 0
+	var gap := false
+	var gap_before := false
 	while i < n:
+		if toks.size() > mark:
+			_mark_tok(toks, mark, text, tok_start, i, gap_before)
+			mark = toks.size()
+			gap = false
 		var c := text[i]
-		if c == " " or c == "\t" or c == "\n":
+		if c == " " or c == "\t" or c == "\n" or c == "\r":
+			gap = true
 			i += 1
 			continue
 		if c == "#":
+			gap = true
 			var line_end := text.find("\n", i)
 			if line_end == -1:
 				break
 			i = line_end
 			continue
+		tok_start = i
+		gap_before = gap
 		# strings, with the &"name" / ^"path" / r"raw" prefixes
 		var prefix := ""
 		if (c == "&" or c == "^" or c == "r") and i + 1 < n and (text[i + 1] == "\"" or text[i + 1] == "'"):   # r"raw"
@@ -165,7 +202,7 @@ func _scan(text: String, toks: Array, depth: int) -> int:
 			c = text[i]
 		if c == "\"" or c == "'":
 			if text.substr(i, 3) == c + c + c:
-				var close := text.find(c + c + c, i + 3)
+				var close := _triple_end(text, i + 3, c + c + c)
 				if close == -1:
 					close = n - 3
 				toks.append({"t": "str", "v": prefix + text.substr(i, close + 3 - i), "multi": true})
@@ -179,8 +216,9 @@ func _scan(text: String, toks: Array, depth: int) -> int:
 			toks.append({"t": "str", "v": prefix + text.substr(i, j - i + 1)})
 			i = j + 1
 			continue
-		# $Node/Path, $"Quoted/Path", %UniqueName
-		if c == "$" or (c == "%" and i + 1 < n and (_is_id_start(text[i + 1])) and (toks.is_empty() or _is_operator_tok(toks[-1]))):
+		# $Node/Path, $"Quoted/Path", %UniqueName: `%` starts a path wherever no value ends before it (the engine's
+		# own rule), after an operator, a bracket, a comma or a keyword such as await, elif, while or match
+		if c == "$" or (c == "%" and i + 1 < n and _is_id_start(text[i + 1]) and (toks.is_empty() or not _ends_value(toks[-1]))):
 			var j := i + 1
 			var path := ""
 			if j < n and text[j] == "\"":
@@ -252,7 +290,29 @@ func _scan(text: String, toks: Array, depth: int) -> int:
 			depth -= 1
 		toks.append({"t": "op", "v": op})
 		i += op.length()
+	if toks.size() > mark:
+		_mark_tok(toks, mark, text, tok_start, i, gap_before)
 	return depth
+
+
+func _mark_tok(toks: Array, from: int, text: String, start: int, end: int, gap: bool) -> void:
+	toks[from]["raw"] = text.substr(start, end - start)
+	toks[from]["sp"] = gap
+	for k in range(from + 1, toks.size()):
+		toks[k]["raw"] = String(toks[k].v)
+		toks[k]["sp"] = false
+
+
+## The source text of the tokens [from, to) of the line being parsed, as written (comments and line breaks
+## between them become single spaces).
+func _source(from: int, to: int) -> String:
+	var out := ""
+	for k in range(from, mini(to, _t.size())):
+		var tk: Dictionary = _t[k]
+		if k > from and bool(tk.get("sp", true)):
+			out += " "
+		out += String(tk.get("raw", tk.v))
+	return out
 
 
 func _is_id_start(c: String) -> bool:
@@ -273,10 +333,6 @@ func _ends_value(tok: Dictionary) -> bool:
 		"op":
 			return String(tok.v) in [")", "]", "}"]
 	return false
-
-
-func _is_operator_tok(tok: Dictionary) -> bool:
-	return (tok.t == "op" and not tok.v in [")", "]", "}"]) or (tok.t == "kw" and tok.v in ["return", "and", "or", "not", "in", "if", "else"])
 
 
 # ---------------------------------------------------------------- token helpers
@@ -313,7 +369,7 @@ func parse(source: String) -> Dictionary:
 	_tokenize(source)
 	_li = 0
 	var out := {"extends": "", "class_name": "", "tool": false, "signals": [], "vars": [], "funcs": [], "enums": [], "extra": [],
-		"notes": notes, "uses_groups": false, "crlf": source.contains("\r\n"), "class_pre": []}
+		"notes": notes, "uses_groups": false, "crlf": _line_ends(source), "class_pre": []}
 	var group := ""
 	var pending := {"export": false, "onready": false, "plain": true, "text": PackedStringArray()}
 	while _li < _lines.size():
@@ -468,6 +524,32 @@ func parse(source: String) -> Dictionary:
 	return out
 
 
+## True when the converted script is to be written with Windows line endings. The script is written with one
+## kind of line ending throughout, which is the source's own. In a file that mixes the two, a string that runs
+## over several lines keeps its line breaks only if the file is written with the kind it uses, so that kind
+## wins; if the strings themselves mix the two kinds, they cannot all be kept, and a note says so.
+func _line_ends(source: String) -> bool:
+	var crlf := source.contains("\r\n")
+	if not crlf or not source.replace("\r\n", "").contains("\n"):
+		return crlf   # one kind throughout
+	var lines := source.split("\n")
+	var inside := T.lines_in_string(source)
+	var in_crlf := false
+	var in_lf := false
+	for k in range(1, mini(lines.size(), inside.size())):
+		if inside[k]:
+			if lines[k - 1].ends_with("\r"):
+				in_crlf = true
+			else:
+				in_lf = true
+	if in_crlf and in_lf:
+		notes.append("this script mixes Windows (CRLF) and Unix (LF) line breaks inside its multi-line strings: the converted script uses Windows line breaks throughout, which changes the strings that had Unix ones")
+		return true
+	if in_lf:
+		return false
+	return true
+
+
 func _skip_block(indent: int) -> void:
 	_li += 1
 	while _li < _lines.size() and int(_lines[_li].indent) > indent:
@@ -580,7 +662,7 @@ func _body(indent: int) -> Array:
 		var first_line := String(ln.src)
 		var text := first_line.substr(maxi(first_line.find("if "), 0))
 		if _li > start + 1:
-			text += "\n" + _text(start + 1, _li, indent)
+			text += "\n" + _text(start + 1, _li, int(_lines[start].level))
 		st["src"] = text.get_slice("\n", 0)
 		st["text"] = text
 		if cond == null or st.branches[0][1].is_empty():
@@ -724,10 +806,7 @@ func _inline_lambda(text: String) -> Variant:
 	var st: Variant = _simple_stmt({"src": "", "line": 0})
 	if st == null or st.k == "raw" or _is(";"):
 		return null
-	var words := PackedStringArray()
-	for i in range(at, _p):
-		words.append(String(_t[i].v))
-	st["src"] = " ".join(words)
+	st["src"] = _source(at, _p)   # as written: a node path keeps its $, a string its quotes
 	lam.body = [st]
 	lam.body_text = String(st.src)
 	return lam
@@ -956,12 +1035,13 @@ func _pattern_text(src: String) -> String:
 	return ""
 
 
-## Source text of logical lines [from, to), re-indented relative to the first one.
-func _text(from: int, to: int, base_indent := -1) -> String:
+## Source text of logical lines [from, to), re-indented with tabs relative to the first one (or to the block
+## depth `base_level`), one tab for each block a line is nested in, however the file indents its blocks.
+func _text(from: int, to: int, base_level := -1) -> String:
 	var out := PackedStringArray()
-	var base := int(_lines[from].indent) if base_indent < 0 else base_indent
+	var base := int(_lines[from].level) if base_level < 0 else base_level
 	for i in range(from, mini(to, _lines.size())):
-		var pad := "\t".repeat(maxi((int(_lines[i].indent) - base) / 4, 0))
+		var pad := "\t".repeat(maxi(int(_lines[i].level) - base, 0))
 		var src := String(_lines[i].src)
 		var inside := T.lines_in_string(src)
 		var parts := src.split("\n")
@@ -1176,7 +1256,6 @@ func _atom() -> Variant:
 				"func":
 					# a lambda written on one line, up to where the enclosing brackets or argument ends
 					var from := _p
-					var parts := PackedStringArray([String(tok.v)])
 					var depth := 0
 					while not _at_end():
 						var nx := _peek()
@@ -1188,10 +1267,10 @@ func _atom() -> Variant:
 							depth -= 1
 						elif nx.t == "op" and nx.v == "," and depth == 0:
 							break
-						parts.append(String(_next().v))
+						_p += 1
 					_saw_raw = true
 					var stop := _p
-					var text := " ".join(parts)
+					var text := _source(from - 1, stop)
 					_p = from
 					var lam := _inline_lambda(text)
 					if lam != null and _p == stop:

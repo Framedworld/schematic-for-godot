@@ -133,7 +133,17 @@ func run() -> void:
 				for msg in made[2]:
 					found("the original loads, the converted script does not", String(msg), path)
 				continue
-			for change in checks.interface_changes(checks.interface(first[0]), checks.interface(made[1])):
+			# (a file with Windows line endings is saved with them, and a string over several lines holds them: what
+			# counts is the file that would be written, not the compiler's text before it is saved)
+			var as_saved: Variant = made[1]
+			if bool(out.bp.get("crlf", false)):
+				var written: Array = checks.load_text(Model.build_source(code, out.bp))
+				if written[0] == null:
+					for msg in written[1]:
+						found("the converted script loads, the saved file does not", String(msg), path)
+					continue
+				as_saved = written[0]
+			for change in checks.interface_changes(checks.interface(first[0]), checks.interface(as_saved)):
 				var kind := String(change[1]).get_slice(" ", 0)
 				match String(change[0]):
 					"missing":

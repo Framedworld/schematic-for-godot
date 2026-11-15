@@ -204,7 +204,7 @@ func interface_changes(a: Dictionary, b: Dictionary) -> Array:
 				what = "typed"
 			out.append([what, k, a[k], b[k]])
 	for k in b:
-		# a lambda becomes a function of the schematic; live debugging adds helpers of its own
-		if not a.has(k) and not String(k).contains("_lambda") and not String(k).contains("__sc_"):
+		# live debugging adds helpers of its own (a lambda is written back as a lambda, and adds nothing)
+		if not a.has(k) and not String(k).contains("__sc_"):
 			out.append(["added", k, "", b[k]])
 	return out

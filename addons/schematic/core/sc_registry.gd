@@ -588,8 +588,11 @@ static func _describe_kind(node: Dictionary, bp: Dictionary, graph: Dictionary =
 			if m.is_empty():
 				d.err = "'%s' is not an overridable function of %s" % [p.name, self_class(bp)]
 			else:
-				for a in m.args:
-					d.outs.append(_pin("p_" + T.ident(String(a.name)), nice(String(a.name)), T.from_info(a)))
+				var own: Array = p.get("names", [])   # the names a converted script gave the parameters
+				for ai in m.args.size():
+					var a: Dictionary = m.args[ai]
+					var label := String(own[ai]) if ai < own.size() and String(own[ai]) != "" else String(a.name)
+					d.outs.append(_pin("p_" + T.ident(String(a.name)), nice(label), T.from_info(a)))
 			d.tip = doc(self_class(bp), p.name)
 		"custom_event":
 			d.title = p.get("name", "CustomEvent")

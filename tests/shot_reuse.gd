@@ -73,8 +73,10 @@ func run(p: EditorPlugin) -> void:
 	note("open: %s" % ed.open_schematic("res://tests/tmp/reuse/SC_ReuseOne.gd"))
 	EditorInterface.set_main_screen_editor("Schematic")
 	await tree.create_timer(0.8).timeout
-	note("compiles in the editor: %s %s" % [ed.compile_doc(ed.doc, false), ed.doc.errors])
-	note("editor's script is the script from before reuse: %s" % Reuse.same_code(before, String(ed.doc.preview)))
+	var ok_open: bool = ed.compile_doc(ed.doc, false)
+	note("%s  compiles in the editor: %s %s" % ["PASS" if ok_open else "FAIL", ok_open, ed.doc.errors])
+	var same_open: bool = Reuse.same_code(before, String(ed.doc.preview))
+	note("%s  editor's script is the script from before reuse: %s" % ["PASS" if same_open else "FAIL", same_open])
 	ed.open_member_graph("burn")
 	await tree.create_timer(0.5).timeout
 	var call := {}
@@ -98,8 +100,10 @@ func run(p: EditorPlugin) -> void:
 	var g: Dictionary = ed.cur_graph()
 	note("expanded: %d nodes became %d, macro nodes left %d, locals %s" % [with_macro, g.nodes.size(),
 		g.nodes.filter(func(n): return n.kind == "macro").size(), g.locals.map(func(l): return l.name)])
-	note("compiles after Expand Node: %s %s" % [ed.compile_doc(ed.doc, false), ed.doc.errors])
-	note("script after Expand Node is still the script from before reuse: %s" % Reuse.same_code(before, String(ed.doc.preview)))
+	var ok_expanded: bool = ed.compile_doc(ed.doc, false)
+	note("%s  compiles after Expand Node: %s %s" % ["PASS" if ok_expanded else "FAIL", ok_expanded, ed.doc.errors])
+	var same_expanded: bool = Reuse.same_code(before, String(ed.doc.preview))
+	note("%s  script after Expand Node is still the script from before reuse: %s" % ["PASS" if same_expanded else "FAIL", same_expanded])
 	await shot("reuse_03_expanded")
 	ed.doc.dirty = false
 	note("done")
