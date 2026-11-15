@@ -14,6 +14,15 @@ const CurveEdit := preload("res://addons/schematic/editor/sc_curve_edit.gd")
 const Starters := preload("res://addons/schematic/core/sc_starters.gd")
 const Importer := preload("res://addons/schematic/core/sc_importer.gd")
 const DebugPanel := preload("res://addons/schematic/editor/sc_debug_panel.gd")
+const CodeLink := preload("res://addons/schematic/editor/sc_code_link.gd")
+
+## Generated-code highlights for the selected nodes: the amber the graph draws a selected node's outline in, as a
+## wash over the code view's own background (so it reads on light and dark themes alike). A line the node itself
+## wrote is the strong one; a line it only takes part in (a getter read by that line) is the soft one.
+const LINK_STRONG := Color(1.0, 0.72, 0.1, 0.36)
+const LINK_SOFT := Color(1.0, 0.72, 0.1, 0.12)
+const LINK_NONE := Color(0, 0, 0, 0)
+const CARET_DEBOUNCE := 0.12   # seconds the caret rests before the clicked line selects its node
 
 var plugin: EditorPlugin
 var docs: Array = []          # [{path, bp, graph_id, dirty, errors, code, line_map, node_lines}]
@@ -34,6 +43,7 @@ var _results: ItemList
 var _status: Label
 var _compile_btn: Button
 var _code: CodeEdit
+var _code_label: Label
 var _right_tabs: TabContainer
 var _empty: Control
 var _body: Control
@@ -310,15 +320,30 @@ func build_ui() -> void:
 	_details = VBoxContainer.new()
 	_details.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	dbox.add_child(_details)
+	# The code view with a one-line label under it (what a clicked line is, when no node wrote it).
+	var code_box := VBoxContainer.new()
+	code_box.name = "Generated Code"
+	code_box.add_theme_constant_override("separation", 2)
+	_right_tabs.add_child(code_box)
 	_code = CodeEdit.new()
-	_code.name = "Generated Code"
+	_code.name = "Code"
 	_code.editable = false
 	_code.gutters_draw_line_numbers = true
 	_code.draw_tabs = false
+	_code.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	if ClassDB.class_exists("GDScriptSyntaxHighlighter"):
 		_code.syntax_highlighter = ClassDB.instantiate("GDScriptSyntaxHighlighter")
-	_right_tabs.add_child(_code)
-	_right_tabs.tab_changed.connect(func(_i): _update_code())
+	_code.caret_changed.connect(_on_code_caret)
+	code_box.add_child(_code)
+	_code_label = Label.new()
+	_code_label.name = "CodeLineLabel"
+	_code_label.custom_minimum_size.y = 20
+	_code_label.clip_text = true
+	_code_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_code_label.add_theme_font_size_override("font_size", 12)
+	_code_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.55))
+	code_box.add_child(_code_label)
+	_right_tabs.tab_changed.connect(func(_i): _update_code(true))
 
 	_palette = Palette.new()
 	add_child(_palette)
@@ -707,6 +732,8 @@ func _check(d: Dictionary) -> bool:
 	d["pins"] = c.pin_exprs
 	d["blocks"] = c.block_lines
 	d["preview"] = code
+	d["link_src"] = [c, code]   # the line <-> node lookup is built from these the first time it is needed
+	d["link"] = null
 	for e in d.errors:
 		if not e.w:
 			return false
@@ -1219,6 +1246,7 @@ func _refresh_graph() -> void:
 		marks[int(_paused[2])] = String(marks.get(int(_paused[2]), "")) + "paused"
 	_view.watch = _graph_watch()
 	_view.show_graph(doc.bp, g, errs, marks)
+	_link_refresh_soon()
 
 
 func _refresh_status() -> void:
@@ -1268,17 +1296,187 @@ func _on_result_activated(i: int) -> void:
 		_view.focus_node(int(e.n))
 
 
-func _update_code() -> void:
+## Shows the compiled text in the Generated Code tab (only while that tab is showing) and puts the selection's
+## highlights on it. `scroll` also scrolls the first highlighted line into view.
+func _update_code(scroll := false) -> void:
 	if _code == null or doc.is_empty() or _right_tabs.current_tab != 1:
 		return
-	var v := _code.scroll_vertical
-	_code.text = String(doc.get("preview", doc.code))
-	_code.scroll_vertical = v
-	if _sel.kind == "node":
-		var key := "%d:%d" % [int(doc.graph_id), int(_sel.id)]
-		if doc.node_lines.has(key):
-			_code.set_caret_line(int(doc.node_lines[key]) - 1)
-			_code.center_viewport_to_caret()
+	var text := String(doc.get("preview", doc.code))
+	if _code.text != text:
+		var v := _code.scroll_vertical
+		var at_line := _code.get_caret_line()
+		var at_col := _code.get_caret_column()
+		_hold_guard()   # (replacing the text moves the caret; that is not the user's doing)
+		_code.text = text
+		_code.scroll_vertical = v
+		_code.set_caret_line(mini(at_line, _code.get_line_count() - 1), false)
+		_code.set_caret_column(at_col, false)
+		_marked.clear()
+		for i in _code.get_line_count():
+			_code.set_line_background_color(i, LINK_NONE)
+	_link_apply(scroll)
+
+
+# ---------------------------------------------------------------- code <-> nodes
+
+## Counters the self-test reads: how often the selection handler ran, how many caret moves were seen and acted on,
+## how many times the lookup was built and how many times highlights were applied.
+var link_stats := {"selection_runs": 0, "caret_events": 0, "caret_acts": 0, "builds": 0, "applies": 0}
+var _marked: Dictionary = {}       # code line (0-based) -> LINK_STRONG / LINK_SOFT, what is painted right now
+var _guarding := false             # true while the editor itself moves the caret, scrolls or selects for the code view
+var _guard_gen := 0
+var _caret_serial := 0
+var _link_queued := false
+
+
+## The editor is about to change the caret or the selection because of the other view: what that causes
+## (caret_changed arrives deferred, the selection handler runs at once) is not the user acting. Released a frame later.
+func _hold_guard() -> void:
+	_guarding = true
+	_guard_gen += 1
+	var gen := _guard_gen
+	get_tree().process_frame.connect(func():
+		if gen == _guard_gen:
+			_guarding = false, CONNECT_ONE_SHOT)
+
+
+## The link works unless the game is stopped at a node: then the debugger decides what is shown.
+func _link_active() -> bool:
+	return not doc.is_empty() and _paused.size() != 3
+
+
+## The line <-> node lookup of the open document's current compile. Built the first time it is needed after a compile.
+func _get_link() -> Object:
+	if doc.is_empty():
+		return null
+	if doc.get("link") != null:
+		return doc.link
+	var src: Variant = doc.get("link_src")
+	if src == null:
+		return null
+	doc["link"] = CodeLink.new().build(src[0], src[1])
+	link_stats["builds"] = int(link_stats.builds) + 1
+	return doc.link
+
+
+func _clear_marks() -> void:
+	if _code == null:
+		return
+	var count := _code.get_line_count()
+	for line in _marked:
+		if int(line) < count:
+			_code.set_line_background_color(int(line), LINK_NONE)
+	_marked.clear()
+
+
+## Paints the lines of the nodes selected in the graph on the code view. Nothing is built or painted while the code
+## tab is not showing. `scroll` brings the first painted line into view (a few lines of context above it).
+func _link_apply(scroll := false) -> void:
+	_clear_marks()
+	if _code == null or _view == null or doc.is_empty() or _right_tabs.current_tab != 1 or not _link_active():
+		return
+	var ids: Array = _view.selected_ids()
+	if ids.is_empty():
+		return
+	var link := _get_link()
+	if link == null:
+		return
+	link_stats["applies"] = int(link_stats.applies) + 1
+	var gid := int(doc.graph_id)
+	var count := _code.get_line_count()
+	for id in ids:
+		for line in link.lines_of(gid, int(id)):
+			if line - 1 < count and not _marked.has(line - 1):
+				_marked[line - 1] = LINK_SOFT
+		for line in link.own_lines_of(gid, int(id)):
+			if line - 1 < count:
+				_marked[line - 1] = LINK_STRONG
+	if _marked.is_empty():
+		return
+	var first := count
+	for line in _marked:
+		_code.set_line_background_color(int(line), _marked[line])
+		first = mini(first, int(line))
+	if scroll:
+		var top := _code.get_first_visible_line()
+		var bottom := top + maxi(_code.get_visible_line_count() - 1, 0)
+		if first < top + 2 or first > bottom - 2:
+			_code.set_line_as_first_visible(maxi(first - 3, 0))
+
+
+## The same, once the current round of editing has finished (the graph was rebuilt, the text may be replaced next).
+func _link_refresh_soon() -> void:
+	if _link_queued or not is_inside_tree():
+		return
+	_link_queued = true
+	(func():
+		_link_queued = false
+		_link_apply(false)).call_deferred()
+
+
+func _set_code_label(text: String) -> void:
+	if _code_label:
+		_code_label.text = text
+		_code_label.tooltip_text = text
+
+
+## The caret moved in the code view. A click, the arrow keys and Page Down all come here; the line it rests on after
+## a short pause is the one that counts (a drag over many lines acts once, on the line where it ends).
+func _on_code_caret() -> void:
+	link_stats["caret_events"] = int(link_stats.caret_events) + 1
+	if _guarding or not _link_active() or _right_tabs.current_tab != 1:
+		return
+	_caret_serial += 1
+	var serial := _caret_serial
+	await get_tree().create_timer(CARET_DEBOUNCE).timeout
+	while is_inside_tree() and serial == _caret_serial and _code.has_focus() and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		await get_tree().process_frame   # (the button is still down: the drag has not ended)
+	if not is_inside_tree() or serial != _caret_serial or _guarding or not _link_active():
+		return
+	_code_line_clicked(_code.get_caret_line())
+
+
+## Selects, in the graph, what wrote the clicked line (0-based `line0`) and marks the nodes whose values feed it;
+## shows the other graph first when the line belongs to one. A line no node wrote selects nothing and is named.
+func _code_line_clicked(line0: int) -> void:
+	var link := _get_link()
+	if link == null or _view == null:
+		return
+	var line := line0 + 1
+	link_stats["caret_acts"] = int(link_stats.caret_acts) + 1
+	var nodes: Array = link.nodes_at(line)
+	var kind: String = link.kind_of_line(line)
+	if nodes.is_empty() and kind == "function":
+		var fg := Model.find_graph(doc.bp, link.graph_of_line(line))
+		for n in fg.get("nodes", []):
+			if String(n.kind) == "fn_entry":
+				nodes = [[int(fg.id), int(n.id)]]
+				break
+	_hold_guard()
+	if nodes.is_empty():
+		_view.show_selection([], [], false)
+		var what: String = CodeLink.LABELS.get(kind, "")
+		_set_code_label("Line %d: %s" % [line, what if what != "" else "Blank line"])
+		return
+	var gid := int(nodes[0][0])
+	if gid != int(doc.graph_id):
+		if Model.find_graph(doc.bp, gid).is_empty():
+			return
+		doc.graph_id = gid
+		_refresh_graph()
+		_refresh_members()
+		_refresh_graph_tabs()
+	var soft := []
+	for i in range(1, nodes.size()):
+		if int(nodes[i][0]) == gid:
+			soft.append(int(nodes[i][1]))
+	_view.show_selection([int(nodes[0][1])], soft, true)
+	var g := Model.find_graph(doc.bp, gid)
+	var title := ""
+	var n := Model.find_node(g, int(nodes[0][1]))
+	if not n.is_empty():
+		title = String(R.describe(n, doc.bp, g).title)
+	_set_code_label("Line %d: %s" % [line, title if title != "" else "Node"])
 
 
 func _find_in_schematic() -> void:
@@ -1914,10 +2112,16 @@ func _on_component_clicked(pos: Vector2, button: int) -> void:
 # ---------------------------------------------------------------- Details
 
 func graph_selection_changed(ids: Array) -> void:
+	link_stats["selection_runs"] = int(link_stats.selection_runs) + 1
 	if ids.size() == 1:
 		_select({"kind": "node", "id": ids[0]}, false)
 	elif _sel.kind == "node":
 		_select({"kind": "class"}, false)
+	# The selection's lines get painted; the code view only scrolls to them when the user chose the nodes in the
+	# graph (a selection that follows a click in the code view must not move that view).
+	if not _guarding:
+		_set_code_label("")
+	_link_apply(not _guarding)
 
 
 func focus_details() -> void:

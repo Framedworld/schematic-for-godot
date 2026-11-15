@@ -67,6 +67,8 @@ var _clash_abort := false      # a statement kept as text mentions one of them: 
 var _loop_depth := 0           # how many loops the statement being lowered is inside
 var _synthetic_fail := ""      # why a part of an if made from an expression statement could not become nodes
 var _decls: Dictionary = {}    # local name -> how many times the function being lowered declares it
+var _event_names: Dictionary = {}   # name -> how many events declare it (a local, a parameter or a loop variable)
+var _source := ""              # the script being converted
 var _inferred_members: Dictionary = {}   # members declared with := (statically typed by their value)
 var _setget: Dictionary = {}   # members declared with set / get: reading one may run code
 
@@ -81,6 +83,7 @@ static func is_detail(note: String) -> bool:
 
 func convert(source: String, opts := {}) -> Dictionary:
 	R.ensure_api()
+	_source = source
 	var parser := Parser.new()
 	var ast := parser.parse(source)
 	notes = parser.notes.duplicate()
@@ -176,6 +179,20 @@ func convert(source: String, opts := {}) -> Dictionary:
 				fg["ret_hint"] = "-"
 			fg.nodes.remove_at(1)
 			graphs[String(f.name)] = fg
+	# The events share one graph, and so its locals: a name only one event declares keeps the name the script gave
+	# it; one that several declare (as a local, a parameter or a loop variable) needs a local per event.
+	_event_names = {}
+	for f in ast.funcs:
+		if _funcs[String(f.name)].event:
+			var own := {}
+			_count_decls(f.body, own)
+			var loops := {}
+			_collect_names(f.body, loops, {})
+			own.merge(loops)
+			for prm in f.params:
+				own[String(prm.name)] = 1
+			for nm in own:
+				_event_names[nm] = int(_event_names.get(nm, 0)) + 1
 	for f in ast.funcs:
 		if _funcs[String(f.name)].event:
 			_event(eg, f)
@@ -246,11 +263,11 @@ func _declare_functions(ast: Dictionary) -> void:
 			var entry := [String(prm.name), pt if pt != "" else "any"]
 			if prm.default != null:
 				entry.append(Parser.unparse(prm.default))
-			if _loses(String(prm.type)):
+			if _loses(String(prm.type)) or (String(prm.type) == "Variant" and not is_event):
 				entry[1] = "any"
 				while entry.size() < 3:
 					entry.append("")
-				entry.append(String(prm.type))   # a type the schematic has no pin type for: kept in the signature
+				entry.append(String(prm.type))   # a type the schematic has no pin type for (or `Variant`): kept in the signature
 			if bool(prm.get("rest", false)):
 				# ...args: the further arguments of a call, as an array; written back the same way
 				entry = [String(prm.name), "Array", "", "..." + String(prm.type)]
@@ -933,6 +950,8 @@ func _scan_locals(body: Array) -> void:
 				# a type with no pin type (an enum, an inner class, an array of them) is kept as written, as long
 				# as every declaration of the name agrees on it
 				var written := String(st.type) if (String(st.type) != "" and lt != "any" and T.hint(lt) != lt) else ""
+				if String(st.type) == "Variant":
+					written = "Variant"   # stated, though it says no more than no type does: declared as written
 				if prev != "" and String(_scope[nm].get("written", "")) != written:
 					written = "-"
 				_scope[nm] = {"k": "local", "t": _widen(prev, lt) if lt != "" else (prev if prev != "" else "any"), "name": nm, "typed": String(st.type) != "" or bool(st.get("infer", false)) or (prev != "" and bool(_scope[nm].get("typed", false))), "infer": bool(st.get("infer", false)) or (prev != "" and bool(_scope[nm].get("infer", false))),
@@ -950,7 +969,8 @@ func _scan_locals(body: Array) -> void:
 				_scan_locals(st["else"])
 			"for":
 				var held: Variant = _scope.get(String(st["var"]))
-				_scope[String(st["var"])] = {"k": "loopvar", "t": _iter_type(st.iter)}
+				var stated := _norm(String(st.get("var_type", "")))
+				_scope[String(st["var"])] = {"k": "loopvar", "t": stated if (stated != "" and stated != "any" and T.hint(stated) == stated) else _iter_type(st.iter)}
 				_scan_locals(st.body)
 				if held != null and held.k != "loopvar":
 					_scope[String(st["var"])] = held   # a local of the same name declared elsewhere in the function
@@ -1136,9 +1156,14 @@ func _whole(f: Dictionary) -> void:
 	var count := text.split("\n").size()
 	lines_total += count
 	lines_code += count
+	# the locals made for this body go (in the EventGraph each event has locals of its own: see _declare_locals)
+	var own := {}
+	for nm in _scope:
+		if _scope[nm].k == "local":
+			own[String(_scope[nm].get("name", nm))] = true
 	var kept := []
 	for l in _g.locals:
-		if not (_scope.has(String(l.name)) and _scope[String(l.name)].k == "local" and String(_scope[String(l.name)].name) == String(l.name)) or not _is_fn:
+		if not own.has(String(l.name)):
 			kept.append(l)
 	_g.locals = kept
 	for nm in _scope.keys():
@@ -1161,14 +1186,37 @@ func _declare_locals(body: Array, fn_name: String) -> void:
 		if s.k != "local" or before.has(nm):
 			continue
 		var unique := String(nm)
-		# In the EventGraph a local is stored on the schematic itself, where a plain name could collide with a
-		# member of a parent or child class: those always carry the event's name.
-		var clash := not _is_fn or _members.has(unique) or _alias.has(unique) or _funcs.has(unique) or _clash.has(unique)
+		# A local with the name of a member would make the member's nodes read the local: it gets a name of its own.
+		var clash := _members.has(unique) or _alias.has(unique) or _funcs.has(unique) or _clash.has(unique)
 		for l in _g.locals:
 			if String(l.name) == unique and (String(l.type) != String(s.t) or _is_fn):
 				clash = true
-		if clash:
+		if not _is_fn:
+			# The events share the EventGraph and its locals: a name more than one event declares (as a local, a
+			# parameter or a loop variable) needs a local for each, so each carries its event's name. So does a name
+			# the class already gives something (a constant, a signal, a property or method of the parent class),
+			# which the local could not become a member of the script under if it had to (see the compiler's
+			# _settle_event_locals). Any other keeps the name the script gave it.
+			# A name the script writes as a property's name (set("x"), a tween of self, ".:x") would make the compiler
+			# keep the local as a member, which the script's set("x") would then reach: it gets the event's name too.
+			clash = clash or int(_event_names.get(unique, 0)) > 1 or _consts.has(unique) or _signals.has(unique) or _enum_names.has(unique) \
+				or not R.find_property(_cls, unique).is_empty() or not R.find_method(_cls, unique).is_empty() \
+				or Compiler._named_as_property(_source, unique)
+			for l in _g.locals:
+				if String(l.name) == unique:
+					clash = true   # another event's
+		if clash and _is_fn:
 			unique = "%s_%s" % [nm, T.ident(fn_name).trim_prefix("_")]
+		elif clash:
+			# the event's name is added once: a name that carries it already gets a number instead
+			var suffix := "_" + T.ident(fn_name).trim_prefix("_")
+			var stem := unique.trim_suffix(suffix) if unique.ends_with(suffix) else unique
+			var more := 1 if stem == unique else 2
+			unique = stem + suffix + ("" if more == 1 else "_2")
+			while _members.has(unique) or _alias.has(unique) or _funcs.has(unique) or _g.locals.any(func(l): return String(l.name) == unique) \
+					or int(_event_names.get(unique, 0)) > 0 or Compiler._named_as_property(_source, unique):
+				more += 1
+				unique = "%s%s_%d" % [stem, suffix, more]
 		s["name"] = unique
 		var exists := false
 		for l in _g.locals:
@@ -1545,6 +1593,27 @@ func _pure(e: Variant) -> bool:
 func _if(st: Dictionary, last: bool) -> bool:
 	if _is_message(st):
 		return _message(st)
+	if _is_guarded_connect(st):
+		# what a Bind (or Unbind) Event node is written as: the node itself, if the connect becomes one
+		var mark := {"nodes": _g.nodes.size(), "wires": _g.wires.size(), "next": int(_g.next_id), "cursor": _cursor.duplicate(),
+			"cx": _cx, "cy": _cy, "low": _low, "scope": _scope.duplicate(), "total": lines_total, "code": lines_code}
+		var want_kind := "bind_signal" if String(st.branches[0][1][0].e.fn.name) == "connect" else "unbind_signal"
+		lines_total += 1
+		if _statement(st.branches[0][1][0], last) and _g.nodes.size() > int(mark.nodes) \
+				and _g.nodes.slice(int(mark.nodes)).any(func(n): return String(n.kind) == want_kind):
+			return true
+		_g.nodes.resize(int(mark.nodes))
+		_g.wires.resize(int(mark.wires))
+		_g.next_id = int(mark.next)
+		_cursor = mark.cursor
+		_cx = float(mark.cx)
+		_cy = float(mark.cy)
+		_low = float(mark.low)
+		_scope = mark.scope
+		lines_total = int(mark.total)
+		lines_code = int(mark.code)
+		_pending.clear()
+		_failed = ""
 	# code after the if continues from a Sequence, so neither branch has to be wired back together
 	var seq := {}
 	if not last:
@@ -1561,6 +1630,29 @@ func _if(st: Dictionary, last: bool) -> bool:
 	else:
 		_cursor = []
 	return true
+
+
+## `if not s.is_connected(f): s.connect(f)` (or `if s.is_connected(f): s.disconnect(f)`) and nothing else, the
+## same signal and callable in both: the guard the compiler writes around a Bind (Unbind) Event node.
+func _is_guarded_connect(st: Dictionary) -> bool:
+	if st.branches.size() != 1 or not st["else"].is_empty() or st.branches[0][1].size() != 1:
+		return false
+	var body: Dictionary = st.branches[0][1][0]
+	if body.k != "expr" or body.e == null or body.e.k != "call" or body.e.fn.k != "attr" or not String(body.e.fn.name) in ["connect", "disconnect"] \
+			or body.e.args.size() != 1 or body.e.args[0] == null:
+		return false
+	var cond: Variant = st.branches[0][0]
+	while cond is Dictionary and cond.k == "paren":
+		cond = cond.a
+	if String(body.e.fn.name) == "connect":
+		if not (cond is Dictionary and cond.k == "un" and String(cond.op) == "not"):
+			return false
+		cond = cond.a
+		while cond is Dictionary and cond.k == "paren":
+			cond = cond.a
+	if not (cond is Dictionary and cond.k == "call" and cond.fn.k == "attr" and String(cond.fn.name) == "is_connected" and cond.args.size() == 1 and cond.args[0] != null):
+		return false
+	return Parser.unparse(cond.fn.obj) == Parser.unparse(body.e.fn.obj) and Parser.unparse(cond.args[0]) == Parser.unparse(body.e.args[0])
 
 
 ## `if x.has_method(m): x.call(m, ...)` and nothing else: one Call If Present node.
@@ -1802,9 +1894,16 @@ func _for(st: Dictionary) -> bool:
 		for i in 3:
 			if not _wire(parts[i], rn, ["from", "to", "step"][i]):
 				return false
-		var each := _exec("for_each", {"t": "int"}, "exec", "body")
+		# `for j: float in range(0, 2, 1)`: the loop variable has the type the script gave it
+		var step_t := "int"
+		var step_written := _norm(String(st.get("var_type", "")))
+		if step_written != "" and step_written != "any" and T.hint(step_written) == step_written:
+			step_t = step_written
+		var each := _exec("for_each", {"t": step_t, "var": String(st["var"])}, "exec", "body")
+		if step_written != "" and step_written != "any" and T.hint(step_written) != step_written:
+			each.p["hint"] = String(st.var_type)
 		_g.wires.append([int(rn.id), "ret", int(each.id), "array"])
-		_scope[String(st["var"])] = {"k": "pin", "t": "int", "n": each, "pin": "element"}
+		_scope[String(st["var"])] = {"k": "pin", "t": step_t, "n": each, "pin": "element"}
 		var done := _loop_body(each, st.body)
 		if shadowed != null:
 			_scope[String(st["var"])] = shadowed
@@ -1836,7 +1935,7 @@ func _for(st: Dictionary) -> bool:
 		var lv := _value(last_e, 1)
 		if fv.is_empty() or lv.is_empty():
 			return false
-		n = _exec("for", {}, "exec", "body")
+		n = _exec("for", {"var": String(st["var"])}, "exec", "body")
 		if not (_wire(fv, n, "first") and _wire(lv, n, "last")):
 			return false
 		_scope[String(st["var"])] = {"k": "pin", "t": "int", "n": n, "pin": "index"}
@@ -1844,7 +1943,7 @@ func _for(st: Dictionary) -> bool:
 		var dv := _value(it, 1)
 		if dv.is_empty():
 			return false
-		n = _exec("for_each_dict", {}, "exec", "body")
+		n = _exec("for_each_dict", {"var": String(st["var"])}, "exec", "body")
 		if not _wire(dv, n, "dict"):
 			return false
 		_scope[String(st["var"])] = {"k": "pin", "t": "any", "n": n, "pin": "key"}
@@ -1859,7 +1958,7 @@ func _for(st: Dictionary) -> bool:
 		var written := _norm(String(st.get("var_type", "")))
 		if written != "" and written != "any" and T.hint(written) == written:
 			et = written
-		n = _exec("for_each", {"t": et}, "exec", "body")
+		n = _exec("for_each", {"t": et, "var": String(st["var"])}, "exec", "body")
 		if written != "" and written != "any" and T.hint(written) != written:
 			n.p["hint"] = String(st.var_type)   # a type no pin has (an enum, an inner class): kept in the loop's header
 		if not _wire(av, n, "array"):
@@ -2521,6 +2620,14 @@ func _lower(e: Variant, depth: int) -> Dictionary:
 			var obj := _value(e.a, depth + 1)
 			if obj.is_empty():
 				return {}
+			var looked_up: Variant = e.a
+			while looked_up is Dictionary and looked_up.k == "paren":
+				looked_up = looked_up.a
+			if obj.has("n") and String(obj.n.kind) == "get_node" and String(e.t) != "Node" and T.hint(String(e.t)) != "" \
+					and looked_up is Dictionary and (looked_up.k == "node" or _is_get_node(looked_up)):
+				# `get_node(path) as T` (or `$Path as T`) is what a Get Node node of class T is written as
+				obj.n.p["cls"] = String(e.t)
+				return {"n": obj.n, "pin": "node", "t": String(e.t)}
 			var n := _data("cast", {"cls": String(e.t), "pure": true}, depth)
 			return {"n": n, "pin": "as", "t": String(e.t)} if _wire(obj, n, "obj") else {}
 	_fail("'%s' expressions" % e.k)
@@ -2866,11 +2973,16 @@ func _call(e: Dictionary, depth: int, want: bool) -> Dictionary:
 					var bounds := args.duplicate()
 					if bounds.size() == 1:
 						bounds.push_front({"k": "num", "v": "0", "f": false})
-					return _finish(_data("tpl", {"id": "range"}, depth), bounds, depth, {}, want, true)
+					var rn := _data("tpl", {"id": "range"}, depth)
+					if bounds.size() == 2:
+						rn.d["step"] = "1"   # what the node writes when no step is given (so reading that back is the same node)
+					return _finish(rn, bounds, depth, {}, want, true)
 				_fail("range()")
 				return {}
 			"len", "char", "ord", "is_instance_of", "type_exists", "get_stack", "print_stack", "assert":
 				var gd_node := _data("tpl", {"id": "gd_" + nm}, depth)
+				if nm == "assert" and args.size() == 1:
+					gd_node.d["message"] = "\"\""   # what the node writes when no message is given
 				return _finish(gd_node, args, depth, {}, want, not nm in ["print_stack", "assert"])
 			"int", "float", "bool", "preload", "super":
 				_fail("%s()" % nm)

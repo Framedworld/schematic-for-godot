@@ -237,11 +237,68 @@ func lambda_tests() -> void:
 	v7_check("lambda: its own local is renamed where the function has one of that name", rok and renamed.contains("var ra_l") and not renamed.contains(".bind(")
 		and robj != null and int(robj.call("f", 3)) == 7, renamed)
 
-	# a captured EventGraph local that must be a member: the bound form, which takes the value when it is made
+	# a captured EventGraph local that must be a member (a second event, made in the editor, gives it a value
+	# too): the bound form, which takes the value when it is made
 	var mb: Dictionary = Importer.new().convert(LAMBDA_MEMBER_SOURCE, {}).bp
+	var meg: Dictionary = mb.graphs[0]
+	var bump := Model.add_node(meg, "custom_event", Vector2(), {"name": "bump", "params": []})
+	var bump_set := Model.add_node(meg, "local_set", Vector2(), {"name": "total"})
+	bump_set.d["value"] = "5"
+	wire(meg, bump, "then", bump_set, "exec")
 	var member := Compiler.new().compile(mb)
-	v7_check("lambda: capturing a local that became a member, it stays a function and a Bind", member.contains("var total_ready") and member.contains("_ready_lambda.bind(total_ready)")
+	v7_check("lambda: capturing a local that became a member, it stays a function and a Bind", member.contains("var total") and member.contains("_ready_lambda.bind(total)")
 		and member.contains("func _ready_lambda("), member)
+	# the script names the local in a string, as set() would name a property: it gets the event's name, so that the
+	# set() still reaches nothing, as it did
+	var named := Compiler.new().compile(Importer.new().convert(LAMBDA_MEMBER_SOURCE.replace("total_ready", "total"), {}).bp)
+	v7_check("lambda: a local the script names as a property gets the event's name", named.contains("var total_ready := 0") and named.contains("set(\"total\", 1)"), named)
+
+
+# Names as written: an event's local and a loop variable keep the name the script gave them where nothing else
+# needs that name.
+const NAMES_SOURCE := "extends Node\n\nvar hp := 3\n\nfunc _ready():\n\tvar speed := 4.0\n\tprint(speed)\n\tfor y in range(3):\n\t\tprint(y)\n\tvar dirs := [Vector2.UP, Vector2.DOWN]\n\tfor d in dirs:\n\t\tprint(d)\n\tvar table := {\"a\": 1}\n\tfor k in table:\n\t\tprint(k)\n\tfor j: float in range(0, 2, 1):\n\t\tprint(j)\n\nfunc carve(h: int) -> void:\n\tfor y in range(h):\n\t\tfor x in range(2):\n\t\t\tprint(x, y)\n\tfor y in range(h):\n\t\tvar grow := func(): return y * hp\n\t\tprint(grow.call())\n"
+# Two events that both declare `x`, an event local named like another event's parameter and loop variable, and a
+# loop over a name the function also uses for a member.
+const CLASH_SOURCE := "extends Node\n\nvar y := 0\n\nfunc _ready():\n\tvar x := 1\n\tvar delta := 2\n\tvar i := 3\n\tprint(x, delta, i)\n\nfunc _process(delta):\n\tvar x := 2.0\n\tprint(x, delta)\n\tfor i in range(2):\n\t\tprint(i)\n\nfunc member_loop() -> void:\n\tfor y in range(2):\n\t\tprint(y)\n\ty = 3\n"
+
+
+func names_tests() -> void:
+	var code := Compiler.new().compile(Importer.new().convert(NAMES_SOURCE, {}).bp)
+	for want in ["var speed := 4.0", "for y in range(3):", "for d in dirs:", "for k in table:", "for j: float in range(0, 2, 1):",
+			"for x in range(2):", "print(x, y)", "var grow := func():", "y * hp"]:
+		v7_check("names: the generated code has `%s`" % want, code.contains(want), code)
+	var numbered := RegEx.create_from_string("\\b(i|item|key|idx)_\\d+\\b")
+	v7_check("names: no event-suffixed or numbered name where nothing clashes", not code.replace("func _ready", "").contains("_ready") and numbered.search(code) == null, code)
+	var again := Compiler.new().compile(Importer.new().convert(code, {}).bp)
+	v7_check("names: converting the generated code gives it back", again == code, again)
+
+	var clash := Compiler.new().compile(Importer.new().convert(CLASH_SOURCE, {}).bp)
+	for want in ["var x_ready := 1", "var x_process := 2.0", "var delta_ready := 2", "var i_ready := 3", "print(x_process, delta)", "for i in range(2):"]:
+		v7_check("names: a clash gets the event's name: `%s`" % want, clash.contains(want), clash)
+	v7_check("names: a loop over a name the function also uses for a member is numbered", numbered.search(clash.substr(clash.find("func member_loop"))) != null
+		and clash.contains("\ty = 3"), clash)
+	var clash2 := Compiler.new().compile(Importer.new().convert(clash, {}).bp)
+	v7_check("names: converting it again adds no second suffix", clash2 == clash and not clash2.contains("_ready_ready"), clash2)
+
+	# made clashes in a graph: a loop variable named like a local of its function, and a loop inside a loop of the
+	# same name, fall back to the numbered name
+	var bp: Dictionary = Importer.new().convert(NAMES_SOURCE, {}).bp
+	var carve := Model.graph_named(bp, "carve")
+	carve.locals.append({"name": "x", "type": "int", "default": ""})
+	var inner := {}
+	for n in carve.nodes:
+		if String(n.kind) == "for" and String(n.p.get("var", "")) == "x":
+			inner = n
+	v7_check("names: the loop node keeps the written name in p.var", not inner.is_empty())
+	var made := Compiler.new().compile(bp)
+	v7_check("names: a loop variable that would shadow a function local is numbered", not made.contains("for x in") and made.contains("for i_%d in range(2):" % int(inner.get("id", 0))), made)
+	inner.p["var"] = "y"
+	carve.locals.pop_back()
+	var nested := Compiler.new().compile(bp)
+	v7_check("names: a loop inside a loop of the same name is numbered", nested.contains("for i_%d in range(2):" % int(inner.get("id", 0))) and nested.contains("print(i_%d, y)" % int(inner.get("id", 0))), nested)
+	var gs := GDScript.new()
+	gs.source_code = nested
+	v7_check("names: that script loads", gs.reload() == OK)
 
 
 func wire(g, a, ap, b, bp_) -> void:
@@ -1002,5 +1059,6 @@ func _init() -> void:
 		"  chain(CharacterBody3D): ", R.chain_actions("CharacterBody3D").size())
 	v7_tests()
 	lambda_tests()
+	names_tests()
 	print("FAILS: ", fails)
 	quit(1 if fails else 0)

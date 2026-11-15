@@ -28,6 +28,8 @@ var flow_overlay: FlowOverlay
 var _last_selection := ""
 var watch: Dictionary = {}    # node id -> {pin id: text}: last values reported by the running game
 var hide_unrelated := false   # Unreal's Hide Unrelated: fade every node not linked to the selection
+var _soft_ids: Array = []     # nodes marked softly (see set_soft), without being selected
+const SOFT_COLOR := Color(1.0, 0.72, 0.1, 0.6)   # the selection's amber, fainter
 
 
 func _init() -> void:
@@ -193,9 +195,11 @@ func _style_wires(layer: Control) -> void:
 
 func show_graph(p_bp: Dictionary, p_graph: Dictionary, errors: Dictionary = {}, marks: Dictionary = {}) -> void:
 	_loading = true
-	var selected := _pending_select if not _pending_select.is_empty() else selected_ids()
-	_pending_select = []
 	var same := not graph.is_empty() and not p_graph.is_empty() and int(graph.get("id", -1)) == int(p_graph.id)
+	# (a selection is carried over a rebuild of the same graph; another graph's node ids mean other nodes)
+	var selected := _pending_select if not _pending_select.is_empty() else (selected_ids() if same or graph.is_empty() else [])
+	_pending_select = []
+	_soft_ids = []
 	bp = p_bp
 	graph = p_graph
 	clear_connections()
@@ -356,7 +360,9 @@ func _port_of(pins: Array, pin_id: String) -> int:
 	return -1
 
 
-## Drops wires whose nodes or pins no longer exist (after renames / signature changes).
+## Drops wires whose nodes or pins no longer exist (after renames / signature changes). A node that could not be
+## described at all (its addon is missing, say) is given a pin for each of its wires by the registry, so its
+## wires are kept: only a pin that a described node really no longer has loses its wire.
 func prune_wires() -> void:
 	var pins := {}
 	for n in graph.nodes:
@@ -406,6 +412,7 @@ func _selection_changed() -> void:
 	var key := "%d|%s" % [int(graph.get("id", -1)), ",".join(PackedStringArray(ids.map(func(i): return str(i))))]
 	if key != _last_selection:
 		_last_selection = key
+		_clear_soft()
 		editor.graph_selection_changed(ids)
 	apply_unrelated()
 
@@ -504,8 +511,87 @@ func focus_node(id: int) -> void:
 	for o in get_children():
 		if o is GraphElement:
 			o.selected = o == c
-	scroll_offset = (c.position_offset + c.size * 0.5) * zoom - size * 0.5
+	center_on(id)
 	_selection_changed()
+
+
+## Scrolls so the node is in the middle of the view. False when the node is not in this graph.
+func center_on(id: int) -> bool:
+	var c := get_node_or_null("n%d" % id) as GraphElement
+	if c == null:
+		return false
+	scroll_offset = (c.position_offset + c.size * 0.5) * zoom - size * 0.5
+	return true
+
+
+## Selects exactly the nodes in `ids` (nothing for []), marks the nodes in `soft` without selecting them, and with
+## `center` brings the first of `ids` to the middle of the view. The editor's selection handler runs as for any
+## selection. Used when the user clicks a line of the generated code.
+func show_selection(ids: Array, soft: Array = [], center := true) -> void:
+	var want := {}
+	for i in ids:
+		if get_node_or_null("n%d" % int(i)) != null:
+			want[int(i)] = true
+	for o in get_children():
+		if o is GraphElement and not o.has_meta("gone"):
+			o.selected = want.has(int(String(o.name).trim_prefix("n")))
+	if center and not want.is_empty():
+		center_on(int(ids[0]))
+		_recenter_later(int(ids[0]))
+	_selection_changed()
+	set_soft(soft)
+
+
+# (a node that has just been added has no size until the next frames: centre again once it has)
+func _recenter_later(id: int) -> void:
+	if not is_inside_tree():
+		return
+	for i in 2:
+		await get_tree().process_frame
+	if is_instance_valid(self) and selected_ids() == [id]:
+		center_on(id)
+
+
+## Marks nodes with a faint amber outline without selecting them (the nodes that feed the line the user clicked in
+## the generated code). Cleared by any change of selection and by a rebuild of the graph.
+func set_soft(ids: Array) -> void:
+	_clear_soft()
+	for id in ids:
+		var c := get_node_or_null("n%d" % int(id)) as GraphNode
+		if c == null or c.selected:
+			continue
+		var saved := {}
+		for part in ["panel", "titlebar"]:
+			var cur := c.get_theme_stylebox(part) as StyleBoxFlat
+			if cur == null:
+				continue
+			saved[part] = cur
+			var sb := cur.duplicate() as StyleBoxFlat
+			sb.border_color = SOFT_COLOR
+			sb.set_border_width_all(2)
+			if part == "panel":
+				sb.border_width_top = 0
+			else:
+				sb.border_width_bottom = 0
+			c.add_theme_stylebox_override(part, sb)
+		c.set_meta("soft_saved", saved)
+		_soft_ids.append(int(id))
+
+
+func soft_ids() -> Array:
+	return _soft_ids.duplicate()
+
+
+func _clear_soft() -> void:
+	for id in _soft_ids:
+		var c := get_node_or_null("n%d" % int(id)) as GraphNode
+		if c == null or not c.has_meta("soft_saved"):
+			continue
+		var saved: Dictionary = c.get_meta("soft_saved")
+		for part in saved:
+			c.add_theme_stylebox_override(part, saved[part])
+		c.remove_meta("soft_saved")
+	_soft_ids = []
 
 
 # ---------------------------------------------------------------- wires
@@ -520,14 +606,19 @@ func _pins_for(from_node: StringName, from_port: int, to_node: StringName, to_po
 
 func _is_node_hover_valid(from_node: StringName, from_port: int, to_node: StringName, to_port: int) -> bool:
 	var r := _pins_for(from_node, from_port, to_node, to_port)
-	if r.is_empty() or from_node == to_node:
+	if r.is_empty() or from_node == to_node or _orphan(r[1]) or _orphan(r[3]):
 		return false
 	return T.can_connect(r[1].type, r[3].type)
 
 
+## A pin of a node that could not be described (see R._placeholder_pins): it only holds the wire it has.
+func _orphan(pin: Dictionary) -> bool:
+	return bool(pin.get("orphan", false))
+
+
 func _on_connection_request(from_node: StringName, from_port: int, to_node: StringName, to_port: int) -> void:
 	var r := _pins_for(from_node, from_port, to_node, to_port)
-	if r.is_empty() or not T.can_connect(r[1].type, r[3].type):
+	if r.is_empty() or not T.can_connect(r[1].type, r[3].type) or _orphan(r[1]) or _orphan(r[3]):
 		return
 	editor.mutate("Connect Pins", func(): add_wire(r[0].node_id, r[1], r[2].node_id, r[3]))
 
@@ -574,6 +665,8 @@ func _on_connection_to_empty(from_node: StringName, from_port: int, release_posi
 	if a == null or from_port >= a.out_pins.size():
 		return
 	var pin: Dictionary = a.out_pins[from_port]
+	if _orphan(pin):
+		return
 	_open_palette(release_position, {"type": pin.type, "out": true, "node": a.node_id, "pin": pin})
 
 
@@ -582,6 +675,8 @@ func _on_connection_from_empty(to_node: StringName, to_port: int, release_positi
 	if b == null or to_port >= b.in_pins.size():
 		return
 	var pin: Dictionary = b.in_pins[to_port]
+	if _orphan(pin):
+		return
 	_open_palette(release_position, {"type": pin.type, "out": false, "node": b.node_id, "pin": pin})
 
 

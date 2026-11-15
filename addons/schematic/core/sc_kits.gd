@@ -14,8 +14,35 @@ extends RefCounted
 ##
 ## Everything here compiles to ordinary GDScript that names the other addon's classes directly; nothing of
 ## this plugin is needed when the game runs.
+##
+## Any other addon can ship its own nodes too: a file named schematic_kit.gd at the root of its folder
+## (res://addons/<addon>/schematic_kit.gd) is found and loaded here, its nodes stored as "<addon>:<id>". The
+## contract is in docs/KITS.md; sc_kit_api.gd is the object its register(kit) receives. reload_kits() drops
+## everything that came from kits (these three and the public ones) and loads it all again.
 
 const REGISTRY_PATH := "res://addons/schematic/core/sc_registry.gd"
+const KitApi := preload("res://addons/schematic/core/sc_kit_api.gd")
+
+## The kit API this build of Schematic understands. A kit with a higher KIT_API is skipped with a message; a
+## kit with a lower one is loaded. Raise it only when kits gain something an older Schematic cannot handle.
+const KIT_API := 1
+## The file an addon ships, at the root of its folder.
+const KIT_FILE := "schematic_kit.gd"
+## The folders whose subfolders are addons that may have a kit. Tests point this somewhere else with
+## set_kit_roots(). (The reload function is reload_kits(), not reload(): a Script already has a reload(),
+## which would read this file again from disk and reset these variables.)
+static var kit_roots := PackedStringArray(["res://addons"])
+const DEFAULT_ROOTS := ["res://addons"]
+
+
+## Where to look for kits from now on (the folders that hold addon folders); call reload_kits() afterwards.
+static func set_kit_roots(roots: PackedStringArray) -> void:
+	kit_roots = roots.duplicate()
+
+static var _kit_ids: Dictionary = {}   # template id -> true, for every template a kit registered
+static var _public: Array = []         # loaded public kits: {addon, name, version, api, path, script, ids, starters}
+static var _printed: Dictionary = {}   # problem messages already written to the Output
+static var _broken: Dictionary = {}    # kit script path -> modified time, for scripts that failed to parse
 const IMPORTER_PATH := "res://addons/schematic/core/sc_importer.gd"
 const MODEL_PATH := "res://addons/schematic/core/sc_model.gd"
 
@@ -65,14 +92,47 @@ static func invalidate() -> void:
 
 # ---------------------------------------------------------------- templates
 
-## Registers the fixed nodes of every kit whose addon is present. `registry` is the registry script.
+## Registers the fixed nodes of every kit whose addon is present, built-in and public. `registry` is the
+## registry script. Called once by the registry (ensure_api) and by reload_kits().
 static func register(registry: Script) -> void:
+	_public.clear()
+	registry.kit_problems.clear()
+	var before := {}
+	for id in registry.templates:
+		before[id] = true
 	if has_limbo():
 		_limbo_templates(registry)
 	if has_flow():
 		_flow_templates(registry)
 	if has_parley():
 		_parley_templates(registry)
+	for id in registry.templates:
+		if not before.has(id):
+			_kit_ids[id] = true
+	_load_public(registry)
+
+
+## Drops every template, starter and action that came from a kit and loads them all again from scratch: for
+## when an addon is switched on or off, added, removed, or its kit file changes. Safe to call at any time and
+## any number of times. Templates that do not come from kits (Schematic's own, such as gd_len, and any
+## registered directly with register_template) are left as they are. Graphs that use a kit's nodes show them as
+## placeholders while the kit is gone and as normal nodes again once it is back (describe them again).
+static func reload_kits() -> void:
+	var r: Script = load(REGISTRY_PATH)
+	if r.api.is_empty():
+		r.ensure_api()   # the first load registers everything
+		return
+	for id in _kit_ids:
+		r.templates.erase(id)
+	_kit_ids.clear()
+	invalidate()
+	r._builtin_templates()
+	register(r)
+
+
+## The template ids that came from kits (for tests and tools).
+static func kit_template_ids() -> Array:
+	return _kit_ids.keys()
 
 
 const PARLEY_RUN_LINES := ["var __ctx_{id}: ParleyContext = ParleyContext.create({sequence} as ParleyDialogueSequenceAst, {data})",
@@ -454,6 +514,7 @@ static func actions(self_cls: String) -> Array:
 			else:
 				var t := parley_item_template(item)
 				out.append(r._act(String(t.title), String(t.cat), "tpl", {"t": t}, String(t.tip), String(t.search)))
+	out.append_array(_public_actions(r, self_cls))
 	return out
 
 
@@ -595,11 +656,16 @@ static func starters() -> Array:
 	if has_flow():
 		out.append({"id": "flow_node", "name": "Flow Node (FlowNodes)", "file": "lift_points", "parent": "FlowNodeBase", "kit": true, "plain_name": true,
 			"desc": "A node for FlowNodes graphs, written as a Schematic: moves every point of its input by an offset. Its file name is the node's id in graphs."})
+	load(REGISTRY_PATH).ensure_api()
+	for kit in _public:
+		out.append_array(kit.starters)
 	return out
 
 
 ## The starter's schematic; {} for an id that is not a kit starter.
 static func build_starter(id: String, cls_name: String) -> Dictionary:
+	if id.contains(KitApi.SEP):
+		return _public_build_starter(id, cls_name)
 	var source := ""
 	match id:
 		"limbo_action": source = LIMBO_ACTION
@@ -666,6 +732,266 @@ static func _flow_node_starter(cls_name: String) -> Dictionary:
 			[copy, "ret", output, "data"]]:
 		run.wires.append([int(w[0].id), String(w[1]), int(w[2].id), String(w[3])])
 	return bp
+
+
+# ---------------------------------------------------------------- public kits (schematic_kit.gd in an addon)
+
+## Whether an addon folder counts as switched on: it has no plugin.cfg (a plain library of scripts), or its
+## plugin is enabled in Project Settings > Plugins.
+static func is_enabled(dir: String) -> bool:
+	var cfg := dir.path_join("plugin.cfg")
+	if not FileAccess.file_exists(cfg):
+		return true
+	return PackedStringArray(ProjectSettings.get_setting("editor_plugins/enabled", PackedStringArray())).has(cfg)
+
+
+## The subfolders of `root` that hold a kit file, sorted.
+static func _kit_folders(root: String) -> PackedStringArray:
+	var out := PackedStringArray()
+	var dir := DirAccess.open(root)
+	if dir == null:
+		return out
+	for folder in dir.get_directories():
+		if not folder.begins_with(".") and FileAccess.file_exists(root.path_join(folder).path_join(KIT_FILE)):
+			out.append(folder)
+	out.sort()
+	return out
+
+
+## What reload_kits() depends on, as text: when it changes, the kits should be loaded again. The kit files found
+## (with their time stamps) and whether each addon is enabled, and which of the built-in kits' addons are there.
+static func signature() -> String:
+	var parts := PackedStringArray()
+	for root in kit_roots:
+		for folder in _kit_folders(root):
+			var dir := root.path_join(folder)
+			var path := dir.path_join(KIT_FILE)
+			parts.append("%s %s %d" % [path, is_enabled(dir), FileAccess.get_modified_time(path)])
+	var classes := {}
+	for c in ProjectSettings.get_global_class_list():
+		classes[String(c.get("class", ""))] = true
+	parts.append("limbo=%s flow=%s parley=%s" % [has_limbo(), classes.has("FlowNodeBase"), classes.has("ParleyActionInterface")])
+	return "\n".join(parts)
+
+
+## The public kits loaded now: [{addon, name, version, api, path, ids}].
+static func loaded_kits() -> Array:
+	var out := []
+	for kit in _public:
+		out.append({"addon": kit.addon, "name": kit.name, "version": kit.version, "api": kit.api, "path": kit.path, "ids": kit.ids.duplicate()})
+	return out
+
+
+## Schematic's own version, for messages.
+static func schematic_version() -> String:
+	var cfg := ConfigFile.new()
+	if cfg.load("res://addons/schematic/plugin.cfg") != OK:
+		return "?"
+	return String(cfg.get_value("plugin", "version", "?"))
+
+
+## Reports a problem with a kit: once in the Output, and in the registry's kit_problems list for the editor.
+static func _report(r: Script, addon: String, path: String, template_id: String, text: String) -> void:
+	var msg := "Schematic kit '%s' (%s)%s: %s" % [addon, path, (", node '%s'" % template_id) if template_id != "" else "", text]
+	for p in r.kit_problems:
+		if String(p.message) == msg:
+			return
+	r.kit_problems.append({"addon": addon, "path": path, "template": template_id, "problem": text, "message": msg})
+	if not _printed.has(msg):
+		_printed[msg] = true
+		push_warning(msg)
+
+
+static func _has_static(scr: Script, fn: String) -> bool:
+	for m in scr.get_script_method_list():
+		if String(m.name) == fn and int(m.get("flags", 0)) & METHOD_FLAG_STATIC:
+			return true
+	return false
+
+
+static func _load_public(r: Script) -> void:
+	var seen := {}
+	for root in kit_roots:
+		for folder in _kit_folders(root):
+			var dir := root.path_join(folder)
+			var path := dir.path_join(KIT_FILE)
+			if seen.has(folder):
+				_report(r, folder, path, "", "a kit in another folder of the same name (%s) was loaded first; this one is skipped" % seen[folder])
+				continue
+			seen[folder] = dir
+			if is_enabled(dir):
+				_load_kit(r, folder, path)
+
+
+static func _load_kit(r: Script, addon: String, path: String) -> void:
+	if addon.contains(KitApi.SEP):
+		_report(r, addon, path, "", "the addon's folder name cannot contain '%s'; the kit is skipped" % KitApi.SEP)
+		return
+	var cant_load := "the script could not be loaded because it has an error (Godot printed it in the Output, with the line); the kit is skipped"
+	var stamp := FileAccess.get_modified_time(path)
+	if int(_broken.get(path, -1)) == stamp:
+		_report(r, addon, path, "", cant_load)   # not loaded again until the file changes: Godot would print its errors again
+		return
+	_broken.erase(path)
+	var scr: Variant = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	# a script that failed to parse can still come back from the loader (holding what an earlier, good version
+	# of the file had), so it is compiled once more to know
+	if not (scr is GDScript) or (scr as GDScript).reload() != OK:
+		_broken[path] = stamp
+		_report(r, addon, path, "", cant_load)
+		return
+	if not _has_static(scr, "register"):
+		_report(r, addon, path, "", "it has no 'static func register(kit) -> void:'; the kit is skipped")
+		return
+	var consts: Dictionary = scr.get_script_constant_map()
+	if not consts.has("KIT_API"):
+		_report(r, addon, path, "", "it has no 'const KIT_API := %d' (the kit API it was written for); the kit is skipped" % KIT_API)
+		return
+	var api: Variant = consts.KIT_API
+	if typeof(api) != TYPE_INT or int(api) < 1:
+		_report(r, addon, path, "", "KIT_API must be a whole number, 1 or more; the kit is skipped")
+		return
+	if int(api) > KIT_API:
+		_report(r, addon, path, "", "it needs kit API %d, but this Schematic (%s) understands kit API %d at most; update Schematic to a version that supports kit API %d. The kit is skipped" % [api, schematic_version(), KIT_API, api])
+		return
+	var kit_name: String = String(consts.KIT_NAME) if consts.get("KIT_NAME") is String and String(consts.KIT_NAME) != "" else addon
+	var kit := KitApi.new(addon, kit_name, path)
+	scr.call("register", kit)
+	for p in kit._problems:
+		_report(r, addon, path, String(p.template), String(p.problem) + "; that node is skipped, the kit's other nodes are loaded")
+	var entry := {"addon": addon, "name": kit_name, "version": String(consts.get("KIT_VERSION", "")), "api": int(api), "path": path,
+		"script": scr, "ids": [], "starters": []}
+	for own in kit._templates:
+		var t: Dictionary = kit._templates[own]
+		var clash := _helper_clash(r, t)
+		if clash != "":
+			_report(r, addon, path, String(own), clash + "; that node is skipped, the kit's other nodes are loaded")
+			continue
+		var full := kit.full_id(String(own))
+		r.register_template(full, t)
+		_kit_ids[full] = true
+		entry.ids.append(full)
+	entry.starters = _public_starters(r, entry)
+	_public.append(entry)
+
+
+## Why a template's helper cannot be used ("" when it can): another template already has a helper function of
+## that name with a different body, and a script can have only one function of a name.
+static func _helper_clash(r: Script, t: Dictionary) -> String:
+	if not t.has("helper"):
+		return ""
+	for tid in r.templates:
+		var other: Variant = r.templates[tid].get("helper")
+		if other is Array and other.size() == 3 and String(other[0]) == String(t.helper[0]):
+			var same := String(other[1]) == String(t.helper[1]) and str(other[2]) == str(t.helper[2])
+			if not same:
+				return "its helper function '%s' has the same name as a different helper of the node '%s'; give it a name that starts with your addon's name" % [t.helper[0], tid]
+	return ""
+
+
+const STARTER_KEYS := ["id", "name", "parent", "desc", "file"]
+
+
+static func _public_starters(r: Script, entry: Dictionary) -> Array:
+	var scr: Script = entry.script
+	if not _has_static(scr, "starters"):
+		return []
+	var list: Variant = scr.call("starters")
+	if not (list is Array):
+		_report(r, entry.addon, entry.path, "", "starters() must return a list of starters; none are offered")
+		return []
+	var out := []
+	for s in list:
+		if not (s is Dictionary):
+			_report(r, entry.addon, entry.path, "", "each starter must be a dictionary {id, name, parent, desc, file}")
+			continue
+		var label := String(s.get("id", "?"))
+		var bad := ""
+		for key in s:
+			if not String(key) in STARTER_KEYS:
+				bad = "unknown key '%s' (a starter may have: %s)" % [key, ", ".join(STARTER_KEYS)]
+		if bad == "" and (not (s.get("id") is String) or not String(s.id).is_valid_identifier()):
+			bad = "its id must be a name (letters, digits and _)"
+		if bad == "" and (not (s.get("name") is String) or String(s.name) == ""):
+			bad = "it has no name"
+		if bad == "" and (not (s.get("parent") is String) or not KitApi.T.class_known(String(s.parent))):
+			bad = "its parent must be a class (\"Node\", \"Resource\", a script's class_name)"
+		if bad != "":
+			_report(r, entry.addon, entry.path, "starter " + label, bad + "; that starter is skipped")
+			continue
+		var file := String(s.get("file", "")) if s.get("file") is String else ""
+		out.append({"id": entry.addon + KitApi.SEP + String(s.id), "name": String(s.name), "parent": String(s.parent),
+			"desc": String(s.get("desc", "")), "file": file if file != "" else String(s.name).to_pascal_case(), "kit": true})
+	return out
+
+
+static func _public_build_starter(id: String, cls_name: String) -> Dictionary:
+	var r: Script = load(REGISTRY_PATH)
+	var addon := id.get_slice(KitApi.SEP, 0)
+	var own := id.substr(addon.length() + 1)
+	for kit in _public:
+		if kit.addon != addon:
+			continue
+		if not _has_static(kit.script, "build_starter"):
+			_report(r, addon, kit.path, "starter " + own, "the kit offers starters but has no 'static func build_starter(id: String, cls: String)'")
+			return {}
+		var made: Variant = kit.script.call("build_starter", own, cls_name)
+		if made is String and String(made) != "":
+			var importer: Script = load(IMPORTER_PATH)
+			var conv: Dictionary = importer.new().convert(String(made), {"class_name": cls_name} if cls_name != "" else {})
+			return conv.get("bp", {})
+		if made is Dictionary and made.get("graphs") is Array:
+			return made
+		_report(r, addon, kit.path, "starter " + own, "build_starter() must return GDScript source text (or a schematic dictionary)")
+		return {}
+	return {}
+
+
+const ACTION_KEYS := ["template", "value", "type", "title", "cat", "tip", "search"]
+
+
+## The palette entries public kits offer for a schematic of class `self_cls` (their actions()).
+static func _public_actions(r: Script, self_cls: String) -> Array:
+	var out := []
+	for kit in _public:
+		if not _has_static(kit.script, "actions"):
+			continue
+		var list: Variant = kit.script.call("actions", self_cls)
+		if not (list is Array):
+			_report(r, kit.addon, kit.path, "", "actions() must return a list")
+			continue
+		var api := KitApi.new(kit.addon, kit.name, kit.path)
+		for a in list:
+			var bad := ""
+			if not (a is Dictionary):
+				bad = "each action must be a dictionary"
+			else:
+				for key in a:
+					if not String(key) in ACTION_KEYS:
+						bad = "unknown key '%s' in an action (an action may have: %s)" % [key, ", ".join(ACTION_KEYS)]
+			if bad != "":
+				_report(r, kit.addon, kit.path, "", bad + "; that action is skipped")
+				continue
+			if a.get("template") is Dictionary:
+				var label := String(a.template.get("title", "action"))
+				var t := api.check(a.template, label)
+				var clash := _helper_clash(r, t) if not t.is_empty() else ""
+				if clash != "":
+					api._problems.append({"template": label, "problem": clash})
+				if not t.is_empty() and clash == "":
+					out.append(r._act(String(t.title), String(t.cat), "tpl", {"t": t}, String(t.get("tip", "")), String(t.get("search", ""))))
+			elif a.get("value") is String and a.get("title") is String:
+				var why := KitApi.type_problem(String(a.get("type", "any")))
+				if why != "":
+					api._problems.append({"template": String(a.title), "problem": why})
+					continue
+				out.append(r._act(String(a.title), String(a.get("cat", kit.name)), "const", {"expr": String(a.value), "t": String(a.get("type", "any")), "label": String(a.title)},
+					String(a.get("tip", "")), String(a.get("search", ""))))
+			else:
+				api._problems.append({"template": String(a.get("title", "")), "problem": "an action is {\"template\": {...}} or {\"value\": \"GDScript expression\", \"type\": ..., \"title\": ...}"})
+		for p in api._problems:
+			_report(r, kit.addon, kit.path, String(p.template), String(p.problem) + "; that action is skipped")
+	return out
 
 
 # ---------------------------------------------------------------- Parley stores

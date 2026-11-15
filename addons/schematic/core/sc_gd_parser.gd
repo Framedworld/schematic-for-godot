@@ -902,6 +902,7 @@ func _lift_lambdas(text: String) -> String:
 	var lines := text.split("\n")
 	# what is inside a string or a comment is never a lambda: headers are looked for with those blanked out
 	var blank_lines := _blank_strings(text).split("\n")
+	var inside := T.lines_in_string(text)
 	var header := RegEx.create_from_string("func\\s*[A-Za-z_0-9]*\\s*\\(")
 	var out := PackedStringArray()
 	var found := false
@@ -918,19 +919,23 @@ func _lift_lambdas(text: String) -> String:
 			i += 1
 			continue
 		stripped = line.substr(0, stripped.length())
-		# Everything after the header belongs to the body until the call the lambda sits in goes on (see
-		# _unopened_close). How far the header's own line is indented says nothing: it may be a continuation line.
-		var j := lines.size()
-		var taken := lines.slice(i + 1)
-		# The bracket that closes the call the lambda sits in may come straight after its last statement
+		# The body is the lines after the header that are indented deeper than the statement the lambda sits in
+		# (the engine's rule: inside brackets a lambda's body is an indented block of its own, and the first line
+		# that is not indented deeper than the statement's first line ends it, as `, "next": ...`, `)` or `]`
+		# do). How far the header's own line is indented says nothing: it may be a continuation line.
+		var end := _body_end(blank_lines, inside, i + 1)
+		# The bracket that closes the call the lambda sits in may also come straight after its last statement
 		# (`... false))` or `... x), CONNECT_ONE_SHOT)`): from the first bracket the body does not open, the
 		# text belongs to the statement around it.
-		var joined := "\n".join(taken)
-		var cut := _unopened_close("\n".join(blank_lines.slice(i + 1)))
+		var joined := "\n".join(lines.slice(i + 1, end))
+		var cut := _unopened_close("\n".join(blank_lines.slice(i + 1, end)))
+		var after := "\n".join(lines.slice(end))
 		var tail := ""
 		if cut != -1:
-			tail = joined.substr(cut)
+			tail = joined.substr(cut) + (("\n" + after) if end < lines.size() else "")
 			joined = joined.substr(0, cut)
+		elif end < lines.size():
+			tail = "\n" + after
 		var body := PackedStringArray()
 		var base := -1
 		var joined_inside := T.lines_in_string(joined)
@@ -960,10 +965,32 @@ func _lift_lambdas(text: String) -> String:
 		var key := "__sc_lambda_%d__" % _lambdas.size()
 		_lambdas[key] = {"k": "lambda", "params": fn.params, "ret": fn.ret, "body": fn.body, "body_text": String(fn.get("body_text", "pass")),
 			"src": head + "\n" + "\n".join(body)}
-		out.append(line.substr(0, at) + key + tail)
+		# what follows the body is the statement again, and may hold more lambdas that span lines
+		var more := _lift_lambdas(tail) if tail.contains("func") else ""
+		out.append(line.substr(0, at) + key + (more if more != "" else tail))
 		found = true
-		i = j
+		break
 	return "\n".join(out) if found else ""
+
+
+## The first line from `from` on that ends a lambda body begun on the line before: one that is not inside a
+## string, holds code, is outside any bracket the body opened, and is not indented deeper than the statement
+## (in a statement's text the lines after the first are indented relative to it). lines.size() if none.
+func _body_end(blank_lines: PackedStringArray, inside: Array, from: int) -> int:
+	var depth := 0
+	for k in range(from, blank_lines.size()):
+		var bl := blank_lines[k]
+		if not (k < inside.size() and inside[k]) and bl.strip_edges() != "" and depth == 0:
+			if bl[0] != "\t" and bl[0] != " ":
+				return k
+		for c in bl:
+			if c in ["(", "[", "{"]:
+				depth += 1
+			elif c in [")", "]", "}"]:
+				depth -= 1
+		if depth < 0:
+			return k + 1   # the body ends inside this line, at a bracket it did not open (see _unopened_close)
+	return blank_lines.size()
 
 
 ## `match subject:` with its arms. Each arm is {pattern (as written), body, plain}; an arm that binds names

@@ -528,11 +528,23 @@ func _init() -> void:
 	check("a counted loop is written as range(count)", fast_code.contains(" in range(count):") and fast_code.contains(" in range(2, count):") and not fast_code.contains("+ 1"))
 	check("a negation stays a negation", fast_code.contains("return ((-value) * STEP)") and not fast_code.contains("* -1"))
 	check("a formatted string needs no conversion", fast_code.contains("return (\"cell_%d\" % index)") and not fast_code.contains("str("))
-	check("a local of an event is a local, not a member", fast_code.contains("\tvar half_enter_tree := STEP * 0.5\n") and fast_code.contains("\tvar names_enter_tree := [") and not fast_code.contains("\nvar half_enter_tree") and not fast_code.contains("\nvar names_enter_tree"))
-	# an event local that carries a value from one run to the next has to stay a member
-	var keeps := Importer.new().convert("extends Node\nvar seen := 0\nfunc _process(_delta):\n\tvar last := seen\n\tseen = last + 1\nfunc _ready():\n\tvar tw := create_tween()\n\tvar fade := 1.0\n\ttw.tween_property(self, \"fade_ready\", 0.0, 1.0)\n\tseen = int(fade)\n", {})
+	check("a local of an event is a local, not a member, named as written", fast_code.contains("\tvar half := STEP * 0.5\n") and fast_code.contains("\tvar names := [") and not fast_code.contains("\nvar half") and not fast_code.contains("\nvar names"), fast_code)
+	# A local the script names in a string, as a tween of self names a property: in the script the string reaches
+	# no property, so the local gets the event's name and the string still reaches none.
+	var keeps := Importer.new().convert("extends Node\nvar seen := 0\nfunc _process(_delta):\n\tvar last := seen\n\tseen = last + 1\nfunc _ready():\n\tvar tw := create_tween()\n\tvar fade := 1.0\n\ttw.tween_property(self, \"fade\", 0.0, 1.0)\n\tseen = int(fade)\n", {})
 	var keeps_code := Compiler.new().compile(keeps.bp)
-	check("a local named in a string stays a member", keeps_code.contains("\nvar fade_ready") and keeps_code.contains("\tvar last_process := seen\n"), keeps_code if not keeps_code.contains("\nvar fade_ready") else "")
+	check("a local the script names as a property gets the event's name", keeps_code.contains("\tvar fade_ready := 1.0\n") and keeps_code.contains("tween_property(self, \"fade\", 0.0, 1.0)")
+		and keeps_code.contains("\tvar last := seen\n"), keeps_code)
+	# an EventGraph local named in a string that reaches it as a property (made so in the editor) has to stay a member
+	var eg_keep: Dictionary = keeps.bp.graphs[0]
+	for l in eg_keep.locals:
+		if String(l.name) == "fade_ready":
+			l.name = "fade"
+	for n in eg_keep.nodes:
+		if String(n.kind) in ["local_get", "local_set"] and String(n.p.get("name", "")) == "fade_ready":
+			n.p.name = "fade"
+	var member_code := Compiler.new().compile(keeps.bp)
+	check("a local named in a string stays a member", member_code.contains("\nvar fade") and not member_code.contains("\tvar fade"), member_code)
 	# where GDScript cannot infer, the local falls back to the type the graph knows
 	var guess := Importer.new().convert("extends Node\nvar out := 0.0\nfunc run(box: Dictionary) -> void:\n\tvar first := 2.5\n\tvar second := first * 2.0\n\tout = second\n", {})
 	var guess_code := Compiler.new().compile(guess.bp)

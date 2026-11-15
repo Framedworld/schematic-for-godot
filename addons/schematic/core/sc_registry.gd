@@ -35,10 +35,18 @@ static var api: Dictionary = {}
 ##    exprs: {out_pin_id: "expression using {pin_id}"},
 ##    helper: [name, "func header:", [[indent, "line"], ...]]}   # optional shared helper function
 static var templates: Dictionary = {}
+## Problems found while loading kits (see sc_kits.gd and docs/KITS.md), for the editor to show:
+## [{addon, path, template, problem, message}]. Each is also written once to the Output.
+static var kit_problems: Array = []
 
 
 static func register_template(id: String, t: Dictionary) -> void:
 	templates[id] = t
+
+
+## Loads every kit again (an addon was switched on or off, added or removed, or its kit file changed).
+static func reload_kits() -> void:
+	Kits.reload_kits()
 
 
 ## The template a template node stands for: a registered one (by id), or one the node carries itself (nodes
@@ -278,7 +286,10 @@ static func _scan_libraries(dir_path: String) -> void:
 ## The macro graph a macro node stands for: one of this schematic's own, or one from a macro library.
 static func macro_graph(bp: Dictionary, p: Dictionary) -> Dictionary:
 	var lib := String(p.get("lib", ""))
-	var g := Model.graph_named(bp if lib == "" else library_bp(lib), String(p.get("name", "")))
+	var owner := bp if lib == "" else library_bp(lib)
+	if not owner.has("graphs"):
+		return {}   # the library file is gone
+	var g := Model.graph_named(owner, String(p.get("name", "")))
 	return g if (not g.is_empty() and g.kind == "macro") else {}
 
 
@@ -530,6 +541,9 @@ const CALL_KINDS := ["call", "bcall", "util", "call_self", "call_parent", "dyn_c
 
 static func describe_raw(node: Dictionary, bp: Dictionary, graph: Dictionary = {}) -> Dictionary:
 	var d := _describe_kind(node, bp, graph)
+	if bool(d.get("missing", false)):
+		_placeholder_pins(d, node, bp, graph)
+		return d
 	var p: Dictionary = node.get("p", {})
 	if node.kind in CALL_KINDS:
 		if bool(p.get("await", false)):
@@ -574,6 +588,58 @@ static func describe_raw(node: Dictionary, bp: Dictionary, graph: Dictionary = {
 	return d
 
 
+## A node this editor cannot describe (its addon is not installed or enabled, a newer version of the plugin
+## wrote it, the library or class it uses is gone) is a placeholder: it gets a pin for every wire the graph has
+## on it, named by the pin id the wire stores and typed from the other end of the wire where that is known, so
+## its wires stay in the graph exactly as loaded (the graph view prunes only wires to pins that are really
+## gone). The pins are marked `orphan`: the graph accepts no new connections to them. When the node can be
+## described again, it is a normal node with the same pins and wires.
+static var _placeholder_depth := 0
+
+
+static func _placeholder_pins(d: Dictionary, node: Dictionary, bp: Dictionary, graph: Dictionary) -> void:
+	d.ins = []
+	d.outs = []
+	d.pure = false
+	d.latent = false
+	d.compact = false
+	d.color = COL_ERR
+	if graph.is_empty():
+		return
+	var id := int(node.get("id", -1))
+	var seen_in := {}
+	var seen_out := {}
+	for w in graph.get("wires", []):
+		if int(w[2]) == id and not seen_in.has(String(w[3])):
+			seen_in[String(w[3])] = true
+			d.ins.append(_pin(String(w[3]), String(w[3]), _far_type(int(w[0]), String(w[1]), true, bp, graph), {"orphan": true}))
+		if int(w[0]) == id and not seen_out.has(String(w[1])):
+			seen_out[String(w[1])] = true
+			d.outs.append(_pin(String(w[1]), String(w[1]), _far_type(int(w[2]), String(w[3]), false, bp, graph), {"orphan": true}))
+	# exec pins first, as on every other node
+	for side in ["ins", "outs"]:
+		d[side] = d[side].filter(func(x): return x.type == "exec") + d[side].filter(func(x): return x.type != "exec")
+
+
+## The type of the pin at the other end of a placeholder's wire ("any" when that is not known, for instance when
+## the other end is a placeholder too).
+static func _far_type(other_id: int, pin_id: String, other_is_output: bool, bp: Dictionary, graph: Dictionary) -> String:
+	if _placeholder_depth > 0:
+		return "any"
+	var other := Model.find_node(graph, other_id)
+	if other.is_empty():
+		return "any"
+	_placeholder_depth += 1
+	var od := describe(other, bp, graph)
+	_placeholder_depth -= 1
+	if bool(od.get("missing", false)):
+		return "any"
+	for pin in (od.outs if other_is_output else od.ins):
+		if String(pin.id) == pin_id:
+			return String(pin.type)
+	return "any"
+
+
 static func _describe_kind(node: Dictionary, bp: Dictionary, graph: Dictionary = {}) -> Dictionary:
 	ensure_api()
 	var p: Dictionary = node.get("p", {})
@@ -614,8 +680,14 @@ static func _describe_kind(node: Dictionary, bp: Dictionary, graph: Dictionary =
 		"tpl":
 			var t: Dictionary = template_of(p)
 			if t.is_empty():
-				d.title = String(p.get("id", "?"))
-				d.err = "Unknown node '%s' (is the plugin that provides it enabled?)" % p.get("id", "")
+				var was := String(p.get("title", "")) if String(p.get("title", "")) != "" else String(p.get("id", "?"))
+				d.title = "%s (missing)" % was
+				d.sub = "Missing addon node: %s" % p.get("id", "")
+				d.err = "This node comes from an addon that is not installed or enabled: %s" % p.get("id", "")
+				if String(p.get("id", "")).contains(":"):
+					d.err += " (addons/%s)" % String(p.id).get_slice(":", 0)
+				d.tip = "The addon (kit) that provides '%s' is not installed or not enabled in this project. The node and its wires are kept as they were; enable the addon and reopen the graph to use it again." % p.get("id", "")
+				d["missing"] = true
 				return d
 			d.title = String(t.title)
 			d.pure = bool(t.get("pure", false))
@@ -651,6 +723,11 @@ static func _describe_kind(node: Dictionary, bp: Dictionary, graph: Dictionary =
 			d.color = COL_FLOW
 			if mg.is_empty():
 				d.err = ("Macro '%s' no longer exists" % p.get("name", "")) if mlib == "" else ("Macro '%s' is not in the library %s" % [p.get("name", ""), mlib])
+				# a macro of another file (a library missing or changed outside this editor) keeps its wires;
+				# one of this schematic that was removed here loses the pins it had, as any removed pin does
+				if mlib != "":
+					d.title = "%s (missing)" % d.title
+					d["missing"] = true
 			else:
 				d.ins = _params(mg.inputs, "i_")
 				d.outs = _params(mg.outputs, "o_")
@@ -695,6 +772,7 @@ static func _describe_kind(node: Dictionary, bp: Dictionary, graph: Dictionary =
 			d.sub = "Target is %s" % p.type
 			if m.is_empty():
 				d.err = "%s has no method '%s'" % [p.type, p.method]
+				d["missing"] = true
 				return d
 			d.pure = bool(m.c) or bool(m.s)
 			d.color = COL_PURE if d.pure else COL_CALL
@@ -720,6 +798,7 @@ static func _describe_kind(node: Dictionary, bp: Dictionary, graph: Dictionary =
 			d.title = nice(p.name)
 			if u.is_empty():
 				d.err = "Unknown utility function '%s'" % p.name
+				d["missing"] = true
 				return d
 			var rt := api_type(u.r)
 			d.pure = rt != ""
@@ -759,6 +838,9 @@ static func _describe_kind(node: Dictionary, bp: Dictionary, graph: Dictionary =
 			var fields := data_fields(String(p.cls))
 			if fields.is_empty():
 				d.err = "'%s' is not a data class (a Resource script with exported variables)" % p.cls
+				if not T.class_known(String(p.cls)):
+					d.err = "Class '%s' no longer exists" % p.cls
+					d["missing"] = true   # the data class's script is gone: its field wires are kept
 			for fld in fields:
 				d.ins.append(_pin("f_" + String(fld[0]), nice(fld[0]), String(fld[1]), {"def": String(fld[2])} if String(fld[2]) != "" else {}))
 			d.outs = [_pin("ret", String(p.cls), String(p.cls))]
@@ -1114,6 +1196,7 @@ static func _describe_kind(node: Dictionary, bp: Dictionary, graph: Dictionary =
 			d.outs = [_exec_out()]
 			if ig.is_empty():
 				d.err = "The interface %s has no function '%s'" % [p.get("iface", ""), p.get("fn", "")]
+				d["missing"] = true   # the interface is another file: its call keeps its wires until it is back
 			else:
 				d.ins.append_array(_params(ig.inputs, "a_"))
 				d.outs.append_array(_params(ig.outputs, "r_"))
@@ -1215,7 +1298,10 @@ static func _describe_kind(node: Dictionary, bp: Dictionary, graph: Dictionary =
 			d.title = String(p.get("text", "Comment"))
 			d.color = Color(0.3, 0.3, 0.3)
 		_:
-			d.err = "Unknown node kind '%s'" % node.kind
+			d.title = "%s (missing)" % node.kind
+			d.sub = "Unknown node kind"
+			d.err = "Unknown node kind '%s' (written by a newer version of Schematic, or by an addon that is not installed or enabled)" % node.kind
+			d["missing"] = true
 	return d
 
 
@@ -1363,9 +1449,11 @@ static func _describe_call(d: Dictionary, p: Dictionary, bp: Dictionary) -> void
 	var m := find_method(p.cls, p.method)
 	d.title = nice(p.method)
 	if m.is_empty():
-		d.err = "%s has no function '%s'" % [p.cls, p.method]
-		d.ins = [_exec_in()]
-		d.outs = [_exec_out()]
+		# the class is gone (a script renamed or deleted, an addon switched off) or no longer has the function:
+		# the node keeps every wire it has until it can be described again
+		d.err = ("Class '%s' no longer exists (the call to %s is kept as it was)" % [p.cls, p.method]) if not T.class_known(String(p.cls)) else "%s has no function '%s'" % [p.cls, p.method]
+		d.sub = "Target is %s" % p.cls
+		d["missing"] = true
 		return
 	var flags := int(m.get("flags", 0))
 	var rt := T.from_info(m.get("return", {}), true)

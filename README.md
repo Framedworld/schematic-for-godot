@@ -13,8 +13,8 @@ Schematic is an editor plugin for building game logic as graphs of nodes and wir
 type: a Schematic is an ordinary `.gd` script, so it attaches to nodes, exports variables to the Inspector,
 registers a `class_name`, and is called from hand-written code like any other script.
 
-Tested on stock Godot 4.6 and 4.7.1 and on a 4.8 development build. It needs Godot 4.5 or later (4.5 itself has not
-been tried; on 4.3 the plugin does not load).
+Needs Godot 4.6 or later. Tested on stock Godot 4.6 and 4.7.1 and on a 4.8 development build; older versions have
+not been tried, and on 4.3 the plugin does not load.
 
 ## A Schematic is a GDScript file
 
@@ -179,7 +179,10 @@ other projects and are not in the repository.
 | Animated wires | With Show Flow and Values on, dots run along each exec wire the game follows; a node step at a breakpoint animates the wire it took |
 | Drag from Scene dock or FileSystem | Node reference / preloaded resource |
 
-The **Generated Code** tab shows the GDScript live; selecting a node jumps to its lines.
+The **Generated Code** tab shows the GDScript live, and the two sides are linked. Select nodes and their lines are
+highlighted: strongly for the lines a node wrote, softly for the lines it only feeds a value into. Click a line and
+the node that wrote it is selected and centred, in whichever function it is; the nodes feeding that line get an
+outline. A line no node wrote (a declaration, a helper) says what it is under the code.
 
 ### Semantics that match Blueprints
 
@@ -213,6 +216,8 @@ The **Generated Code** tab shows the GDScript live; selecting a node jumps to it
     In the generated code it is written back as the lambda it was, in the place it stood, so calling it costs what it
     cost before;
   - an event keeps the parameter names the script gave it (`func _process(dt)` stays `dt`, on the pin and in the code);
+    its locals and every loop variable keep their names too (`var speed`, `for y in range(h)`), and get a suffix or
+    a number only where two of them would otherwise clash;
   - a statement that is only an expression still runs what is in it: `a() and b()` is a Branch, `x() if c else y()` is
     a Branch with a call on each side;
   - a `match` arm that binds names (`[var a, var b]`, `{"hp": var hp}`, `var x when x > 3`) is a Switch case; the
@@ -238,7 +243,7 @@ The **Generated Code** tab shows the GDScript live; selecting a node jumps to it
   variable the group sets is a local of the macro, and each use says which of its own locals that is. A macro is
   expanded where it is used, so the generated scripts are unchanged and nothing is added at run time. The tool
   checks exactly that: a Schematic is only changed when the script generated from it afterwards is the script
-  generated before (loop variables, which are numbered by node, may get another number); otherwise it is put back.
+  generated before (a loop variable that had to be numbered may get another number); otherwise it is put back.
   Never grouped: Return, Break, Continue, GDScript nodes and nodes that keep state (Do Once, Delay...). A group has
   to save at least 8 nodes over all its uses, with at most 6 input pins and 2 value outputs. A file at the
   library's path that reuse did not make is never written over. Running the tool again is safe; it may find a few
@@ -264,10 +269,14 @@ The **Generated Code** tab shows the GDScript live; selecting a node jumps to it
 
 ```
 godot --headless --path . --script res://tests/test_compile.gd
-godot --path . --editor -- --sc-selftest=res://tests/shot.gd        # also shot_input, shot_panels, shot_look, shot_alias, shot_macros, shot_tieins, shot_debug, shot_debugger, shot_interfaces, shot_collapse, shot_starters, shot_libs, shot_import, shot_data, shot_reuse, shot_flow_reroute, shot_edit_converted
+godot --path . --editor -- --sc-selftest=res://tests/shot.gd        # also shot_input, shot_panels, shot_look, shot_alias, shot_macros, shot_tieins, shot_debug, shot_debugger, shot_interfaces, shot_collapse, shot_starters, shot_libs, shot_import, shot_data, shot_reuse, shot_flow_reroute, shot_edit_converted, shot_kit_missing, shot_public_kit, shot_code_link
 godot --headless --path . --script res://tests/test_data.gd
 godot --headless --path . --script res://tests/test_import.gd
 godot --headless --path . --script res://tests/test_convert.gd     # the converter's torture test: tests/convert/*.gd run as written and converted
+godot --headless --path . --script res://tests/test_fixed_point.gd # converting the generated code again must give the same text back
+godot --headless --path . --script res://tests/test_code_link.gd   # every generated line to its nodes, and back
+godot --headless --path . --script res://tests/test_kit_missing.gd # a node whose addon is missing keeps its wires
+godot --headless --path . --script res://tests/test_public_kit.gd  # nodes shipped by another addon (tests/fake_kit)
 godot --headless --path . --script res://tests/stress_convert.gd -- <folder of scripts>   # converts any scripts and checks the result (reads only)
 godot --headless --path . --script res://tests/test_libraries.gd
 godot --headless --path . --script res://tests/test_interfaces.gd
@@ -281,7 +290,12 @@ godot --headless --fixed-fps 60 --path . --script res://tests/test_machine.gd   
 
 ## Extending
 
-Add your own nodes from any plugin or tool script - no compiler changes needed:
+**Make nodes for your addon:** ship one file, `schematic_kit.gd`, at the root of your addon folder and its nodes
+appear in Schematic's action menu, with no dependency on Schematic and no registration call. The format, a worked
+example and what users see when your addon is missing are in [docs/KITS.md](docs/KITS.md). A node whose addon is not
+installed is shown as a red placeholder that keeps every wire, and is a normal node again when the addon is back.
+
+From a plugin or tool script of your own project you can also register a node directly:
 
 ```gdscript
 const BPRegistry := preload("res://addons/schematic/core/sc_registry.gd")

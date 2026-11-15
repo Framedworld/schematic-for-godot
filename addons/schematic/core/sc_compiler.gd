@@ -16,6 +16,11 @@ var bp: Dictionary
 var errors: Array = []      # [{g, n, m, w}]
 var line_map: Dictionary = {}  # 1-based line -> [graph_id, node_id]
 var node_lines: Dictionary = {}  # "gid:nid" -> first line
+## For the code link (editor/sc_code_link.gd): what a line outside any function body is. 1-based line ->
+## "header" (comment, @tool, class_name, extends, description), "declaration" (enum, signal, variable, member),
+## "carried" (code kept as written), "function" (a function's header and the annotations above it) or "helper"
+## (a function the compiler wrote for its own use). Lines not listed are function bodies (or blank).
+var line_kinds: Dictionary = {}
 ## For the debugger: the expression each wired input pin reads, per function of the generated script
 ## (function name -> "gid:nid" -> {pin id: expression}), and the lines each function covers ([first, last, name]).
 var pin_exprs: Dictionary = {}
@@ -63,6 +68,9 @@ var _lam := 0
 const LAM_OPEN := "\u0002"     # an inline lambda stands in an expression as LAM_OPEN + its number + LAM_CLOSE,
 const LAM_CLOSE := "\u0003"    # and _line spreads it over the lines of its body
 const KEYWORDS := ["null", "true", "false", "self", "super", "PI", "TAU", "INF", "NAN", "and", "or", "not", "in", "is", "as"]
+## The scope of a loop's body holds the name its variable is written with under this key (a loop node's id in
+## it; not a name a variable could have)
+const LOOP_MARK := "\u0001loop %d"
 ## What a captured value may come from to be captured by name: something that is a local of the generated function
 const CAPTURE_SOURCES := ["local_get", "local_set", "fn_entry", "event", "custom_event", "signal_event", "for", "for_each", "for_each_dict",
 	"call", "bcall", "util", "call_parent", "dyn_call", "call_self", "iface_call", "cast", "new", "spawn", "table_row", "await_value", "tpl", "const"]
@@ -78,6 +86,8 @@ var _ev_caps: Array = []           # [EventGraph local, lambda name]: captured b
 var _redo: Dictionary = {}         # lambdas to write as functions after all (a capture became a member)
 var lambda_notes: Dictionary = {}  # lambda graph name -> why it was written as a function instead of inline
 var _cap_kind := ""                # the kind of node the last value _capture_name accepted comes from
+var _lv_nodes: Dictionary = {}     # the graph's nodes (_nodes) that _lv_taken is for
+var _lv_taken: Dictionary = {}     # names a loop variable may not be written with in that graph (see _loop_var)
 
 
 ## Compiles in up to two passes: the first finds values that are read outside the execution path that
@@ -108,6 +118,7 @@ func _take(other: Object, code: String) -> String:
 	errors = other.errors
 	line_map = other.line_map
 	node_lines = other.node_lines
+	line_kinds = other.line_kinds
 	pin_exprs = other.pin_exprs
 	block_lines = other.block_lines
 	lambda_notes = lambda_notes.merged(other.lambda_notes, true)
@@ -119,6 +130,7 @@ func _compile_once(schematic: Dictionary) -> String:
 	errors.clear()
 	line_map.clear()
 	node_lines.clear()
+	line_kinds.clear()
 	pin_exprs.clear()
 	block_lines.clear()
 	R.ensure_api()
@@ -338,44 +350,46 @@ func _types_of(params: Array) -> PackedStringArray:
 
 func _assemble() -> String:
 	var lines := PackedStringArray()
-	var add := func(text: String, gid := 0, nid := 0) -> void:
+	var add := func(text: String, gid := 0, nid := 0, kind := "") -> void:
 		lines.append(text)
+		if kind != "":
+			line_kinds[lines.size()] = kind
 		if nid != 0:
 			line_map[lines.size()] = [gid, nid]
 			var key := "%d:%d" % [gid, nid]
 			if not node_lines.has(key):
 				node_lines[key] = lines.size()
-	add.call(Model.MARKER + " v%d - generated from a Schematic graph. Edit it in the Schematic editor, not by hand." % Model.VERSION)
+	add.call(Model.MARKER + " v%d - generated from a Schematic graph. Edit it in the Schematic editor, not by hand." % Model.VERSION, 0, 0, "header")
 	if bp.get("tool", false) or _construct:
-		add.call("@tool")
+		add.call("@tool", 0, 0, "header")
 	for class_ann in bp.get("class_pre", []):
-		add.call(String(class_ann))   # @icon(...) and the like, carried over from an imported script
+		add.call(String(class_ann), 0, 0, "header")   # @icon(...) and the like, carried over from an imported script
 	if String(bp.get("class_name", "")) != "":
-		add.call("class_name " + T.ident(bp.class_name))
-	add.call("extends " + R.self_class(bp))
+		add.call("class_name " + T.ident(bp.class_name), 0, 0, "header")
+	add.call("extends " + R.self_class(bp), 0, 0, "header")
 	for dl in String(bp.get("description", "")).split("\n", false):
-		add.call("## " + dl)
+		add.call("## " + dl, 0, 0, "header")
 	add.call("")
 	for be in bp.get("enums", []):
 		var names := PackedStringArray()
 		for bv in be.values:
 			names.append(T.ident(String(bv)))
-		add.call("enum %s { %s }" % [T.ident(String(be.name)), ", ".join(names)])
+		add.call("enum %s { %s }" % [T.ident(String(be.name)), ", ".join(names)], 0, 0, "declaration")
 	if not bp.get("enums", []).is_empty():
 		add.call("")
 	for dsp in bp.dispatchers:
 		for sig_ann in dsp.get("pre", []):
-			add.call(String(sig_ann))   # @warning_ignore(...) and the like, carried over from an imported script
+			add.call(String(sig_ann), 0, 0, "declaration")   # @warning_ignore(...) and the like, carried over from an imported script
 		var sig_params: Array = dsp.get("params", [])
 		if dsp.has("declared"):
 			sig_params = sig_params.slice(0, int(dsp.declared))   # an imported signal emitted with more than it declares
-		add.call("signal %s%s" % [T.ident(dsp.name), ("(%s)" % _param_list(sig_params)) if not (sig_params.is_empty() and dsp.has("declared")) else ""])
+		add.call("signal %s%s" % [T.ident(dsp.name), ("(%s)" % _param_list(sig_params)) if not (sig_params.is_empty() and dsp.has("declared")) else ""], 0, 0, "declaration")
 	if not bp.dispatchers.is_empty():
 		add.call("")
 	# enums, constants and inner classes carried over from an imported script, exactly as written
 	if String(bp.get("extra_code", "")) != "":
 		for extra_line in String(bp.extra_code).split("\n"):
-			add.call(extra_line)
+			add.call(extra_line, 0, 0, "carried" if extra_line.strip_edges() != "" else "")
 		add.call("")
 	var group := ""
 	var seen := {}
@@ -388,7 +402,7 @@ func _assemble() -> String:
 		if String(v.get("raw", "")) != "":
 			# a declaration kept as written (annotations with arguments, set / get, static, @onready ...)
 			for raw_line in String(v.raw).split("\n"):
-				add.call(raw_line)
+				add.call(raw_line, 0, 0, "declaration")
 				var marker := raw_line.find("@export_group(\"")
 				if marker != -1:
 					group = raw_line.substr(marker + 15, raw_line.find("\"", marker + 15) - marker - 15)
@@ -399,9 +413,9 @@ func _assemble() -> String:
 		if (v.get("export", false) or _data) and exportable:
 			if String(v.get("category", "")) != group:
 				group = String(v.get("category", ""))
-				add.call("@export_group(\"%s\")" % group.c_escape())
+				add.call("@export_group(\"%s\")" % group.c_escape(), 0, 0, "declaration")
 		for tl in String(v.get("tooltip", "")).split("\n", false):
-			add.call("## " + tl)
+			add.call("## " + tl, 0, 0, "declaration")
 		var lit := String(v.get("default", ""))
 		if lit == "":
 			lit = T.default_literal(vt)
@@ -427,36 +441,36 @@ func _assemble() -> String:
 		var notify_fn := "on_%s_changed" % vn
 		var notify: bool = v.get("notify", false) and not _lib and not Model.graph_named(bp, notify_fn).is_empty()
 		var rerun: bool = _construct and exported
-		add.call(("@export " if exported else "") + decl + (":" if (notify or rerun) else ""))
+		add.call(("@export " if exported else "") + decl + (":" if (notify or rerun) else ""), 0, 0, "declaration")
 		if notify or rerun:
 			var is_node_bp := T.is_a(R.self_class(bp), "Node")
-			add.call("\tset(value):")
-			add.call("\t\t%s = value" % vn)
+			add.call("\tset(value):", 0, 0, "declaration")
+			add.call("\t\t%s = value" % vn, 0, 0, "declaration")
 			if is_node_bp:
-				add.call("\t\tif is_node_ready():")
+				add.call("\t\tif is_node_ready():", 0, 0, "declaration")
 			var deep := "\t\t\t" if is_node_bp else "\t\t"
 			if notify:
-				add.call("%s%s()" % [deep, notify_fn])
+				add.call("%s%s()" % [deep, notify_fn], 0, 0, "declaration")
 			if rerun:
-				add.call("%sConstructionScript()" % deep)
+				add.call("%sConstructionScript()" % deep, 0, 0, "declaration")
 	if not bp.variables.is_empty():
 		add.call("")
 	for m in _members:
-		add.call(("static " + String(m[0])) if (_lib and String(m[0]).begins_with("var ")) else m[0], m[1], m[2])
+		add.call(("static " + String(m[0])) if (_lib and String(m[0]).begins_with("var ")) else m[0], m[1], m[2], "declaration")
 	if not _members.is_empty():
 		add.call("")
 	for hname in _helpers:
-		_blocks.append({"name": hname, "header": _helpers[hname][0], "lines": _helpers[hname][1], "gid": 0, "nid": 0})
+		_blocks.append({"name": hname, "header": _helpers[hname][0], "lines": _helpers[hname][1], "gid": 0, "nid": 0, "helper": true})
 	for b in _blocks:
 		add.call("")
 		for pre_line in b.get("pre", []):
-			add.call(pre_line, b.gid, b.nid)
-		add.call(("static " + String(b.header)) if (_lib and String(b.header).begins_with("func ")) else b.header, b.gid, b.nid)
+			add.call(pre_line, b.gid, b.nid, "function")
+		add.call(("static " + String(b.header)) if (_lib and String(b.header).begins_with("func ")) else b.header, b.gid, b.nid, "helper" if b.get("helper", false) else "function")
 		var first_line := lines.size()
 		if b.lines.is_empty():
-			add.call("\tpass", b.gid, b.nid)
+			add.call("\tpass", b.gid, b.nid, "helper" if b.get("helper", false) else "")
 		for l in b.lines:
-			add.call("\t".repeat(l[0]) + l[1], l[2], l[3])
+			add.call("\t".repeat(l[0]) + l[1], l[2], l[3], "helper" if b.get("helper", false) else "")
 		block_lines.append([first_line, lines.size(), String(b.name)])
 		add.call("")
 	return "\n".join(lines)
@@ -507,9 +521,12 @@ func _declare_in_place(lines: Array, name: String, hint: String, infer := false)
 	for i in starts:
 		# a value that continues on the following lines (a multi-line literal) is still one statement
 		var value := String(lines[i][1]).substr(name.length() + 3)
-		if infer:
+		# (a declaration written "var x: Type" stays that, even where another block declares the name with ":=";
+		# an enum's starts at its first value, which the importer gives as `(0 as Enum)`)
+		var bare_default := _declared_bare(lines[i]) and hint != "" and (value == T.default_literal(hint) or value == "(0 as %s)" % hint)
+		if infer and not bare_default:
 			lines[i][1] = "var %s := %s" % [name, value]
-		elif _declared_bare(lines[i]) and hint != "" and value == T.default_literal(hint):
+		elif bare_default:
 			lines[i][1] = "var %s: %s" % [name, hint]   # written as "var x: Vector3": that already starts at Vector3()
 		elif _declared_bare(lines[i]) and hint == "" and value == "null":
 			lines[i][1] = "var %s" % name
@@ -547,13 +564,24 @@ func _settle_event_locals(pending: Array) -> void:
 			var users := []
 			var named_in_text := false
 			for blk in _blocks:
+				# A function that has a parameter, local or loop variable of that name of its own (another event's
+				# parameter, a function's own local) means its own by it: it does not use this one.
+				if _shadows(blk, name, int(blk.gid) != gid):
+					continue
 				var uses := false
 				for l in blk.lines:
 					var text := String(l[1])
 					if not text.contains(name):
 						continue
+					# A lambda written in place has names of its own: a line of its body, or its parameter list in
+					# the line that opens it, means the lambda's `name`, not this local.
+					if l.size() > 2 and int(l[2]) != int(blk.gid) and _lambda_declares(int(l[2]), name):
+						continue
+					text = _without_lambda_params(text, name)
+					if not text.contains(name):
+						continue
 					# reached by name (set(), a tween, an animation track): it has to be a real member
-					if text.contains("\"" + name + "\"") or text.contains("'" + name + "'"):
+					if _named_as_property(text, name):
 						named_in_text = true
 					if not uses and _replace_word(text, name, "\u0001") != text:
 						uses = true
@@ -582,6 +610,82 @@ func _settle_event_locals(pending: Array) -> void:
 					known = true
 			if not known:
 				_members.append([text, gid, 0])
+
+
+## True when the lambda graph `lgid` declares `name` itself: as one of its own parameters (not a value it
+## captures, which is the name outside), a local, or a loop variable.
+func _lambda_declares(lgid: int, name: String) -> bool:
+	for g in bp.get("graphs", []):
+		if int(g.id) != lgid:
+			continue
+		var own: int = g.inputs.size() - int(g.get("lambda", 0))
+		for i in maxi(own, 0):
+			if T.ident(String(g.inputs[i][0])) == name:
+				return true
+		for loc in g.get("locals", []):
+			if T.ident(String(loc.name)) == name:
+				return true
+		for n in g.nodes:
+			if String(n.get("p", {}).get("var", "")) == name:
+				return true
+	return false
+
+
+## The text with the parameter list of every `func(...)` that has a parameter called `name` emptied, so that
+## the parameter is not taken for a use of an outer variable of that name.
+func _without_lambda_params(text: String, name: String) -> String:
+	var at := text.find("func(")
+	while at != -1:
+		var close := text.find(")", at)
+		if close == -1:
+			break
+		var has := false
+		for part in text.substr(at + 5, close - at - 5).split(","):
+			if part.strip_edges().get_slice(":", 0).get_slice("=", 0).strip_edges() == name:
+				has = true
+		if has:
+			text = text.substr(0, at + 5) + text.substr(close)
+			close = at + 5
+		at = text.find("func(", close)
+	return text
+
+
+## True when a function written has a name of its own that is `name`: a parameter in its header or, with
+## `deep` (a function of another graph, which cannot read this graph's locals at all), a local or loop variable
+## it declares.
+func _shadows(blk: Dictionary, name: String, deep: bool) -> bool:
+	var header := String(blk.get("header", ""))
+	var open := header.find("(")
+	var close := header.rfind(")")
+	if open != -1 and close > open:
+		for part in header.substr(open + 1, close - open - 1).split(","):
+			var pn := part.strip_edges().trim_prefix("...").get_slice(":", 0).get_slice("=", 0).strip_edges()
+			if pn == name:
+				return true
+	if not deep:
+		return false
+	for l in blk.lines:
+		var text := String(l[1])
+		if text.begins_with("var " + name) or text.begins_with("for " + name):
+			var after := text.substr(4 + name.length(), 1)
+			if after == "" or after in [" ", ":", "="]:
+				return true
+	return false
+
+
+## True when `name` is written as a string that reaches the property of that name (set("name"), a tween of
+## self, a node path to it): then it has to be a member. Any other string (a label, a dictionary key) does not.
+static func _named_as_property(text: String, name: String) -> bool:
+	for q in ["\"", "'"]:
+		if text.contains(":" + name + q):
+			return true   # ".:name", a property path
+		var quoted: String = q + name + q
+		if not text.contains(quoted):
+			continue
+		for lead in ["set(", "get(", "set_deferred(", "set_indexed(", "get_indexed(", "self, ", "^", "&", "NodePath("]:
+			if text.contains(lead + quoted):
+				return true
+	return false
 
 
 ## GDScript could not accept some "var x := ..." lines (it could not infer a type there, or the type it
@@ -1369,7 +1473,11 @@ func _function_body(g: Dictionary, entry: Dictionary, lines: Array) -> Array:
 			lit = T.default_literal(String(l.type))
 		pre.append([1, "var %s%s = %s" % [T.ident(String(l.name)), (": " + h) if h != "" else "", lit], _gid, int(entry.id)])
 	b.lines = pre + b.lines
-	if not outs.is_empty():
+	# A function an imported script wrote without a return type gives back null where it ends without a return,
+	# as GDScript does: no last `return null` is written for it (the script did not have one).
+	var falls_off := String(g.get("ret_hint", "")) == "-" and outs.size() == 1 and String(g.get("ret_default", "")) == "" \
+		and T.default_literal(String(outs[0][1])) == "null"
+	if not outs.is_empty() and not falls_off:
 		var last_is_return := false
 		for l in b.lines:
 			if l[0] == 1 and l.size() < 5:   # (a fifth item marks the rest of a statement an inline lambda broke up)
@@ -1505,7 +1613,9 @@ func _chain(nid: int, pin: String, ind: int, scope: Dictionary) -> bool:
 			if not _origin.has(nid):
 				var parts := PackedStringArray()
 				for wpin in _d(_nodes[nid]).ins:
-					if wpin.type != "exec" and _inw.has("%d:%s" % [nid, wpin.id]):
+					# (not a value written straight into this node's line, a call or await the step before left to it:
+					# shown here it would run twice)
+					if wpin.type != "exec" and _inw.has("%d:%s" % [nid, wpin.id]) and not _inline.has(int(_inw["%d:%s" % [nid, wpin.id]][0])):
 						var shown_value := _in(_nodes[nid], String(wpin.id), scope)
 						if not shown_value.contains(LAM_OPEN):   # (a lambda being made is not shown: it would be made twice)
 							parts.append("\"%s\": %s" % [wpin.id, shown_value])
@@ -1635,7 +1745,10 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 			_line(ind, "%s.%s = %s" % [_in(n, "target", scope), T.ident(String(p.name)), _in(n, "value", scope)], id)
 			return _follow(id, "then")
 		"await_value":
-			if _wired_out(id, "ret"):
+			if _wired_out(id, "ret") and _feeds_next_store(n, d):
+				# "x = await s" is written as that: the next step stores what was waited for, and nothing else reads it
+				_inline[id] = "await " + _in(n, "v", scope)
+			elif _wired_out(id, "ret"):
 				_decl("awaited_%d" % id, "any", "await " + _in(n, "v", scope), ind, id, scope)
 			else:
 				_line(ind, "await " + _in(n, "v", scope), id)
@@ -1711,7 +1824,7 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 		"code":
 			var text := String(p.get("code", "pass"))
 			for nm in p.get("ins", []):
-				text = _replace_word(text, String(nm), "(%s)" % _in(n, "x_" + String(nm), scope))
+				text = _replace_word(text, String(nm), _bracketed(_in(n, "x_" + String(nm), scope)))
 			var code_lines := text.split("\n")
 			var in_string := T.lines_in_string(text)
 			var li := 0
@@ -1760,8 +1873,10 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 			_line(ind, "await %s%s" % ["" if tg == "self" else tg + ".", p.signal], id)
 			return _follow(id, "then")
 		"new":
-			if _feeds_next_store(n, d):
-				_inline[id] = "%s.new()" % p.cls   # "x = Thing.new()" is written as that, with no temporary
+			if _feeds_next_store(n, d) or (bool(p.get("inline", false)) and _feeds_next_step(n)):
+				# "x = Thing.new()" is written as that, with no temporary; so is `f(Thing.new())` where an imported
+				# script made it in the middle of the next step (the importer marks that `inline`)
+				_inline[id] = "%s.new()" % p.cls
 			else:
 				_decl(_ovar(n), String(p.cls), "%s.new()" % p.cls, ind, id, scope)
 			return _follow(id, "then")
@@ -1799,7 +1914,7 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 				_sub_detached(id, "then_%d" % i, ind, scope, false)
 			return STOP
 		"for":
-			var iv := "i_%d" % id
+			var iv := _loop_var(n, "i_%d" % id, scope)
 			var last := _in(n, "last", scope)
 			var stop := str(int(last) + 1) if last.is_valid_int() else "%s + 1" % last
 			if _counted(last) != "":
@@ -1808,15 +1923,17 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 			_line(ind, ("for %s in range(%s):" % [iv, stop]) if from == "0" else ("for %s in range(%s, %s):" % [iv, from, stop]), id)
 			var body := scope.duplicate()
 			body[iv] = true
+			body[LOOP_MARK % id] = iv
 			_loop += 1
 			_sub_detached(id, "body", ind + 1, body, true)
 			_loop -= 1
 			return _follow(id, "completed")
 		"for_each_dict":
-			var dk := "key_%d" % id
+			var dk := _loop_var(n, "key_%d" % id, scope)
 			_line(ind, "for %s in %s:" % [dk, _in(n, "dict", scope)], id)
 			var dbody := scope.duplicate()
 			dbody[dk] = true
+			dbody[LOOP_MARK % id] = dk
 			_loop += 1
 			_sub_detached(id, "body", ind + 1, dbody, true)
 			_loop -= 1
@@ -1849,18 +1966,19 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 			if p.get("rev", false):
 				var rarr := "arr_%d" % id
 				var ridx := "idx_%d" % id
-				var ritem := "item_%d" % id
+				var ritem := _loop_var(n, "item_%d" % id, scope)
 				_decl(rarr, "any", _in(n, "array", scope), ind, id, scope)
 				_line(ind, "for %s in range(%s.size() - 1, -1, -1):" % [ridx, rarr], id)
 				_line(ind + 1, "var %s = %s[%s]" % [ritem, rarr, ridx], id)
 				var rbody := scope.duplicate()
 				rbody[ridx] = true
 				rbody[ritem] = true
+				rbody[LOOP_MARK % id] = ritem
 				_loop += 1
 				_sub_detached(id, "body", ind + 1, rbody, false)
 				_loop -= 1
 				return _follow(id, "completed")
-			var item := "item_%d" % id
+			var item := _loop_var(n, "item_%d" % id, scope)
 			var idx := "idx_%d" % id
 			var use_idx := _wired_out(id, "index")
 			if use_idx:
@@ -1871,6 +1989,7 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 			_line(ind, "for %s%s in %s:" % [item, (": " + h) if h != "" else "", _in(n, "array", scope)], id)
 			var body := scope.duplicate()
 			body[item] = true
+			body[LOOP_MARK % id] = item
 			if use_idx:
 				_line(ind + 1, "%s += 1" % idx, id)
 			_loop += 1
@@ -2099,10 +2218,15 @@ func _in(n: Dictionary, pid: String, scope: Dictionary) -> String:
 			node_pins[pid] = e
 		var from_type := _out_type(src, w[1])
 		# A loop walks whatever it is given (a packed array need not be copied into an Array first), and a
-		# condition takes an object as it is (null is false), exactly as hand-written GDScript does.
+		# condition takes an object (null is false) or a number (0 is false) as it is, exactly as hand-written
+		# GDScript does.
 		if n.kind in ["for_each", "for_each_dict"] and pid in ["array", "dict"]:
 			return e
-		if String(pin.type) == "bool" and T.is_object(from_type) and (n.kind in ["branch", "while", "select"] or (n.kind == "math" and String(n.p.get("op", "")) in ["and", "or", "not"])):
+		if String(pin.type) == "bool" and (T.is_object(from_type) or from_type in ["int", "float"]) \
+				and (n.kind in ["branch", "while", "select"] or (n.kind == "math" and String(n.p.get("op", "")) in ["and", "or", "not"])):
+			return e
+		# a String given to a StringName or NodePath property is converted by the assignment itself
+		if n.kind == "set_prop" and pid == "value" and from_type == "String" and String(pin.type) in ["StringName", "NodePath"]:
 			return e
 		return T.coerce(e, from_type, pin.type)
 	var lit := String(n.d.get(pid, pin.get("def", "")))
@@ -2148,6 +2272,97 @@ static func _replace_word(text: String, word: String, with: String) -> String:
 		out += c
 		i += 1
 	return out
+
+
+## An expression put in place of a name in text (a code or expression node's input): in brackets, so that the
+## operators around the name cannot take it apart, unless it holds together already (a name, a plain string, or
+## something in brackets of its own; a number stays in brackets: `(2).x` is not `2.x`).
+static func _bracketed(e: String) -> String:
+	var s := e.strip_edges()
+	if s.is_valid_identifier():
+		return s
+	if s.length() >= 2 and s[0] in ["\"", "'"] and s[-1] == s[0] and not s.substr(1, s.length() - 2).contains(s[0]) and not s.contains("\\"):
+		return s
+	if s.length() >= 2 and s[0] in ["(", "[", "{"] and _closes_at_end(s):
+		return s
+	return "(%s)" % e
+
+
+## True when the bracket that opens `s` is closed by its last character (strings skipped).
+static func _closes_at_end(s: String) -> bool:
+	var depth := 0
+	var quote := ""
+	var i := 0
+	while i < s.length():
+		var c := s[i]
+		if quote != "":
+			if c == "\\":
+				i += 1
+			elif c == quote:
+				quote = ""
+		elif c == "\"" or c == "'":
+			quote = c
+		elif c in ["(", "[", "{"]:
+			depth += 1
+		elif c in [")", "]", "}"]:
+			depth -= 1
+			if depth == 0:
+				return i == s.length() - 1
+		i += 1
+	return false
+
+
+## What a loop variable is called inside its loop (the scope holds it under LOOP_MARK); outside it, the numbered
+## name, which _scoped reports as not available there.
+func _loop_ref(src: Dictionary, numbered: String, scope: Dictionary, consumer: int) -> String:
+	var mark := LOOP_MARK % int(src.id)
+	if scope.has(mark):
+		return String(scope[mark])
+	return _scoped(numbered, src, scope, consumer)
+
+
+## The name a loop node's variable is written with: the one the imported script gave it (`p.var`), as written,
+## unless GDScript would refuse it or read something else by it here: a name declared already where the loop is
+## (an outer loop's variable, a value the compiler stored), a local of the generated function (declared at its top,
+## a loop variable may not shadow it), a parameter, a member the function reads or writes by name (inside the
+## loop the name would mean the loop variable), or the numbered name the compiler gives another loop. Then, and
+## for a loop made in the editor (no `var`), it is `numbered` (i_12, item_12, key_12), as before.
+func _loop_var(n: Dictionary, numbered: String, scope: Dictionary) -> String:
+	var w := String(n.p.get("var", ""))
+	if w == "" or w == numbered:
+		return numbered
+	if not w.is_valid_identifier() or w in KEYWORDS or w.begins_with("__") or scope.has(w):
+		return numbered
+	for l in _g.locals:
+		if T.ident(String(l.name)) == w:
+			return numbered
+	if String(_g.kind) == "function":
+		for inp in _g.inputs:
+			if T.ident(String(inp[0])) == w:
+				return numbered
+	var entry: Dictionary = _nodes.get(_entry_id, {})
+	if not entry.is_empty():
+		for po in _d(entry).outs:
+			if String(po.id).trim_prefix("p_") == w:
+				return numbered
+		for given in entry.get("p", {}).get("names", []):
+			if String(given) == w:
+				return numbered
+	if not is_same(_lv_nodes, _nodes):
+		_lv_nodes = _nodes
+		_lv_taken = {}
+		for other in _nodes.values():
+			match String(other.kind):
+				"var_get", "var_set", "var_inc":
+					_lv_taken[T.ident(String(other.p.get("name", "")))] = true
+				"for", "for_each", "for_each_dict":
+					if String(other.p.get("var", "")) == "":
+						for stem in ["i", "item", "key"]:
+							_lv_taken["%s_%d" % [stem, int(other.id)]] = true
+					if String(other.kind) == "for_each":
+						_lv_taken["idx_%d" % int(other.id)] = true
+						_lv_taken["arr_%d" % int(other.id)] = true
+	return numbered if _lv_taken.has(w) else w
 
 
 func _scoped(name: String, src: Dictionary, scope: Dictionary, consumer: int) -> String:
@@ -2271,6 +2486,8 @@ func _out_expr(src: Dictionary, pin: String, scope: Dictionary, consumer: int) -
 		"as_type":
 			return "(%s as %s)" % [_in(src, "v", scope), p.type]
 		"await_value":
+			if _inline.has(int(src.id)):
+				return String(_inline[int(src.id)])
 			return _scoped("awaited_%d" % src.id, src, scope, consumer)
 		"event_ref":
 			var lg: Dictionary = _lam_graphs.get(String(p.fn), {})
@@ -2314,7 +2531,7 @@ func _out_expr(src: Dictionary, pin: String, scope: Dictionary, consumer: int) -
 			# written straight into the line (no call): each input name is replaced by what is wired to it
 			var expr_text := String(p.get("code", "null"))
 			for nm in p.get("ins", []):
-				expr_text = _replace_word(expr_text, T.ident(String(nm)), "(%s)" % _in(src, "x_" + String(nm), scope))
+				expr_text = _replace_word(expr_text, T.ident(String(nm)), _bracketed(_in(src, "x_" + String(nm), scope)))
 			return "(%s)" % expr_text
 		"tpl":
 			var t: Dictionary = R.template_of(p)
@@ -2335,11 +2552,13 @@ func _out_expr(src: Dictionary, pin: String, scope: Dictionary, consumer: int) -
 		"do_n":
 			return "__do_n_%d_%d" % [_gid, src.id]
 		"for":
-			return _scoped("i_%d" % src.id, src, scope, consumer)
+			return _loop_ref(src, "i_%d" % src.id, scope, consumer)
 		"for_each":
-			return _scoped(("item_%d" if pin == "element" else "idx_%d") % src.id, src, scope, consumer)
+			if pin == "element":
+				return _loop_ref(src, "item_%d" % src.id, scope, consumer)
+			return _scoped("idx_%d" % src.id, src, scope, consumer)
 		"for_each_dict":
-			var dkey := _scoped("key_%d" % src.id, src, scope, consumer)
+			var dkey := _loop_ref(src, "key_%d" % src.id, scope, consumer)
 			return dkey if pin == "key" else "%s[%s]" % [_in(src, "dict", scope), dkey]
 		"var_inc":
 			return T.ident(String(p.name))
@@ -2420,6 +2639,24 @@ func _tpl_subs(n: Dictionary, t: Dictionary, scope: Dictionary) -> Dictionary:
 
 ## True when a call's result goes down exactly one wire, straight into the value pin of the Set or Return
 ## node that runs next. Then nothing can come between the call and the store, and no temporary is needed.
+## True when what node `n` gives is read once, by the step that comes straight after it (no split pin, no
+## value kept for another execution path).
+func _feeds_next_step(n: Dictionary) -> bool:
+	var id := int(n.id)
+	var wired := []
+	for k in _outw:
+		if String(k).begins_with("%d:" % id):
+			if String(k).contains("~"):
+				return false
+			for dst in _outw[k]:
+				if String(k).get_slice(":", 1) != "then":
+					wired.append(dst)
+	if wired.size() != 1 or _hoist.has("%d:%s" % [_gid, _ovar(n)]):
+		return false
+	var next := _follow(id, "then")
+	return int(next[0]) == int(wired[0][0]) and String(next[1]) == "exec"
+
+
 func _feeds_next_store(n: Dictionary, d: Dictionary) -> bool:
 	var id := int(n.id)
 	if n.kind == "call_self" and _data_outs(d).size() != 1:
@@ -2440,7 +2677,7 @@ func _feeds_next_store(n: Dictionary, d: Dictionary) -> bool:
 	var cid := int(wired[0][0])
 	if int(next[0]) != cid or String(next[1]) != "exec" or not _nodes.has(cid):
 		return false
-	if _hoist.has("%d:%s" % [_gid, _ovar(n)]):
+	if _hoist.has("%d:%s" % [_gid, ("awaited_%d" % id) if n.kind == "await_value" else _ovar(n)]):
 		return false
 	var c: Dictionary = _nodes[cid]
 	var pin := String(wired[0][1])

@@ -9,6 +9,7 @@ const R := preload("res://addons/schematic/core/sc_registry.gd")
 const T := preload("res://addons/schematic/core/sc_types.gd")
 const TableEditor := preload("res://addons/schematic/editor/sc_table_editor.gd")
 const TableScript := preload("res://addons/schematic/runtime/data_table.gd")
+const Kits := preload("res://addons/schematic/core/sc_kits.gd")
 
 var editor: Editor
 var table_editor: TableEditor
@@ -99,6 +100,7 @@ func _enter_tree() -> void:
 	editor.debug_panel.plugin_debugger = _debugger
 	add_debugger_plugin(_debugger)
 	_watch_file_dock()
+	_watch_kits()
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--sc-selftest="):
 			_selftest.call_deferred(arg.trim_prefix("--sc-selftest="))
@@ -114,6 +116,7 @@ func _exit_tree() -> void:
 	if _debugger:
 		remove_debugger_plugin(_debugger)
 	_unwatch_file_dock()
+	_unwatch_kits()
 	if _fs_menu:
 		remove_context_menu_plugin(_fs_menu)
 	if _fs_file_menu:
@@ -226,6 +229,65 @@ func _mark_list() -> void:
 		if typeof(meta) == TYPE_STRING and _is_schematic_path(meta):
 			_fs_list.set_item_icon(i, SC_ICON)
 			_fs_list.queue_redraw.call_deferred()
+
+
+# ---------------------------------------------------------------- kits
+# Addons can ship nodes in res://addons/<addon>/schematic_kit.gd (docs/KITS.md). The kits are loaded again when
+# that could have changed what is there: a plugin switched on or off (Project Settings change), or files added,
+# removed or edited (the FileSystem dock rescans). Both signals come in bursts, so the check waits until they
+# stop, and reloads only when the kit files or the enabled plugins really differ (Kits.signature()).
+
+var _kit_timer: Timer
+var _kit_sig := ""
+
+
+func _watch_kits() -> void:
+	R.ensure_api()
+	_kit_sig = Kits.signature()
+	_kit_timer = Timer.new()
+	_kit_timer.one_shot = true
+	_kit_timer.wait_time = 0.75
+	_kit_timer.timeout.connect(_kits_check)
+	add_child(_kit_timer)
+	ProjectSettings.settings_changed.connect(_kits_poke)
+	var efs := EditorInterface.get_resource_filesystem()
+	if efs:
+		efs.filesystem_changed.connect(_kits_poke)
+
+
+func _unwatch_kits() -> void:
+	if ProjectSettings.settings_changed.is_connected(_kits_poke):
+		ProjectSettings.settings_changed.disconnect(_kits_poke)
+	var efs := EditorInterface.get_resource_filesystem()
+	if efs and efs.filesystem_changed.is_connected(_kits_poke):
+		efs.filesystem_changed.disconnect(_kits_poke)
+	if _kit_timer:
+		_kit_timer.queue_free()
+		_kit_timer = null
+
+
+func _kits_poke() -> void:
+	if _kit_timer and _kit_timer.is_inside_tree():
+		_kit_timer.start()
+
+
+func _kits_check() -> void:
+	if Kits.signature() != _kit_sig:
+		reload_kits()
+
+
+## Loads every kit again, then checks and redraws the open Schematics, so nodes of a kit that went away show as
+## placeholders (wires kept) and come back as normal nodes when it returns.
+func reload_kits() -> void:
+	R.reload_kits()
+	_kit_sig = Kits.signature()
+	if editor == null:
+		return
+	for d in editor.docs:
+		editor._check(d)
+	editor._refresh_all()
+	if not R.kit_problems.is_empty():
+		editor.toast("Schematic kits: %d problem%s, listed in the Output." % [R.kit_problems.size(), "" if R.kit_problems.size() == 1 else "s"])
 
 
 func _selftest(path: String) -> void:
