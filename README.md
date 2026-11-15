@@ -215,7 +215,9 @@ The **Generated Code** tab shows the GDScript live; selecting a node jumps to it
     of their own; a function of the script named like one of GDScript's (`log`, `range`) is called through `self`, as
     GDScript requires;
   - a parameter read far from where the event or function begins gets a small node with its name beside the reader,
-    instead of a wire across the graph.
+    instead of a wire across the graph;
+  - an execution wire that drops to a lower row (what follows an `if`, an `else`, a `match` case, the end of a loop)
+    goes through a reroute node, so it runs down and then along the row instead of across the nodes in between.
 
   What still stays as a GDScript node: a loop over a float or a vector, a new value given to a loop variable, a call
   to `_input()` or another event by hand, a call that passes extra arguments to a `...rest` parameter, and lines the

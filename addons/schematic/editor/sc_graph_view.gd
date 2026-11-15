@@ -451,12 +451,42 @@ func flow(from_id: int, to_id: int) -> void:
 	if a == null or b == null:
 		return
 	for w in graph.wires:
-		if int(w[0]) != from_id or int(w[2]) != to_id:
+		if int(w[0]) != from_id:
 			continue
-		var fp := _port_of(a.out_pins, w[1])
-		var tp := _port_of(b.in_pins, w[3])
-		if fp >= 0 and tp >= 0 and String(a.out_pins[fp].type) == "exec":
-			flow_overlay.pulse(a.name, fp, b.name, tp)
+		# the wire may reach the node through reroute nodes: every piece of it lights up
+		var pieces := [w]
+		var at := int(w[2])
+		var guard := 0
+		while at != to_id and guard < 64:
+			var knot := Model.find_node(graph, at)
+			if knot.is_empty() or String(knot.kind) != "reroute":
+				break
+			var onward: Array = []
+			for w2 in graph.wires:
+				if int(w2[0]) == at:
+					onward = w2
+					break
+			if onward.is_empty():
+				break
+			pieces.append(onward)
+			at = int(onward[2])
+			guard += 1
+		if at != to_id:
+			continue
+		var is_exec := false
+		for piece in pieces:
+			var pa := get_node_or_null("n%d" % int(piece[0])) as BPNode
+			var pb := get_node_or_null("n%d" % int(piece[2])) as BPNode
+			if pa == null or pb == null:
+				continue
+			var fp := _port_of(pa.out_pins, piece[1])
+			var tp := _port_of(pb.in_pins, piece[3])
+			if fp < 0 or tp < 0:
+				continue
+			if is_same(piece, w):
+				is_exec = String(pa.out_pins[fp].type) == "exec"
+			if is_exec:
+				flow_overlay.pulse(pa.name, fp, pb.name, tp)
 
 
 ## Shows the values the running game last sent for a node's input pins.

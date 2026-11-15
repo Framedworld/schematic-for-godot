@@ -16,6 +16,9 @@ const Parser := preload("res://addons/schematic/core/sc_gd_parser.gd")
 const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
 
 const FAR := 900.0     # further than this from the entry node, a parameter is read through a node of its own
+const ROUTE_DROP := 100.0    # an execution wire that goes this far down...
+const ROUTE_REACH := 420.0   # ...and this far right is given a reroute node
+const ROUTE_STEP := 235.0    # how far right of the node it leaves that reroute node stands
 const COL := 290.0     # horizontal step between a node and the node feeding it
 const ROW := 135.0     # vertical step between data nodes of one statement
 const CONSTANTS := {"PI": "float", "TAU": "float", "INF": "float", "NAN": "float"}
@@ -176,7 +179,38 @@ func convert(source: String, opts := {}) -> Dictionary:
 	while not _lambda_queue.is_empty():
 		var item: Dictionary = _lambda_queue.pop_front()
 		_function(item.f, item.graph)
+	for g in bp.graphs:
+		_route_wires(g)
 	return {"bp": bp, "report": {"lines": lines_total, "as_nodes": lines_total - lines_code, "as_code": lines_code, "notes": notes}}
+
+
+## Tidies the execution wires that drop to a lower row a long way to the right (what follows an if, the
+## else of a branch, the cases of a match, what comes after a loop): each gets a reroute node under the node
+## it leaves, level with the node it reaches, so it goes down first and then runs along that row instead of
+## cutting across the nodes in between. Only where a wire goes changes; the script is the same.
+func _route_wires(g: Dictionary) -> void:
+	var by_id := {}
+	for n in g.nodes:
+		by_id[int(n.id)] = n
+	var described := {}
+	var count: int = g.wires.size()
+	for wi in count:
+		var w: Array = g.wires[wi]
+		var a: Dictionary = by_id.get(int(w[0]), {})
+		var b: Dictionary = by_id.get(int(w[2]), {})
+		if a.is_empty() or b.is_empty() or String(w[3]) != "exec":
+			continue
+		if float(b.y) - float(a.y) < ROUTE_DROP or float(b.x) - float(a.x) < ROUTE_REACH:
+			continue
+		if not described.has(int(b.id)):
+			described[int(b.id)] = R.describe(b, bp, g)
+		var d: Dictionary = described[int(b.id)]
+		# where the target's execution pin is, below its top: lower when the node has a line under its title
+		var pin_y := 84.0 if String(d.get("sub", "")) != "" else 54.0
+		var knot := Model.add_node(g, "reroute", Vector2(float(a.x) + ROUTE_STEP, float(b.y) + pin_y - 13.0), {"t": "exec"})
+		by_id[int(knot.id)] = knot
+		g.wires[wi] = [int(a.id), String(w[1]), int(knot.id), "i"]
+		g.wires.append([int(knot.id), "o", int(b.id), "exec"])
 
 
 # ---------------------------------------------------------------- declarations
