@@ -95,7 +95,7 @@ script it saw before.
 
 Kenney's 3D platformer starter kit converts with all 110 lines as nodes. Rendered with the same input, the original
 and the converted game are the same in all 560 frames, to the pixel. The converter is also run over every script of
-14 projects (5,284 scripts, 693,828 lines of statements, 98.1% of them nodes): wherever the original
+14 projects (5,284 scripts, 694,792 lines of statements, 98.1% of them nodes): wherever the original
 loads, the converted script loads too and offers the same functions, variables, signals and constants.
 
 ## Timelines and data tables
