@@ -50,11 +50,16 @@ const Model := preload("res://addons/schematic/core/sc_model.gd")
 ##                Construction Script adds, the stubs of an interface, a line of any function the compiler made.
 ##   carried      code kept as written from an imported script (extra_code).
 ##   blank        an empty line.
-const KINDS := ["node", "trace", "header", "declaration", "function", "helper", "carried", "blank"]
+##   comment      a `#` line a converted script's comment became (the compiler lists them in `comment_lines`). It
+##                answers kind "comment" whatever else the compiler recorded for it (a note above a function or a
+##                declaration). When a node's statement carries it, nodes_at gives that node alone (the values
+##                feeding the statement are not part of a comment) and lines_of includes it; own_lines_of does not.
+const KINDS := ["node", "trace", "header", "declaration", "function", "helper", "carried", "blank", "comment"]
 ## A short label for each kind, for a tooltip or a status line.
 const LABELS := {
 	"node": "Node", "trace": "Debug trace", "header": "Script header", "declaration": "Declaration",
 	"function": "Function header", "helper": "Written by the compiler", "carried": "Code kept as written", "blank": "",
+	"comment": "Comment",
 }
 ## Lines that hold no expression: a value wired into the node that wrote them does not take part in them.
 const NO_EXPRESSION := ["else:", "pass", "break", "continue", "_:", "return"]
@@ -65,7 +70,9 @@ var _text := PackedStringArray()
 var _kinds := {}          # the compiler's line_kinds: line -> kind
 var _blocks: Array = []   # the compiler's block_lines: [header line, last line, name]
 var _node_at := {}        # line -> key of the writer
-var _own := {}            # key -> Array of lines it wrote (ascending)
+var _own := {}            # key -> Array of lines it wrote (ascending), comment lines not counted
+var _comment := {}        # the compiler's comment_lines: line -> true
+var _comments_of := {}    # key -> Array of the comment lines that stand with its statement (ascending)
 var _lambda_head := {}    # line -> [key of an inline lambda's entry node whose `func(...):` is on it]
 var _data_in := {}        # key -> [[pin index, key of the node feeding it]] along data wires
 var _data_out := {}       # key -> [key of the node reading it]
@@ -83,6 +90,8 @@ func build(compiler: Object, code: String) -> RefCounted:
 	_blocks = compiler.block_lines
 	_node_at = {}
 	_own = {}
+	_comment = compiler.comment_lines
+	_comments_of = {}
 	_lambda_head = {}
 	_data_in = {}
 	_data_out = {}
@@ -96,9 +105,10 @@ func build(compiler: Object, code: String) -> RefCounted:
 		var at: Array = line_map[line]
 		var key := _key(int(at[0]), int(at[1]))
 		_node_at[line] = key
-		if not _own.has(key):
-			_own[key] = []
-		_own[key].append(line)
+		var bucket := _comments_of if _comment.has(line) else _own
+		if not bucket.has(key):
+			bucket[key] = []
+		bucket[key].append(line)
 	var schematic: Dictionary = compiler.bp
 	for g in schematic.get("graphs", []):
 		if String(g.kind) != "macro":   # (a macro is only ever read where it is called: its nodes have no lines)
@@ -113,10 +123,16 @@ func build(compiler: Object, code: String) -> RefCounted:
 func lines_of(graph_id: int, node_id: int) -> PackedInt32Array:
 	var key := _key(graph_id, node_id)
 	if _own.has(key):
-		return PackedInt32Array(_own[key])
+		if not _comments_of.has(key):
+			return PackedInt32Array(_own[key])
+		var all: Array = _own[key] + _comments_of[key]
+		all.sort()
+		return PackedInt32Array(all)
 	if _lines_cache.has(key):
 		return _lines_cache[key]
 	var found := {}
+	for line in _comments_of.get(key, []):
+		found[line] = true   # (a node that wrote no line of its own can still carry a comment)
 	var seen := {key: true}
 	var queue := [key]
 	var i := 0
@@ -143,6 +159,12 @@ func own_lines_of(graph_id: int, node_id: int) -> PackedInt32Array:
 	return PackedInt32Array(_own.get(_key(graph_id, node_id), []))
 
 
+## The comment lines that stand with the node's statement (the lines above it, those that close its block): they are
+## part of lines_of and not of own_lines_of.
+func comment_lines_of(graph_id: int, node_id: int) -> PackedInt32Array:
+	return PackedInt32Array(_comments_of.get(_key(graph_id, node_id), []))
+
+
 ## [[graph id, node id], ...] for a line: the node that wrote it first, then the nodes whose expressions are part of
 ## it, nearest first (the Set, then the math node it reads, then the getters that math reads); an inline lambda's
 ## entry node last, on the line that opens the lambda. Empty for a line that belongs to no node.
@@ -153,7 +175,7 @@ func nodes_at(line: int) -> Array:
 	if _node_at.has(line):
 		var writer: int = _node_at[line]
 		out.append(_pair(writer))
-		if _reads(line):
+		if _reads(line) and not _comment.has(line):
 			var seen := {writer: true}
 			var queue := [writer]
 			var i := 0
@@ -179,6 +201,8 @@ func kind_of_line(line: int) -> String:
 		return ""
 	if _text[line - 1].strip_edges() == "":
 		return "blank"
+	if _comment.has(line):
+		return "comment"
 	if _kinds.has(line):
 		return String(_kinds[line])
 	if _node_at.has(line):
@@ -269,7 +293,7 @@ func _pin(schematic: Dictionary, g: Dictionary, n: Dictionary, descs: Dictionary
 func _find_lambda_heads(schematic: Dictionary) -> void:
 	var seen := {}
 	for line in range(2, line_count + 1):
-		if not _node_at.has(line):
+		if not _node_at.has(line) or _comment.has(line):
 			continue
 		var gid := int(_node_at[line]) >> 32
 		if seen.has(gid):
@@ -279,6 +303,8 @@ func _find_lambda_heads(schematic: Dictionary) -> void:
 		if g.is_empty() or String(g.kind) != "function" or not g.has("lambda") or _kinds.get(line, "") == "function":
 			continue
 		var opens := line - 1
+		while opens > 1 and _comment.has(opens):
+			opens -= 1   # (comments above the body's first statement stand between it and the line that opens the lambda)
 		if _text[opens - 1].strip_edges() == "" or (int(_node_at.get(opens, 0)) >> 32) == gid:
 			continue
 		for n in g.nodes:

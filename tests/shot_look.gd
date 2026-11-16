@@ -134,7 +134,7 @@ func run(p: EditorPlugin) -> void:
 	for r in cats[0].get_child(1).get_children():
 		if r.visible:
 			shown.append(r.get_meta("row_label", "?"))
-	note("%s  search 'tool' leaves only the Tooltip row %s, Default Value hidden: %s" % ["PASS" if shown == ["tooltip"] and not cats[1].visible else "FAIL", shown, not cats[1].visible])
+	note("%s  search 'tool' leaves only the Description (tooltip) row %s, Default Value hidden: %s" % ["PASS" if shown == ["description (## doc, shown as tooltip)"] and not cats[1].visible else "FAIL", shown, not cats[1].visible])
 	ed._details_search.text = ""
 	ed._details_search.text_changed.emit("")
 	ed._select({"kind": "graph", "id": int(ed.doc.bp.graphs[1].id), "name": ed.doc.bp.graphs[1].name})

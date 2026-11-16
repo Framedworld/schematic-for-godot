@@ -14,6 +14,8 @@ const MAX_STATEMENTS := 20000
 ## A macro use can say what each loop inside the macro calls its variable at that use (`p.vars`: loop node id in
 ## the macro -> name); the reuse step looks for this constant before it shares loops whose names differ.
 const PER_USE_LOOP_VARS := true
+## ... and the comments of the nodes (`p.notes`: node id in the macro -> {note, tail, after, empty}).
+const PER_USE_COMMENTS := true
 
 var bp: Dictionary
 var errors: Array = []      # [{g, n, m, w}]
@@ -35,6 +37,11 @@ var block_lines: Array = []
 ## _unhandled_input (input-action and key dispatch, signal wiring, timeline autoplay) and the Construction
 ## Script's call and editor guard.
 var text_lines := PackedInt32Array()
+## The lines that are comments an imported script wrote (see COMMENTS): 1-based line -> true. A comment line written
+## with a statement is that statement's node's in line_map (and has no line_kinds entry, so the code link counts it
+## a line of the node), but node_lines gives the statement's own line; one written with a declaration or a function
+## has that one's kind ("declaration", "function"; "header" above the class lines).
+var comment_lines: Dictionary = {}
 var _cur_block := ""
 var _chain_from := 0   # the node whose exec pin leads to the chain about to be written (0: not known)
 
@@ -132,6 +139,7 @@ func _take(other: Object, code: String) -> String:
 	pin_exprs = other.pin_exprs
 	block_lines = other.block_lines
 	text_lines = other.text_lines
+	comment_lines = other.comment_lines
 	lambda_notes = lambda_notes.merged(other.lambda_notes, true)
 	return code
 
@@ -145,6 +153,7 @@ func _compile_once(schematic: Dictionary) -> String:
 	pin_exprs.clear()
 	block_lines.clear()
 	text_lines.clear()
+	comment_lines.clear()
 	R.ensure_api()
 	var is_node := T.is_a(R.self_class(bp), "Node")
 	if not T.class_known(R.self_class(bp)):
@@ -365,7 +374,9 @@ func _assemble() -> String:
 	# Line numbers are those of the text as it is written: a piece that runs over several lines (a string with
 	# line breaks in a declaration or a statement) takes that many, and every one of them is recorded.
 	var at := [0]
-	var add := func(text: String, gid := 0, nid := 0, kind := "", own := false) -> void:
+	# (a comment line, `comment`, is listed in comment_lines; one written with a node is in line_map as that node's,
+	# but it is not where the node's code starts: node_lines, which the debugger stops at, gives the statement's line)
+	var add := func(text: String, gid := 0, nid := 0, kind := "", own := false, comment := false) -> void:
 		lines.append(text)
 		var first: int = int(at[0]) + 1
 		var span := text.count("\n") + 1
@@ -376,11 +387,22 @@ func _assemble() -> String:
 				line_kinds[first + k] = kind
 			if nid != 0:
 				line_map[first + k] = [gid, nid]
-		if nid != 0:
+			if comment:
+				comment_lines[first + k] = true
+		if nid != 0 and not comment:
 			var key := "%d:%d" % [gid, nid]
 			if not node_lines.has(key):
 				node_lines[key] = first
+	# comment lines written with a declaration or a function line (see COMMENTS): `note` lines above it
+	var notes := func(owner: Dictionary, kind: String, gid := 0, nid := 0) -> void:
+		for nl in owner.get("note", []):
+			var c := _comment_at(String(nl), 0)
+			if String(c[1]) == "":
+				add.call("")
+			else:
+				add.call("\t".repeat(int(c[0])) + String(c[1]), gid, nid, kind, false, true)
 	add.call(Model.MARKER + " v%d - generated from a Schematic graph. Edit it in the Schematic editor, not by hand." % Model.VERSION, 0, 0, "header")
+	notes.call(bp, "header")   # comments written above an imported script's class lines
 	if bp.get("tool", false) or _construct:
 		add.call("@tool", 0, 0, "header")
 	for class_ann in bp.get("class_pre", []):
@@ -399,12 +421,14 @@ func _assemble() -> String:
 	if not bp.get("enums", []).is_empty():
 		add.call("")
 	for dsp in bp.dispatchers:
+		notes.call(dsp, "declaration")
 		for sig_ann in dsp.get("pre", []):
 			add.call(String(sig_ann), 0, 0, "declaration")   # @warning_ignore(...) and the like, carried over from an imported script
 		var sig_params: Array = dsp.get("params", [])
 		if dsp.has("declared"):
 			sig_params = sig_params.slice(0, int(dsp.declared))   # an imported signal emitted with more than it declares
-		add.call("signal %s%s" % [T.ident(dsp.name), ("(%s)" % _param_list(sig_params)) if not (sig_params.is_empty() and dsp.has("declared")) else ""], 0, 0, "declaration")
+		add.call("signal %s%s" % [T.ident(dsp.name), ("(%s)" % _param_list(sig_params)) if not (sig_params.is_empty() and dsp.has("declared")) else ""] \
+			+ String(dsp.get("tail", "")), 0, 0, "declaration")
 	if not bp.dispatchers.is_empty():
 		add.call("")
 	# enums, constants and inner classes carried over from an imported script, exactly as written
@@ -422,6 +446,7 @@ func _assemble() -> String:
 		seen[vn] = true
 		if String(v.get("raw", "")) != "":
 			# a declaration kept as written (annotations with arguments, set / get, static, @onready ...)
+			notes.call(v, "declaration")
 			for raw_line in String(v.raw).split("\n"):
 				add.call(raw_line, 0, 0, "declaration")
 				var marker := raw_line.find("@export_group(\"")
@@ -435,6 +460,7 @@ func _assemble() -> String:
 			if String(v.get("category", "")) != group:
 				group = String(v.get("category", ""))
 				add.call("@export_group(\"%s\")" % group.c_escape(), 0, 0, "declaration")
+		notes.call(v, "declaration")
 		for tl in String(v.get("tooltip", "")).split("\n", false):
 			add.call("## " + tl, 0, 0, "declaration")
 		var lit := String(v.get("default", ""))
@@ -462,7 +488,7 @@ func _assemble() -> String:
 		var notify_fn := "on_%s_changed" % vn
 		var notify: bool = v.get("notify", false) and not _lib and not Model.graph_named(bp, notify_fn).is_empty()
 		var rerun: bool = _construct and exported
-		add.call(("@export " if exported else "") + decl + (":" if (notify or rerun) else ""), 0, 0, "declaration")
+		add.call(("@export " if exported else "") + decl + (":" if (notify or rerun) else "") + String(v.get("tail", "")), 0, 0, "declaration")
 		if notify or rerun:
 			var is_node_bp := T.is_a(R.self_class(bp), "Node")
 			add.call("\tset(value):", 0, 0, "declaration")
@@ -484,17 +510,40 @@ func _assemble() -> String:
 		_blocks.append({"name": hname, "header": _helpers[hname][0], "lines": _helpers[hname][1], "gid": 0, "nid": 0, "helper": true})
 	for b in _blocks:
 		add.call("")
+		notes.call(b, "function", b.gid, b.nid)
 		for pre_line in b.get("pre", []):
 			add.call(pre_line, b.gid, b.nid, "function")
-		add.call(("static " + String(b.header)) if (_lib and String(b.header).begins_with("func ")) else b.header, b.gid, b.nid, "helper" if b.get("helper", false) else "function")
+		add.call((("static " + String(b.header)) if (_lib and String(b.header).begins_with("func ")) else String(b.header)) + String(b.get("tail", "")), b.gid, b.nid,
+			"helper" if b.get("helper", false) else "function")
 		var first_line := int(at[0])
 		if b.lines.is_empty():
 			add.call("\tpass", b.gid, b.nid, "helper" if b.get("helper", false) else "")
 		for l in b.lines:
-			add.call("\t".repeat(l[0]) + l[1], l[2], l[3], "helper" if b.get("helper", false) else "", l.size() > 4 and typeof(l[4]) == TYPE_STRING)
+			var cm: Dictionary = l[5] if l.size() > 5 and l[5] is Dictionary else {}
+			for c in cm.get("above", []):
+				if String(c[1]) == "":
+					add.call("")
+				else:
+					add.call(_comment_text(int(l[0]) + int(c[0]), String(c[1])), l[2], l[3], "", false, true)
+			add.call("\t".repeat(l[0]) + l[1] + String(cm.get("tail", "")), l[2], l[3], "helper" if b.get("helper", false) else "", l.size() > 4 and typeof(l[4]) == TYPE_STRING)
+			for c in cm.get("below", []):
+				if String(c[1]) == "":
+					add.call("")
+				else:
+					add.call(_comment_text(int(l[0]) + int(c[0]), String(c[1])), l[2], l[3], "", false, true)
 		block_lines.append([first_line, int(at[0]), String(b.name)])
+		for end_line in b.get("end", []):
+			add.call(String(end_line), b.gid, b.nid, "function", false, true)   # an `#endregion` that closed a region around the function
 		add.call("")
+	# comments written after everything in an imported script
+	for el in bp.get("end_note", []):
+		add.call(String(el), 0, 0, "declaration" if String(el) != "" else "", false, String(el) != "")
 	return "\n".join(lines)
+
+
+## A comment line of a function body at `tabs` tabs ("" for a blank line, which is written empty).
+static func _comment_text(tabs: int, text: String) -> String:
+	return "" if text == "" else "\t".repeat(maxi(tabs, 0)) + text
 
 
 func _merge_prelude(fn: String, header: String, pre: Array) -> void:
@@ -837,19 +886,123 @@ func _err(gid: int, nid: int, msg: String, warn := false) -> void:
 	errors.append({"g": gid, "n": nid, "m": msg, "w": warn})
 
 
-func _line(ind: int, text: String, nid: int) -> void:
+## With `keep_tail`, comments waiting for the next line (see COMMENTS) give it only the lines above it: the
+## comment at the end of a statement's line waits for the statement's own line (not an annotation above it).
+func _line(ind: int, text: String, nid: int, keep_tail := false) -> void:
+	var cm := _take_carry(ind, keep_tail)
 	if text.contains(LAM_OPEN):
-		_lambda_lines(ind, text, _gid, int(_origin.get(nid, nid)))
+		_lambda_lines(ind, text, _gid, int(_origin.get(nid, nid)), 0, cm)
 	else:
-		_out.append([ind, text, _gid, int(_origin.get(nid, nid))])
+		_out.append(_with_comments([ind, text, _gid, int(_origin.get(nid, nid))], cm))
 	_stmts += 1
+
+
+# ---------------------------------------------------------------- comments
+# COMMENTS. A node an imported script's statement became carries the comments written with it (see the importer's
+# _block and the parser's COMMENTS): p.note (lines above), p.tail (the end of its line), p.after (lines below),
+# p.empty ({exec pin: {note, tail}}: comments of a block that became no node, written with its `pass`). A line
+# of `note` or `after` is "" (a blank line) or a comment from its `#`, with a tab in front for each block it is
+# indented deeper than the statement and a "<" for each block shallower. A graph made in the editor has none of
+# these and is written exactly as before.
+# While a function is written, the lines above the next line and the comment at its end wait in _carry (each
+# line with its indentation in tabs); the next line written takes them. A line that has comments carries them
+# as its sixth item, {above: [[tabs relative to the line, text]], tail, below: [[tabs, text]]} (the fifth item is
+# null when it has no mark of its own), and _assemble writes them around it. They are kept out of the line's text
+# so that nothing that reads the lines (where a local is declared, whether a function ends in a return) sees them.
+
+var _carry := {"above": [], "tail": ""}
+
+
+## [indentation in tabs, text] of one line of a note written for a statement at indentation `ind`.
+static func _comment_at(line: String, ind: int) -> Array:
+	var k := 0
+	var depth := ind
+	while k < line.length() and line[k] == "\t":
+		depth += 1
+		k += 1
+	while k < line.length() and line[k] == "<":
+		depth -= 1
+		k += 1
+	return [maxi(depth, 0), line.substr(k)]
+
+
+## The comments waiting for a line at indentation `ind`, as that line's comments ({} when none), taken from _carry.
+func _take_carry(ind: int, keep_tail: bool) -> Dictionary:
+	if _carry.above.is_empty() and (keep_tail or String(_carry.tail) == ""):
+		return {}
+	var cm := {"above": [], "tail": "", "below": []}
+	for a in _carry.above:
+		cm.above.append([int(a[0]) - ind, String(a[1])])
+	_carry.above = []
+	if not keep_tail:
+		cm.tail = String(_carry.tail)
+		_carry.tail = ""
+	return cm
+
+
+## A line entry of _out with comments `cm` added to those it may have.
+static func _with_comments(entry: Array, cm: Dictionary) -> Array:
+	if cm.is_empty():
+		return entry
+	while entry.size() < 5:
+		entry.append(null)
+	if entry.size() == 5:
+		entry.append({"above": [], "tail": "", "below": []})
+	var have: Dictionary = entry[5]
+	have.above.append_array(cm.get("above", []))
+	if String(cm.get("tail", "")) != "":
+		have.tail = (String(have.tail) + "  " + String(cm.tail).strip_edges()) if String(have.tail) != "" else String(cm.tail)
+	have.below.append_array(cm.get("below", []))
+	return entry
+
+
+## Adds the node's lines above and the comment at the end of its line to what waits for the next line.
+func _carry_node(p: Dictionary, ind: int) -> void:
+	for l in p.get("note", []):
+		_carry.above.append(_comment_at(String(l), ind))
+	if String(p.get("tail", "")) != "":
+		if String(_carry.tail) != "":
+			_carry.above.append([ind, String(_carry.tail).strip_edges()])
+		_carry.tail = String(p.tail)
+
+
+## Lines to write below everything written so far (the last line), or, when nothing has been written since `at`,
+## above the next line.
+func _comments_below(lines: Array, ind: int, at: int) -> void:
+	if lines.is_empty():
+		return
+	if _out.size() <= at:
+		for l in lines:
+			_carry.above.append(_comment_at(String(l), ind))
+		return
+	var last: Array = _out[-1]
+	var below := []
+	for l in lines:
+		var c := _comment_at(String(l), ind)
+		below.append([int(c[0]) - int(last[0]), String(c[1])])
+	_with_comments(last, {"below": below})
+
+
+## What waits in _carry when a function's lines are all written goes below its last line.
+func _flush_carry() -> void:
+	if _carry.above.is_empty() and String(_carry.tail) == "":
+		return
+	if not _out.is_empty():
+		var last: Array = _out[-1]
+		var below := []
+		for a in _carry.above:
+			below.append([int(a[0]) - int(last[0]), String(a[1])])
+		if String(_carry.tail) != "":
+			below.append([0, String(_carry.tail).strip_edges()])
+		_with_comments(last, {"below": below})
+	_carry = {"above": [], "tail": ""}
 
 
 ## A line holding an inline lambda: the line runs up to the lambda's header, the lambda's body follows on lines
 ## of its own (each still the line of the node in the lambda's graph it came from, for the debugger), and what
 ## came after the lambda goes on on the next line. Inside brackets GDScript reads that as one statement; outside
 ## them, the lambda is put in brackets of its own.
-func _lambda_lines(ind: int, text: String, gid: int, nid: int, open := 0) -> void:
+func _lambda_lines(ind: int, text: String, gid: int, nid: int, open := 0, cm := {}) -> void:
 	var a := text.find(LAM_OPEN)
 	var b := text.find(LAM_CLOSE, a)
 	var lam: Dictionary = _lam_texts[int(text.substr(a + 1, b - a - 1))]
@@ -861,7 +1014,8 @@ func _lambda_lines(ind: int, text: String, gid: int, nid: int, open := 0) -> voi
 		before += "("
 		after = ")" + after
 		depth += 1
-	_out.append([ind, before + String(lam.head), gid, nid, true] if open != 0 else [ind, before + String(lam.head), gid, nid])
+	# (the statement's comments go with its first line, the one that opens the lambda)
+	_out.append(_with_comments([ind, before + String(lam.head), gid, nid, true] if open != 0 else [ind, before + String(lam.head), gid, nid], cm))
 	for l in lam.lines:
 		_out.append([ind + int(l[0])] + l.slice(1))
 	if after.contains(LAM_OPEN):
@@ -926,9 +1080,21 @@ func _block(name: String, header: String, entry: Dictionary, start_pin: String) 
 			_member("var %s = %s" % [mname, T.default_literal(String(_hoist[hk]))], int(entry.id))
 			_line(1, "%s = %s" % [mname, _event_pin_name(entry, pname)], int(entry.id))
 	_chain_from = int(entry.id)
-	_chain(tgt[0], tgt[1], 1, {})
+	_carry = {"above": [], "tail": ""}
+	if not _chain(tgt[0], tgt[1], 1, {}) and entry.get("p", {}).get("empty", {}).has(start_pin):
+		_empty_comments(int(entry.id), start_pin, 1)   # an imported function of nothing but `pass  # later`
+		_line(1, "pass", int(entry.id))
+	_flush_carry()
 	_cur_block = ""
 	_blocks.append({"name": name, "header": header, "lines": _out, "gid": _gid, "nid": int(_origin.get(int(entry.id), int(entry.id)))})
+	# the function's own comments: the lines above its `func` line and the one at the end of it (see COMMENTS)
+	var ep: Dictionary = entry.get("p", {})
+	if ep.has("note"):
+		_blocks[-1]["note"] = ep.note
+	if String(ep.get("tail", "")) != "":
+		_blocks[-1]["tail"] = String(ep.tail)
+	if ep.has("end"):
+		_blocks[-1]["end"] = ep.end
 	return true
 
 
@@ -982,6 +1148,7 @@ func _expand(g: Dictionary) -> Dictionary:
 		var kinds := {}
 		var clones := {}
 		var use_vars: Dictionary = call.p.get("vars", {})
+		var use_notes: Dictionary = call.p.get("notes", {})
 		for mn in m.nodes:
 			kinds[int(mn.id)] = mn.kind
 			if mn.kind in ["macro_in", "macro_out", "comment"]:
@@ -989,6 +1156,10 @@ func _expand(g: Dictionary) -> Dictionary:
 			var c: Dictionary = mn.duplicate(true)
 			if use_vars.has(str(int(mn.id))):
 				c.p["var"] = String(use_vars[str(int(mn.id))])   # this use's name for the loop variable
+			if use_notes.has(str(int(mn.id))):
+				var said: Dictionary = use_notes[str(int(mn.id))]   # this use's comments on the node
+				for field in said:
+					c.p[field] = said[field].duplicate(true) if (said[field] is Array or said[field] is Dictionary) else said[field]
 			c.id = int(x.next_id)
 			x.next_id = int(x.next_id) + 1
 			remap[int(mn.id)] = int(c.id)
@@ -1340,6 +1511,8 @@ func _inline_lambda(lg: Dictionary, outer: Array, at: Array, scope: Dictionary) 
 	var saved := [_g, _gid, _nodes, _inw, _outw, _desc, _out, _entry_id, _stmts, _path, _in_function, _loop, _origin, _inline,
 		_headers, _active, _lam, _chain_from, _rename, _depth]
 	_visible.append(visible)
+	var saved_carry := _carry   # (the comments waiting for the line around the lambda wait for it still)
+	_carry = {"above": [], "tail": ""}
 	_load_graph(_expand(lg))
 	var gid := _gid
 	var entry := {}
@@ -1363,13 +1536,17 @@ func _inline_lambda(lg: Dictionary, outer: Array, at: Array, scope: Dictionary) 
 		var tgt := _follow(int(entry.id), "then")
 		_mark_headers(tgt[0], tgt[1], {}, {})
 		_chain_from = int(entry.id)
-		_chain(tgt[0], tgt[1], 1, {})
+		if not _chain(tgt[0], tgt[1], 1, {}) and entry.get("p", {}).get("empty", {}).has("then"):
+			_empty_comments(int(entry.id), "then", 1)
+			_line(1, "pass", int(entry.id))
+		_flush_carry()
 		lines = _function_body(_g, entry, _out)
 		if lines.is_empty():
 			lines = [[1, "pass", _gid, int(entry.id)]]   # a lambda that does nothing (`func(): pass`) still needs a body
 		var ret := _function_ret(_g)
 		head = "func(%s)%s:" % [_param_list(_g.inputs.slice(0, own_n)), "" if ret == "-" else " -> " + ret]
 	var made_stmts := _stmts
+	_carry = saved_carry
 	_visible.pop_back()
 	_g = saved[0]
 	_gid = saved[1]
@@ -1505,7 +1682,8 @@ func _function_body(g: Dictionary, entry: Dictionary, lines: Array) -> Array:
 	if not outs.is_empty() and not falls_off:
 		var last_is_return := false
 		for l in b.lines:
-			if l[0] == 1 and l.size() < 5:   # (a fifth item marks the rest of a statement an inline lambda broke up)
+			# (a fifth item `true` marks the rest of a statement an inline lambda broke up)
+			if l[0] == 1 and not (l.size() > 4 and typeof(l[4]) == TYPE_BOOL and bool(l[4])):
 				last_is_return = String(l[1]).begins_with("return")
 		if not last_is_return:
 			var defs := PackedStringArray()
@@ -1519,42 +1697,64 @@ func _function_body(g: Dictionary, entry: Dictionary, lines: Array) -> Array:
 
 # ---------------------------------------------------------------- exec flow
 
-func _latent_reach(nid: int, seen := {}) -> bool:
-	if nid == -1 or seen.has(nid) or not _nodes.has(nid):
-		return false
-	seen[nid] = true
-	var n: Dictionary = _nodes[nid]
-	if _d(n).latent:
-		return true
-	for pin in _d(n).outs:
-		if pin.type != "exec":
+## (Both walks below keep their own stack, so a chain of thousands of steps does not overflow the engine's.)
+func _latent_reach(start: int) -> bool:
+	var seen := {}
+	var todo := [start]
+	while not todo.is_empty():
+		var nid: int = todo.pop_back()
+		if nid == -1 or seen.has(nid) or not _nodes.has(nid):
 			continue
-		for tgt in _outw.get("%d:%s" % [nid, pin.id], []):
-			if _latent_reach(tgt[0], seen):
-				return true
+		seen[nid] = true
+		var n: Dictionary = _nodes[nid]
+		if _d(n).latent:
+			return true
+		for pin in _d(n).outs:
+			if pin.type != "exec":
+				continue
+			for tgt in _outw.get("%d:%s" % [nid, pin.id], []):
+				todo.append(tgt[0])
 	return false
 
 
-## Finds exec entry points that some wire loops back to (they become `while` loops).
+## Finds exec entry points that some wire loops back to (they become `while` loops): a depth-first walk, in the
+## order of the node's exec outputs and their wires.
 func _mark_headers(nid: int, pin: String, stack: Dictionary, done: Dictionary) -> void:
-	if nid == -1 or not _nodes.has(nid):
-		return
-	var key := "%d:%s" % [nid, pin]
-	if stack.has(key):
-		_headers[key] = true
-		return
-	if done.has(key):
-		return
-	stack[key] = true
-	var n: Dictionary = _nodes[nid]
-	if not pin in ["reset", "open", "close", "toggle"] and n.kind != "timeline":
-		for o in _d(n).outs:
-			if o.type != "exec":
+	var frames := [[nid, pin, null, 0, ""]]   # [node, pin, targets (null: not entered yet), next target, key]
+	while not frames.is_empty():
+		var f: Array = frames[-1]
+		if f[2] == null:
+			var fid: int = f[0]
+			if fid == -1 or not _nodes.has(fid):
+				frames.pop_back()
 				continue
-			for tgt in _outw.get("%d:%s" % [nid, o.id], []):
-				_mark_headers(tgt[0], tgt[1], stack, done)
-	stack.erase(key)
-	done[key] = true
+			var key := "%d:%s" % [fid, f[1]]
+			if stack.has(key):
+				_headers[key] = true
+				frames.pop_back()
+				continue
+			if done.has(key):
+				frames.pop_back()
+				continue
+			stack[key] = true
+			var tgts := []
+			var n: Dictionary = _nodes[fid]
+			if not f[1] in ["reset", "open", "close", "toggle"] and n.kind != "timeline":
+				for o in _d(n).outs:
+					if o.type != "exec":
+						continue
+					tgts.append_array(_outw.get("%d:%s" % [fid, o.id], []))
+			f[2] = tgts
+			f[4] = key
+			continue
+		if int(f[3]) < f[2].size():
+			var tgt: Array = f[2][int(f[3])]
+			f[3] = int(f[3]) + 1
+			frames.append([int(tgt[0]), String(tgt[1]), null, 0, ""])
+			continue
+		stack.erase(f[4])
+		done[f[4]] = true
+		frames.pop_back()
 
 
 func _again(nid: int, pin: String) -> String:
@@ -1655,7 +1855,16 @@ func _chain(nid: int, pin: String, ind: int, scope: Dictionary) -> bool:
 		# the node before it, and the editor lights every piece of the wire between the two)
 		if String(_nodes[nid].kind) != "reroute":
 			from = nid
+		# the node's comments (see COMMENTS): its lines above and the end of its line go with the first line its
+		# step writes, its lines below after the last
+		var np: Dictionary = _nodes[nid].get("p", {})
+		var commented := np.has("note") or np.has("tail") or np.has("after")
+		if commented:
+			_carry_node(np, ind)
+		var at := _out.size()
 		var nxt := _step(_nodes[nid], pin, ind, scope)
+		if commented:
+			_comments_below(np.get("after", []), ind, at)
 		nid = nxt[0]
 		pin = nxt[1]
 	for k in visited:
@@ -1668,7 +1877,16 @@ func _sub(nid: int, out_pin: String, ind: int, scope: Dictionary) -> void:
 	var tgt := _follow(nid, out_pin)
 	_chain_from = nid
 	if not _chain(tgt[0], tgt[1], ind, scope.duplicate()):
+		_empty_comments(nid, out_pin, ind)
 		_line(ind, "pass", nid)
+
+
+## The comments of a block an imported script wrote with nothing but `pass` in it (p.empty, see COMMENTS), for the
+## `pass` written for exec pin `out_pin` of node `nid`.
+func _empty_comments(nid: int, out_pin: String, ind: int) -> void:
+	var empty: Dictionary = _nodes.get(nid, {}).get("p", {}).get("empty", {})
+	if empty.has(out_pin):
+		_carry_node(empty[out_pin], ind)
 
 
 ## Like _sub, but runs the chain as a detached coroutine when it contains latent nodes, so the caller
@@ -1743,7 +1961,7 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 		_err(_gid, id, "Latent nodes (%s) can't be used inside functions. Use the Event Graph or a custom event, or mark the function as one that waits." % d.title)
 		return STOP
 	for pre_line in p.get("pre", []):
-		_line(ind, String(pre_line), id)   # @warning_ignore(...) written above the statement in an imported script
+		_line(ind, String(pre_line), id, true)   # @warning_ignore(...) written above the statement in an imported script
 	match n.kind:
 		"call", "bcall", "util", "call_self", "call_parent", "dyn_call":
 			var e := _call_expr(n, scope)
@@ -1921,7 +2139,8 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 		"branch":
 			_line(ind, "if %s:" % _in(n, "cond", scope), id)
 			_sub(id, "true", ind + 1, scope)
-			if _wired_out(id, "false"):
+			# (an imported `else:` of nothing but `pass` and comments is written for its comments: see COMMENTS)
+			if _wired_out(id, "false") or p.get("empty", {}).has("false"):
 				_line(ind, "else:", id)
 				_sub(id, "false", ind + 1, scope)
 			return STOP
@@ -2249,11 +2468,12 @@ func _in(n: Dictionary, pid: String, scope: Dictionary) -> String:
 			return e
 		if String(pin.type) == "bool" and (T.is_object(from_type) or from_type in ["int", "float"]) \
 				and (n.kind in ["branch", "while", "select"] or (n.kind == "math" and String(n.p.get("op", "")) in ["and", "or", "not"])):
-			return e
+			return _unbracket(n, pid, src, e)
 		# a String given to a StringName or NodePath property is converted by the assignment itself
 		if n.kind == "set_prop" and pid == "value" and from_type == "String" and String(pin.type) in ["StringName", "NodePath"]:
-			return e
-		return T.coerce(e, from_type, pin.type)
+			return _unbracket(n, pid, src, e)
+		var coerced := T.coerce(e, from_type, pin.type)
+		return _unbracket(n, pid, src, e) if coerced == e else coerced
 	var lit := String(n.d.get(pid, pin.get("def", "")))
 	if lit == "":
 		if pin.get("self", false):
@@ -2264,7 +2484,23 @@ func _in(n: Dictionary, pid: String, scope: Dictionary) -> String:
 	return lit
 
 
-## Replaces every whole-word use of `word` in GDScript text, leaving string literals and `.member` names alone.
+## The pins whose value is a whole right-hand side, return value or condition: what is read there needs no
+## brackets of its own.
+const WHOLE_PINS := {"local_set": ["value"], "var_set": ["value"], "set_prop": ["value"], "dyn_set": ["value"], "set_index": ["v"],
+	"branch": ["cond"], "while": ["cond"], "fn_return": ["r_result"]}
+
+## `e` without the outer brackets the value node `src` writes around it, when an imported script wrote it so (the
+## importer marks such a node `unbracketed`) and it is read whole here (WHOLE_PINS); `e` as it is otherwise.
+## A graph made in the editor never has the mark, so it is written exactly as before.
+func _unbracket(n: Dictionary, pid: String, src: Dictionary, e: String) -> String:
+	if not bool(src.p.get("unbracketed", false)) or not WHOLE_PINS.get(String(n.kind), []).has(pid):
+		return e
+	if e.length() < 2 or e[0] != "(" or not _closes_at_end(e):
+		return e
+	return e.substr(1, e.length() - 2)
+
+
+## Replaces every whole-word use of `word` in GDScript text, leaving string literals, comments and `.member` names alone.
 static func _replace_word(text: String, word: String, with: String) -> String:
 	var out := ""
 	var quote := ""
@@ -2285,6 +2521,14 @@ static func _replace_word(text: String, word: String, with: String) -> String:
 			quote = c
 			out += c
 			i += 1
+			continue
+		if c == "#":
+			# a comment, to the end of its line: no word in it is a use, and a quote in it (the director's) opens no string
+			var nl := text.find("\n", i)
+			if nl == -1:
+				nl = n
+			out += text.substr(i, nl - i)
+			i = nl
 			continue
 		if text.substr(i, word.length()) == word:
 			var before := text[i - 1] if i > 0 else " "
@@ -2824,6 +3068,8 @@ func _call_expr(n: Dictionary, scope: Dictionary) -> String:
 					return "preload(%s).%s(%s)" % [p.cls, p.method, arg_s]
 				return "%s.%s(%s)" % [p.cls, p.method, arg_s]
 			var tg := _in(n, "target", scope)
+			if tg == "self" and bool(p.get("self", false)):
+				return "self.%s(%s)" % [p.method, arg_s]   # an imported script wrote `self.` here
 			return "%s(%s)" % [p.method, arg_s] if tg == "self" else "%s.%s(%s)" % [tg, p.method, arg_s]
 		"bcall":
 			var m := R.builtin_method(p.type, p.method)
@@ -2848,7 +3094,8 @@ func _call_expr(n: Dictionary, scope: Dictionary) -> String:
 					return "%s.rpc_id(get_multiplayer_authority()%s)" % [T.ident(String(p.fn)), (", " + arg_s) if arg_s != "" else ""]
 			# a function named like one of GDScript's own (log, range, print ...) is only reached through self
 			var own_fn := T.ident(String(p.fn))
-			if (GD_FUNCTIONS.has(own_fn) or not R.util(own_fn).is_empty()) and not bool(_g.get("static", false)):
+			# (and an imported script that wrote `self.` there keeps it)
+			if (GD_FUNCTIONS.has(own_fn) or not R.util(own_fn).is_empty() or bool(p.get("self", false))) and not bool(_g.get("static", false)):
 				return "self.%s(%s)" % [own_fn, arg_s]
 			return "%s(%s)" % [own_fn, arg_s]
 	return "null"

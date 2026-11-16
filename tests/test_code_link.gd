@@ -66,6 +66,7 @@ func _init() -> void:
 	test_inline_lambda()
 	test_trace()
 	test_whole_scripts()
+	test_comments()
 	test_multi_line_strings()
 	test_speed()
 	print("CODE LINK FAILS: ", fails)
@@ -376,7 +377,7 @@ func test_trace() -> void:
 func whole_scripts() -> Array:
 	var out := []
 	out.append(["demo/SC_Demo.gd", Model.load_file("res://demo/SC_Demo.gd")])
-	for sample in ["control_flow", "lambdas_inline", "scoping", "classes", "functions", "values", "waiting", "review_events"]:
+	for sample in ["control_flow", "lambdas_inline", "scoping", "classes", "functions", "values", "waiting", "review_events", "comments", "lambda_comments", "comments_blocks"]:
 		out.append(["converted %s.gd" % sample, Importer.new().convert(FileAccess.get_file_as_string("res://tests/convert/%s.gd" % sample), {}).bp])
 	return out
 
@@ -448,6 +449,67 @@ func test_whole_scripts() -> void:
 		if not seen_kinds.has(kind):
 			absent.append(kind)
 	check("7 every kind of the set shows up somewhere in these scripts", absent.is_empty(), "missing %s" % str(absent))
+
+
+## Comment lines (a converted script's comments): kind "comment", their node answers nodes_at (that node only), lines_of
+## has them and own_lines_of does not.
+func test_comments() -> void:
+	print("==== comments ====")
+	for sample in ["comments", "lambda_comments", "comments_blocks"]:
+		var bp: Dictionary = Importer.new().convert(FileAccess.get_file_as_string("res://tests/convert/%s.gd" % sample), {}).bp
+		var m := make(bp)
+		var link: RefCounted = m.link
+		var listed: Dictionary = m.c.comment_lines
+		var total := 0
+		var with_node := 0
+		var wrong := []
+		var in_own := []
+		var not_in_lines := []
+		var extra_nodes := []
+		var plain := 0
+		for line in range(1, link.line_count + 1):
+			var kind: String = link.kind_of_line(line)
+			var text: String = link.text_of_line(line).strip_edges()
+			if listed.has(line):
+				total += 1
+				if kind != "comment" or not text.begins_with("#"):
+					wrong.append("%d %s '%s'" % [line, kind, text])
+				var nodes: Array = link.nodes_at(line)
+				if not nodes.is_empty():
+					with_node += 1
+					if nodes.size() != 1:
+						extra_nodes.append(line)
+					var gid := int(nodes[0][0])
+					var nid := int(nodes[0][1])
+					if not Array(link.lines_of(gid, nid)).has(line):
+						not_in_lines.append(line)
+					if Array(link.own_lines_of(gid, nid)).has(line) or not Array(link.comment_lines_of(gid, nid)).has(line):
+						in_own.append(line)
+			elif kind == "comment":
+				wrong.append("%d is a comment but is not listed" % line)
+			elif text.begins_with("#") and not text.begins_with("##") and not text.begins_with("# @schematic") and not text.begins_with("#region") and not text.begins_with("#endregion"):
+				plain += 1
+				wrong.append("%d is a # line not classified as a comment: '%s'" % [line, text])
+		check("10 %s: %d comment lines, every one of kind comment and the others are not (%d with a node)" % [sample, total, with_node], total > 3 and wrong.is_empty() and with_node > 2, str(wrong.slice(0, 6)))
+		check("10 %s: a comment line gives its node alone, lines_of has it, own_lines_of does not" % sample, extra_nodes.is_empty() and not_in_lines.is_empty() and in_own.is_empty(), "%s %s %s" % [extra_nodes, not_in_lines, in_own])
+		check("10 %s: a comment's label is 'Comment'" % sample, CodeLink.LABELS.get("comment", "") == "Comment")
+	# a comment above a statement: the statement's node has both lines; the node's own line is the statement alone
+	var src := "extends Node\n\nvar out: Array = []\n\n\nfunc go() -> void:\n\t# say hello\n\tout.append(1)   # why\n\tout.append(2)\n"
+	var m2 := make(Importer.new().convert(src, {}).bp)
+	var note_line := line_starting(m2, "# say hello")
+	var stmt := line_starting(m2, "out.append(1)")
+	check("10 a note above a statement: its line is a comment, the statement's is a node, both the same node", note_line > 0 and stmt == note_line + 1 and m2.link.kind_of_line(note_line) == "comment" and m2.link.kind_of_line(stmt) == "node"
+		and m2.link.nodes_at(note_line).size() == 1 and m2.link.nodes_at(note_line)[0] == m2.link.nodes_at(stmt)[0], str(m2.link.nodes_at(note_line)))
+	var owner: Array = m2.link.nodes_at(stmt)[0]
+	check("10 ... lines_of has the comment and the statement, own_lines_of the statement only", ints(m2.link.lines_of(int(owner[0]), int(owner[1]))) == [note_line, stmt] and ints(m2.link.own_lines_of(int(owner[0]), int(owner[1]))) == [stmt],
+		str(ints(m2.link.lines_of(int(owner[0]), int(owner[1])))))
+	check("10 a trailing comment stays part of its statement's line (a node line, no comment line of its own)", m2.link.kind_of_line(stmt) == "node" and m2.link.text_of_line(stmt).contains("# why"))
+	# a comment above a lambda's first statement does not hide the line that opens the lambda
+	var lsrc := "extends Node\n\nvar out: Array = []\n\n\nfunc _ready() -> void:\n\tvar base := 10\n\tvar f := func(x):\n\t\t# inside\n\t\treturn x + base\n\tout.append(f.call(1))\n"
+	var m3 := make(Importer.new().convert(lsrc, {}).bp)
+	var open3 := line_starting(m3, "var f := func")
+	var body3 := line_starting(m3, "return x + base")
+	check("10 a lambda whose body starts with a comment: the opening line is still the lambda entry's", open3 > 0 and body3 > open3 and m3.link.kind_of_line(open3 + 1) == "comment" and m3.link.nodes_at(open3).size() >= 2, str(m3.code))
 
 
 ## Execution nodes (not pure, not an entry) that can be reached from an entry along execution wires and have no

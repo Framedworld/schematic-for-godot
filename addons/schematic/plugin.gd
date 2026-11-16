@@ -285,11 +285,9 @@ func reload_kits() -> void:
 	_kit_sig = Kits.signature()
 	if editor == null:
 		return
-	for d in editor.docs:
-		editor._check(d)
-	editor._refresh_all()
+	editor.recheck_all()
 	if not R.kit_problems.is_empty():
-		editor.toast("Schematic kits: %d problem%s, listed in the Output." % [R.kit_problems.size(), "" if R.kit_problems.size() == 1 else "s"])
+		editor.toast("Schematic kits: %d problem%s. See Kits... in the File menu." % [R.kit_problems.size(), "" if R.kit_problems.size() == 1 else "s"])
 
 
 func _on_resource_saved(res: Resource) -> void:

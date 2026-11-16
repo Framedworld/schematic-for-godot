@@ -22,6 +22,10 @@ const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
 const LOOPS := ["for", "for_each", "for_each_dict", "while"]
 ## Loops with a variable of their own (`p.var`, the name the script wrote it with).
 const LOOPVAR := ["for", "for_each", "for_each_dict"]
+## What a node says in comments (see COMMENTS in the converter): lines above, at the end of the line, after the
+## statement, in a block of nothing else, and after a function. A macro call node also carries the comments of the
+## nodes inside it (`notes`), when the macro it calls is itself used inside a group.
+const COMMENT_FIELDS := ["note", "tail", "after", "empty", "end"]
 const LEAVES := ["local_get", "var_get", "const", "self", "autoload"]
 ## Never part of a group: they leave the function or loop they are in, hold state per node, or are text.
 const NEVER := ["fn_return", "loop_break", "loop_continue", "macro_in", "macro_out", "fn_entry", "timeline", "comment",
@@ -41,7 +45,14 @@ var notes: Array = []  # what was done, one line each
 var _used: Dictionary = {}   # "graph key:node id" -> true, nodes already given to a macro in this pass
 var _gas: Array = []
 var _globals: Dictionary = {}
-var _pu := -1   # _per_use, looked up once
+var _can: Dictionary = {}   # what the compiler can do (constant name -> bool), looked up once
+
+
+func _compiler_can(constant: String) -> bool:
+	if not _can.has(constant):
+		var script: Script = Compiler
+		_can[constant] = script.get_script_constant_map().has(constant)
+	return bool(_can[constant])
 
 
 ## Can the compiler (and Expand Node) put each use's own loop variable name on the expanded loop? It says so with
@@ -50,10 +61,26 @@ var _pu := -1   # _per_use, looked up once
 ## the macro -> name). When it cannot, only groups whose loops are written with the same names are one macro (a
 ## name the compiler numbers anyway counts as none), as the macro's loop has to carry the one name.
 func _per_use() -> bool:
-	if _pu == -1:
-		var script: Script = Compiler
-		_pu = 1 if script.get_script_constant_map().has("PER_USE_LOOP_VARS") else 0
-	return _pu == 1
+	return _compiler_can("PER_USE_LOOP_VARS")
+
+
+## The same for comments (PER_USE_COMMENTS): the nodes of a macro carry none, and each use says which comments
+## stand on which node (`notes` on the macro node: node id in the macro -> the comment fields it has at this use,
+## only for nodes that have some). When the compiler cannot, groups must carry the same comments to be one macro.
+func _per_use_comments() -> bool:
+	return _compiler_can("PER_USE_COMMENTS")
+
+
+## The comment fields a node has, as {field: value}.
+func _comments_of(n: Dictionary) -> Dictionary:
+	var out := {}
+	var p: Dictionary = n.p
+	for field in COMMENT_FIELDS:
+		if p.has(field):
+			out[field] = p[field]
+	if n.kind == "macro" and p.has("notes"):
+		out["notes"] = p.notes
+	return out
 
 
 ## A loop variable name as the compiler would write it without being told: "" for a numbered one (i_12).
@@ -421,7 +448,7 @@ func _block(ga: Dictionary, start: int) -> Dictionary:
 func _statement(ga: Dictionary, id: int) -> Dictionary:
 	var n: Dictionary = ga.nodes[id]
 	var d: Dictionary = ga.desc[id]
-	var st := {"head": id, "nodes": [id], "execs": [id], "slots": [], "sets": [], "selfs": [], "lids": [], "lvars": [], "ok": true, "exit": [], "next": -1, "key": ""}
+	var st := {"head": id, "nodes": [id], "execs": [id], "slots": [], "sets": [], "selfs": [], "lids": [], "lvars": [], "tids": [], "notes": {}, "ok": true, "exit": [], "next": -1, "key": ""}
 	if String(d.err) != "" or n.kind in NEVER:
 		st.ok = false
 	var key := _tree(ga, id, st)
@@ -459,6 +486,8 @@ func _statement(ga: Dictionary, id: int) -> Dictionary:
 				st.selfs.append_array(s.selfs)
 				st.lids.append_array(s.lids)
 				st.lvars.append_array(s.lvars)
+				st.tids.append_array(s.tids)
+				st.notes.merge(s.notes)
 				if not bool(s.ok):
 					st.ok = false
 				key += String(s.key) + ";"
@@ -489,6 +518,15 @@ func _tree(ga: Dictionary, id: int, st: Dictionary) -> String:
 		st.lvars.append(written)
 		if written == "" or _per_use():
 			p.erase("var")
+	if _per_use_comments():
+		# the comments are not part of the shape either; they are kept per node, in the order of the nodes
+		st.tids.append(id)
+		var said := _comments_of(n)
+		if not said.is_empty():
+			st.notes[id] = said
+			p = p.duplicate()
+			for field in said:
+				p.erase(field)
 	var out: String = n.kind + JSON.stringify(p, "", true) + JSON.stringify(n.get("split", {}), "", true) + "("
 	var wired: Dictionary = ga.vin.get(id, {})
 	var known := 0
@@ -543,7 +581,7 @@ func _flat(occ: Array) -> Dictionary:
 	var gi := int(occ[0])
 	var ga: Dictionary = _gas[gi]
 	var stmts: Array = ga.blocks[int(occ[1])].s.slice(int(occ[2]), int(occ[2]) + int(occ[3]))
-	var f := {"gi": gi, "ga": ga, "nodes": {}, "execs": [], "slots": [], "sets": [], "selfs": [], "lids": [], "lvars": [], "entry": int(stmts[0].head),
+	var f := {"gi": gi, "ga": ga, "nodes": {}, "execs": [], "slots": [], "sets": [], "selfs": [], "lids": [], "lvars": [], "tids": [], "notes": {}, "entry": int(stmts[0].head),
 		"exit": stmts[-1].exit, "block": int(occ[1]), "at": int(occ[2]), "len": int(occ[3]), "lmap": {}, "lnames": []}
 	for st in stmts:
 		for id in st.nodes:
@@ -556,6 +594,8 @@ func _flat(occ: Array) -> Dictionary:
 		f.selfs.append_array(st.selfs)
 		f.lids.append_array(st.lids)
 		f.lvars.append_array(st.lvars)
+		f.tids.append_array(st.tids)
+		f.notes.merge(st.notes)
 	for nm in f.sets:
 		if not f.lmap.has(nm):
 			f.lmap[nm] = f.lnames.size()
@@ -931,6 +971,7 @@ func _apply(c: Dictionary, target: Dictionary, lib_path: String) -> void:
 				feeders[int(ref.slots[int(si)].src)] = true
 	var remap := {}
 	var per_use := _per_use()
+	var per_comments := _per_use_comments()
 	var low := Vector2(INF, INF)
 	var high := -INF
 	var g0: Dictionary = ref.ga.g
@@ -942,6 +983,9 @@ func _apply(c: Dictionary, target: Dictionary, lib_path: String) -> void:
 		Model.forget_place(copy)   # inside a macro a name is just a name
 		if copy.kind in LOOPVAR and (per_use or _written(String(copy.p.get("var", ""))) == ""):
 			copy.p.erase("var")   # the uses name it (`vars`), or it is numbered at every use
+		if per_comments and ref.tids.has(id):
+			for field in _comments_of(copy):
+				copy.p.erase(field)   # the uses carry their comments (`notes`)
 		copy.id = int(mg.next_id)
 		mg.next_id = int(mg.next_id) + 1
 		remap[id] = int(copy.id)
@@ -977,6 +1021,8 @@ func _apply(c: Dictionary, target: Dictionary, lib_path: String) -> void:
 
 	# the loops of the macro, in the order every place lists its own
 	c["lmacro"] = ref.lids.map(func(id): return int(remap[int(id)]))
+	# ... and of the nodes that can carry a comment, in the order every place lists its own
+	c["tmacro"] = ref.tids.map(func(id): return int(remap[int(id)]))
 
 	# every place: one macro node instead of the group
 	for f in flats:
@@ -1004,6 +1050,13 @@ func _replace(f: Dictionary, c: Dictionary, name: String, lib_path: String, out_
 				vars[str(int(c.lmacro[i]))] = String(f.lvars[i])
 		if not vars.is_empty():
 			p["vars"] = vars
+	if _per_use_comments() and not f.notes.is_empty():
+		var said := {}
+		for i in f.tids.size():
+			if f.notes.has(int(f.tids[i])):
+				said[str(int(c.tmacro[i]))] = f.notes[int(f.tids[i])].duplicate(true)
+		if not said.is_empty():
+			p["notes"] = said
 	var mnode := Model.add_node(g, "macro", Vector2(float(head.x), float(head.y)), p)
 	var mid := int(mnode.id)
 	var gone: Dictionary = f.nodes.duplicate()

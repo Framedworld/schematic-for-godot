@@ -65,21 +65,28 @@ static func has_limbo() -> bool:
 	return ClassDB.class_exists("BTTask") and ClassDB.class_exists("Blackboard")
 
 
+## Whether the addon that declares the global class `cls` is there and switched on: its folder has no plugin.cfg, or
+## its plugin is enabled (the same rule as for public kits, is_enabled()).
+static func _class_on(cls: String) -> bool:
+	for c in ProjectSettings.get_global_class_list():
+		if String(c.get("class", "")) == cls:
+			var path := String(c.get("path", ""))
+			var parts := path.trim_prefix("res://").split("/")
+			if path.begins_with("res://addons/") and parts.size() > 2:
+				return is_enabled("res://addons/" + parts[1])
+			return true
+	return false
+
+
 static func has_flow() -> bool:
 	if _has_flow == -1:
-		_has_flow = 0
-		for c in ProjectSettings.get_global_class_list():
-			if String(c.get("class", "")) == "FlowNodeBase":
-				_has_flow = 1
+		_has_flow = 1 if _class_on("FlowNodeBase") else 0
 	return _has_flow == 1
 
 
 static func has_parley() -> bool:
 	if _has_parley == -1:
-		_has_parley = 0
-		for c in ProjectSettings.get_global_class_list():
-			if String(c.get("class", "")) == "ParleyActionInterface":
-				_has_parley = 1
+		_has_parley = 1 if _class_on("ParleyActionInterface") else 0
 	return _has_parley == 1
 
 
@@ -767,10 +774,7 @@ static func signature() -> String:
 			var dir := root.path_join(folder)
 			var path := dir.path_join(KIT_FILE)
 			parts.append("%s %s %d" % [path, is_enabled(dir), FileAccess.get_modified_time(path)])
-	var classes := {}
-	for c in ProjectSettings.get_global_class_list():
-		classes[String(c.get("class", ""))] = true
-	parts.append("limbo=%s flow=%s parley=%s" % [has_limbo(), classes.has("FlowNodeBase"), classes.has("ParleyActionInterface")])
+	parts.append("limbo=%s flow=%s parley=%s" % [has_limbo(), _class_on("FlowNodeBase"), _class_on("ParleyActionInterface")])
 	return "\n".join(parts)
 
 
@@ -780,6 +784,56 @@ static func loaded_kits() -> Array:
 	for kit in _public:
 		out.append({"addon": kit.addon, "name": kit.name, "version": kit.version, "api": kit.api, "path": kit.path, "ids": kit.ids.duplicate()})
 	return out
+
+
+## Every kit folder found, with its state, for the editor's Kits window. Read-only; nothing is recorded for it: the
+## state is worked out from what the loader kept (the loaded kits and the problem list) and from the folders.
+## Returns {kits: [{addon, path, name, version, nodes, state, reason}], builtin: [names], builtin_nodes: n}.
+## state is "active", "disabled" (its plugin is off) or "failed" (reason says why, e.g. the API is too new).
+## name and version are known only for a kit that loaded.
+static func overview() -> Dictionary:
+	var r: Script = load(REGISTRY_PATH)
+	var kits := []
+	var seen := {}
+	for root in kit_roots:
+		for folder in _kit_folders(root):
+			if seen.has(folder):
+				continue
+			seen[folder] = true
+			var dir := root.path_join(folder)
+			var path := dir.path_join(KIT_FILE)
+			var row := {"addon": folder, "path": path, "name": folder, "version": "", "nodes": 0, "state": "failed", "reason": ""}
+			var loaded := {}
+			for kit in _public:
+				if String(kit.path) == path:
+					loaded = kit
+			if not is_enabled(dir):
+				row.state = "disabled"
+				row.reason = "its plugin is not enabled in Project Settings > Plugins"
+			elif not loaded.is_empty():
+				row.state = "active"
+				row.name = loaded.name
+				row.version = loaded.version
+				row.nodes = loaded.ids.size()
+			else:
+				for p in r.kit_problems:
+					if String(p.path) == path and String(p.template) == "":
+						row.reason = String(p.problem)
+						break
+				if row.reason == "":
+					row.reason = "it was not loaded"
+			kits.append(row)
+	var builtin := []
+	if has_limbo():
+		builtin.append("LimboAI")
+	if has_flow():
+		builtin.append("FlowNodes")
+	if has_parley():
+		builtin.append("Parley")
+	var public_ids := 0
+	for kit in _public:
+		public_ids += kit.ids.size()
+	return {"kits": kits, "builtin": builtin, "builtin_nodes": _kit_ids.size() - public_ids}
 
 
 ## Schematic's own version, for messages.

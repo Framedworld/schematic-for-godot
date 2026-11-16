@@ -28,6 +28,7 @@ var flow_overlay: FlowOverlay
 var _last_selection := ""
 var watch: Dictionary = {}    # node id -> {pin id: text}: last values reported by the running game
 var hide_unrelated := false   # Unreal's Hide Unrelated: fade every node not linked to the selection
+var hide_comments := false    # the comment bubbles a converted script's comments became are not drawn (the editor's toggle)
 var _soft_ids: Array = []     # nodes marked softly (see set_soft), without being selected
 const SOFT_COLOR := Color(1.0, 0.72, 0.1, 0.6)   # the selection's amber, fainter
 
@@ -417,6 +418,14 @@ func _selection_changed() -> void:
 	apply_unrelated()
 
 
+## Shows or hides the comment bubbles of every node (see the graph node's comment section); nothing is rebuilt.
+func set_comments_hidden(hidden: bool) -> void:
+	hide_comments = hidden
+	for c in get_children():
+		if c is BPNode:
+			c.queue_redraw()
+
+
 ## Fades the nodes that are not connected (directly or through other nodes) to the selected ones.
 func apply_unrelated() -> void:
 	var ids := selected_ids()
@@ -733,7 +742,8 @@ func _on_popup_request(at_position: Vector2) -> void:
 		if n.get("kind", "") == "macro":
 			_node_menu.add_item("Expand Node", 12)
 		_node_menu.add_separator()
-		_node_menu.add_icon_item(W.icon("Edit"), "Node Comment...", 13)
+		_node_menu.add_icon_item(W.icon("Edit"), "Edit Comment" if n.get("p", {}).has("note") else "Add Comment", 15)
+		_node_menu.add_icon_item(W.icon("Edit"), "Graph Note...", 13)
 		_menu_pins = []
 		var raw := R.describe_raw(n, bp, graph)
 		var split_now: Dictionary = n.get("split", {})
@@ -791,6 +801,7 @@ func _on_node_menu(id: int) -> void:
 		14: collapse_selection(true)
 		12: expand_macro(_menu_node)
 		13: editor.edit_node_comment(_menu_node)
+		15: editor.edit_node_note(_menu_node)
 		10, 11:
 			var align_ids := selected_ids()
 			var horizontal := id == 10
@@ -1126,6 +1137,11 @@ func expand_macro(nid: int) -> void:
 			var use_vars: Dictionary = call.p.get("vars", {})
 			if use_vars.has(str(int(src.id))):
 				c.p["var"] = String(use_vars[str(int(src.id))])   # this use's name for the loop variable
+			var use_notes: Dictionary = call.p.get("notes", {})
+			if use_notes.has(str(int(src.id))):
+				var said: Dictionary = use_notes[str(int(src.id))]   # this use's comments on the node
+				for field in said:
+					c.p[field] = said[field].duplicate(true) if (said[field] is Array or said[field] is Dictionary) else said[field]
 			Model.forget_place(c)   # where the name belonged was a place in the graph the macro was made from
 			c.id = int(graph.next_id)
 			graph.next_id = int(graph.next_id) + 1

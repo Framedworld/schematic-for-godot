@@ -284,8 +284,10 @@ Output panel, like this:
 
     Schematic kit 'health' (res://addons/health/schematic_kit.gd), node 'heal': pin 'amount': unknown type 'Intt' (...); that node is skipped, the kit's other nodes are loaded
 
-A message names the addon, the file, the node and the problem, and says what was skipped. Schematic also
-keeps the list, so its editor can show it.
+A message names the addon, the file, the node and the problem, and says what was skipped. The same list is in
+the Schematic editor: **File > Kits...** shows every kit it found, how many nodes each added, whether it is
+active (and why not, if it is not), and each kit's problems under it. **Reload Kits** in that window loads all
+kits again.
 
 | Problem | What happens |
 |---|---|
@@ -306,7 +308,8 @@ with the same wires and the same code.
 
 1. Put the addon and Schematic in a project. Open the Schematic editor, right-click the graph and search for
    your node's title or search words.
-2. Watch the Output panel for messages that start with `Schematic kit`.
+2. Open **File > Kits...** in the Schematic editor (or watch the Output panel for messages that start with
+   `Schematic kit`). Your kit should be listed as active, with the number of nodes you expect and no problems.
 3. Look at the *Generated Code* tab to see what your nodes write.
 4. For an automated test, follow `tests/test_public_kit.gd` in the Schematic repository. It points the kit
    scan at a folder (`Kits.set_kit_roots`), loads the kits (`R.reload_kits()`), builds a graph with

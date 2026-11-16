@@ -143,6 +143,91 @@ func missing(src: String, code: String) -> Array:
 						got += 1   # `extends "base.gd"` names the same file by its full path now
 		if got < want:
 			out.append([kind, text, want, got])
+	out.append_array(comments_missing(src, code))
+	return out
+
+
+## The comments of a script by the function they are written in ("" for those outside every function), each a
+## list of pieces in the order written: a piece is the text between `#` signs of a comment, stripped (so that two
+## comments the converter has put at the end of one line still count as both). The marker line and the stored
+## graph of a Schematic's own file are left out.
+func comments_of(code: String) -> Dictionary:
+	var reader := Parser.new()
+	reader._tokenize(reader._own_lines_blanked(code))
+	var out := {"": []}
+	var group := ""
+	var add := func(g: String, text: String) -> void:
+		var list: Array = out.get_or_add(g, [])
+		for piece in text.split("#", false):
+			if piece.strip_edges() != "":
+				list.append(piece.strip_edges())
+	for ln in reader._lines:
+		var top := int(ln.level) == 0
+		# above a line of the top level: the end of the function before it while indented (until a comment that is
+		# not), outside any function from there on (a commented-out function goes with the declaration below it)
+		var ended := not top
+		for it in ln.pre:
+			if not bool(it.get("blank", false)):
+				if top and int(it.level) == 0:
+					ended = true
+				add.call(group if (not top or (int(it.level) > 0 and not ended)) else "", String(it.text))
+		if top:
+			group = ""
+			var toks: Array = ln.toks
+			var k := 1 if (not toks.is_empty() and String(toks[0].v) == "static") else 0
+			if k < toks.size() and String(toks[k].v) == "func" and k + 1 < toks.size():
+				group = String(toks[k + 1].v)
+		if String(ln.tail) != "":
+			add.call(group, String(ln.tail))
+	var after_all := false
+	for it in reader._end_items:
+		if not bool(it.get("blank", false)):
+			after_all = after_all or int(it.level) == 0
+			add.call(group if (int(it.level) > 0 and not after_all) else "", String(it.text))
+	return out
+
+
+## Comments of `src` that `code` does not have: [["comment", piece, times in the source, times after], ...]. A
+## function's comments must all be in the function of the same name in the order written (or, for those of a
+## lambda written as a function of its own, at least there); the others anywhere.
+func comments_missing(src: String, code: String) -> Array:
+	var had := comments_of(src)
+	var has := comments_of(code)
+	var out := []
+	for g in had:
+		var want: Array = had[g]
+		var got: Array = has.get(g, [])
+		var j := 0
+		var in_order := true
+		for piece in want:
+			while j < got.size() and got[j] != piece:
+				j += 1
+			if j >= got.size():
+				in_order = false
+				break
+			j += 1
+		if in_order and g != "":
+			continue
+		# not in order (or outside any function): each piece counted, in its function and the lambdas made of it
+		var pool := {}
+		for h in has:
+			if h == g or g == "" or (String(h).begins_with(String(g) + "_") and String(h).contains("lambda")):
+				for piece in has[h]:
+					pool[piece] = int(pool.get(piece, 0)) + 1
+		var counts := {}
+		for piece in want:
+			counts[piece] = int(counts.get(piece, 0)) + 1
+		var before := out.size()
+		for piece in counts:
+			if int(pool.get(piece, 0)) < int(counts[piece]):
+				out.append(["comment", "%s: %s" % [g if g != "" else "(outside functions)", piece], int(counts[piece]), int(pool.get(piece, 0))])
+		if not in_order and g != "" and out.size() == before:
+			# all there: out of order is a finding only when they are all in the function itself (not moved to a lambda)
+			var own := {}
+			for piece in got:
+				own[piece] = int(own.get(piece, 0)) + 1
+			if counts.keys().all(func(p): return int(own.get(p, 0)) >= int(counts[p])):
+				out.append(["comment-order", "%s: the comments are not in the order written" % g, want.size(), got.size()])
 	return out
 
 

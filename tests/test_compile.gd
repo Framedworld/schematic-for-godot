@@ -301,6 +301,86 @@ func names_tests() -> void:
 	v7_check("names: that script loads", gs.reload() == OK)
 
 
+# Written as written: `self.` before a call of the object's own function is kept where the script wrote it (and only
+# there), `breakpoint` survives as a node, and a whole right-hand side, return value or condition written without
+# brackets comes back without them (one written with them keeps them).
+const WRITTEN_SOURCE := "extends Node\n\nvar seen := 0\n\nfunc _ready() -> void:\n\tself.add_to_group(&\"x\")\n\tadd_to_group(&\"y\")\n\tself.helper()\n\thelper()\n\tbreakpoint\n\tvar n: Node = get_parent() as Node\n\tvar m: Node = (get_parent() as Node)\n\tif n != null:\n\t\tseen += 1\n\tif (m != null):\n\t\tseen += 2\n\tseen = seen + 1\n\tseen = (seen * 2)\n\nfunc helper() -> void:\n\tseen += 10\n\nfunc twice(v: int) -> int:\n\treturn v * 2\n"
+
+
+func written_tests() -> void:
+	var out: Dictionary = Importer.new().convert(WRITTEN_SOURCE, {})
+	var code := Compiler.new().compile(out.bp)
+	for want in ["\tself.add_to_group(&\"x\")\n", "\tadd_to_group(&\"y\")\n", "\tself.helper()\n", "\thelper()\n", "\tbreakpoint\n",
+			"var n: Node = get_parent() as Node\n", "var m: Node = (get_parent() as Node)\n", "\tif n != null:\n", "\tif (m != null):\n",
+			"\tseen = seen + 1\n", "\tseen = (seen * 2)\n", "\treturn v * 2\n"]:
+		v7_check("written: the converted code has `%s`" % want.strip_edges(), code.contains(want), code)
+	v7_check("written: nothing is kept as code", int(out.report.as_code) == 0, str(out.report.notes))
+	var stops := 0
+	for g in out.bp.graphs:
+		for n in g.nodes:
+			if String(n.kind) == "tpl" and String(R.template_of(n.p).get("title", "")) == "Breakpoint":
+				stops += 1
+	v7_check("written: breakpoint is a Breakpoint node", stops == 1)
+	var again := Compiler.new().compile(Importer.new().convert(code, {}).bp)
+	v7_check("written: converting the generated code gives it back", again == code, again)
+	var gs := GDScript.new()
+	gs.source_code = code
+	v7_check("written: the converted script loads", gs.reload() == OK, code)
+
+
+# Comments: kept on the node of the statement they are written with, written back where they were.
+const COMMENT_SOURCE := "extends Node\n\n# above the counter\nvar count := 0  # how many\n\n# Comment above a function\nfunc bump(by: int) -> void:\n\t# above the step\n\tcount += by  # trailing\n\tif count > 3:\n\t\tpass  # nothing yet\n\t# the end of the function\n"
+
+
+func comment_tests() -> void:
+	var out: Dictionary = Importer.new().convert(COMMENT_SOURCE, {})
+	var bp: Dictionary = out.bp
+	var c := Compiler.new()
+	var code := c.compile(bp)
+	var g := Model.graph_named(bp, "bump")
+	var step := {}
+	var entry := {}
+	var branch := {}
+	for n in g.nodes:
+		if String(n.kind) == "var_set":
+			step = n
+		elif String(n.kind) == "fn_entry":
+			entry = n
+		elif String(n.kind) == "branch":
+			branch = n
+	v7_check("comments: the step's node carries the line above it and its trailing comment", step.get("p", {}).get("note", []) == ["# above the step"]
+		and String(step.get("p", {}).get("tail", "")) == "  # trailing", str(step.get("p", {})))
+	v7_check("comments: the comment at the end of the function is the last statement's `after`", branch.get("p", {}).get("after", []) == ["# the end of the function"], str(branch.get("p", {})))
+	v7_check("comments: a branch of nothing but `pass  # ...` keeps it on the Branch, for its true pin", branch.get("p", {}).get("empty", {}).get("true", {}).get("tail", "") == "  # nothing yet",
+		str(branch.get("p", {})))
+	v7_check("comments: the function's comment is its entry node's note", entry.get("p", {}).get("note", []) == ["# Comment above a function"], str(entry.get("p", {})))
+	var v := Model.find_var(bp, "count")
+	v7_check("comments: the variable's comments are in its entry of the variable list", v.get("note", []) == ["# above the counter"] and String(v.get("tail", "")) == "  # how many", str(v))
+	var lines := code.split("\n")
+	var at_step := lines.find("\tcount += by  # trailing")
+	v7_check("comments: the code has every comment on its line", at_step > 0 and lines[at_step - 1] == "\t# above the step" and lines.has("var count := 0  # how many")
+		and lines.has("\t\tpass  # nothing yet") and lines[lines.find("\t\tpass  # nothing yet") + 1] == "\t# the end of the function"
+		and lines[lines.find("func bump(by: int) -> void:") - 1] == "# Comment above a function" and lines[lines.find("var count := 0  # how many") - 1] == "# above the counter", code)
+	# the statement's line is the node's (the debugger stops there); the comment line above it is the node's too, as a comment
+	var key := "%d:%d" % [int(g.id), int(step.id)]
+	v7_check("comments: node_lines gives the statement's line, not the comment's", int(c.node_lines.get(key, 0)) == at_step + 1, "%s vs %d" % [str(c.node_lines.get(key)), at_step + 1])
+	v7_check("comments: the comment line is the node's, and a comment line", c.line_map.get(at_step, []) == [int(g.id), int(step.id)] and c.comment_lines.has(at_step)
+		and not c.line_kinds.has(at_step), "%s %s" % [str(c.line_map.get(at_step)), str(c.line_kinds.get(at_step))])
+	v7_check("comments: the statement's line is the node's and no comment line", not c.line_kinds.has(at_step + 1) and c.line_map.get(at_step + 1, []) == [int(g.id), int(step.id)]
+		and not c.comment_lines.has(at_step + 1))
+	v7_check("comments: the lines of the function's and the variable's comments are comment lines of their kinds", c.comment_lines.size() == 4
+		and String(c.line_kinds.get(lines.find("# Comment above a function") + 1, "")) == "function" and String(c.line_kinds.get(lines.find("# above the counter") + 1, "")) == "declaration",
+		str(c.comment_lines))
+	v7_check("comments: text_lines counts every line", c.text_lines.size() == lines.size(), "%d %d" % [c.text_lines.size(), lines.size()])
+	var again := Compiler.new().compile(Importer.new().convert(code, {}).bp)
+	v7_check("comments: converting the generated code gives it back", again == code, again)
+	# a graph made in the editor has none of the fields and is written as before: no comment line, no blank line in a body
+	var hand := Model.load_file("res://demo/game/SC_Game.gd")
+	var hc := Compiler.new()
+	var hand_code := hc.compile(hand)
+	v7_check("comments: a hand-made graph has no comment lines", hc.comment_lines.is_empty() and not hand_code.contains("\n\t#") and not hand_code.contains("\n\n\t"))
+
+
 func wire(g, a, ap, b, bp_) -> void:
 	g.wires.append([a.id, ap, b.id, bp_])
 
@@ -1060,5 +1140,7 @@ func _init() -> void:
 	v7_tests()
 	lambda_tests()
 	names_tests()
+	written_tests()
+	comment_tests()
 	print("FAILS: ", fails)
 	quit(1 if fails else 0)

@@ -22,6 +22,12 @@ var _in_rows: Dictionary = {}       # input pin id -> its row, for the live valu
 var _watch_labels: Dictionary = {}
 var _bubble_text := ""
 var _ghost := false
+var _note: PackedStringArray = PackedStringArray()   # the comment lines written above the statement, as plain text
+var _tail := ""                                      # the comment at the end of the statement's line, as plain text
+var _lay_w := -1.0                                   # the width the comment bubble was laid out for
+var _lay_note: PackedStringArray = PackedStringArray()
+var _lay_tail := ""
+var _lay_font_h := 0.0
 
 const EVENT_KINDS := ["event", "custom_event", "input_action", "key_event", "signal_event"]
 const GHOST_TEXT := "This node is disabled and will not be called.\nDrag off pins to build functionality."
@@ -88,6 +94,13 @@ func setup(view: Node, node: Dictionary, d: Dictionary, wired_in: Dictionary, wi
 	position_offset = Vector2(node.x, node.y)
 	title = d.title
 	tooltip_text = _wrap(d.tip)
+	var np: Dictionary = node.p
+	if np.has("note") or np.has("tail") or np.has("after") or np.has("empty"):
+		_note = note_plain(np.get("note", []))
+		_tail = tail_plain(String(np.get("tail", "")))
+		var full := comment_tooltip(np)
+		if full != "":
+			tooltip_text = (tooltip_text + "\n\n" if tooltip_text != "" else "") + full
 	_style(d, error != "")
 	_header(d)
 
@@ -138,6 +151,13 @@ func setup(view: Node, node: Dictionary, d: Dictionary, wired_in: Dictionary, wi
 		set_slot(i, has_in, 1 if has_in and pi.type == "exec" else 0, _pin_color(pi) if has_in else Color.WHITE,
 			has_out, 1 if has_out and po.type == "exec" else 0, _pin_color(po) if has_out else Color.WHITE)
 		row.tooltip_text = _pin_tip(pi, po)
+		if not po.is_empty() and node.p.has("empty") and node.p.empty.has(String(po.id)):
+			var blank_block: Dictionary = node.p.empty[String(po.id)]   # a block that held only a comment (written with its `pass`)
+			var held := PackedStringArray(note_plain(blank_block.get("note", [])))
+			if tail_plain(String(blank_block.get("tail", ""))) != "":
+				held.append(tail_plain(String(blank_block.get("tail", ""))))
+			if not held.is_empty():
+				row.tooltip_text = (row.tooltip_text + "\n\n" if row.tooltip_text != "" else "") + "Comment in the empty block:\n" + "\n".join(held)
 		if has_in:
 			in_pins.append(pi)
 			_slot_in[i] = [pi, wired_in.has(pi.get("id", ""))]
@@ -355,6 +375,252 @@ func _draw() -> void:
 		draw_circle(Vector2(2, 2), 8.0, Color(0.25, 0.02, 0.02), true, -1.0, true)
 		draw_circle(Vector2(2, 2), 6.5, Color(0.93, 0.1, 0.08), true, -1.0, true)
 		draw_circle(Vector2(0.5, 0.5), 2.2, Color(1, 0.55, 0.5, 0.7), true, -1.0, true)
+	if comment_shown():
+		_draw_comment()
+
+
+# ---------------------------------------------------------------- the comments a script's `#` lines became
+# A node of a converted script carries them on its `p` (see sc_model.gd): note (lines above), tail (end of the line),
+# after (lines that end its block), empty (per exec pin: a block that held only a comment). A node shows `note` and
+# `tail` in a bubble above it, drawn by the node itself (never a child, so no pin or row moves); `after` and `empty`
+# are in tooltips. Without anything to show a node pays for nothing but the dictionary lookups in setup.
+
+var comment_draws := 0         # how many times the comment bubble was drawn (the self-test reads it)
+
+
+## True while the node has a comment to show and the view does not hide the bubbles.
+func comment_shown() -> bool:
+	return (not _note.is_empty() or _tail != "") and _view != null and not bool(_view.get("hide_comments"))
+
+
+const NOTE_LINES := 3          # lines of a note the bubble shows; the rest is in the tooltip
+const NOTE_MIN_W := 200.0      # a narrow node's bubble is at least this wide
+const NOTE_FONT := 12
+const NOTE_BG := Color(0.17, 0.235, 0.185, 0.93)
+const NOTE_TEXT := Color(0.84, 0.94, 0.84, 0.97)
+const NOTE_TAIL := Color(0.84, 0.94, 0.84, 0.62)
+
+
+## One stored comment line without its indentation markers (a tab per block deeper, a "<" per block shallower), its
+## `#`s and the one space after them.
+static func comment_text(line: String) -> String:
+	var rest := line.substr(marker_length(line)).lstrip("#")
+	return rest.substr(1) if rest.begins_with(" ") else rest
+
+
+## How many characters of a stored line are indentation markers.
+static func marker_length(line: String) -> int:
+	var k := 0
+	while k < line.length() and (line[k] == "\t" or line[k] == "<"):
+		k += 1
+	return k
+
+
+## The text of a stored note: its lines one by one without markers and `#`, blank lines dropped.
+static func note_plain(lines: Array) -> PackedStringArray:
+	var out := PackedStringArray()
+	for l in lines:
+		if String(l).strip_edges() == "":
+			continue
+		out.append(comment_text(String(l)).strip_edges())
+	return out
+
+
+## The text of a stored trailing comment ("  # why" -> "why").
+static func tail_plain(tail: String) -> String:
+	var t := tail.strip_edges()
+	return comment_text(t).strip_edges() if t != "" else ""
+
+
+## Everything a node's comments say, for a tooltip or for Find: the note, then the end-of-line comment, then the lines
+## after the statement. "" when it has none.
+static func comment_tooltip(p: Dictionary) -> String:
+	var parts := PackedStringArray()
+	var note := note_plain(p.get("note", []))
+	if not note.is_empty():
+		parts.append("Comment:\n" + "\n".join(note))
+	if tail_plain(String(p.get("tail", ""))) != "":
+		parts.append("Comment after the line:\n" + tail_plain(String(p.tail)))
+	var after := note_plain(p.get("after", []))
+	if not after.is_empty():
+		parts.append("Comment below, at the end of the block:\n" + "\n".join(after))
+	return "\n\n".join(parts)
+
+
+## All the words of a node's comments on one line, for the Find list ("" when it has none).
+static func comment_digest(p: Dictionary) -> String:
+	if not (p.has("note") or p.has("tail") or p.has("after")):
+		return ""
+	var words := PackedStringArray(note_plain(p.get("note", [])))
+	if tail_plain(String(p.get("tail", ""))) != "":
+		words.append(tail_plain(String(p.tail)))
+	words.append_array(note_plain(p.get("after", [])))
+	return "  # " + "  ".join(words) if not words.is_empty() else ""
+
+
+## The note a Comment box's text stands for, kept like `old` (a stored note) wherever the person left a line alone.
+## One line per comment. With as many lines as before, line by line: an unchanged line is kept as stored (its blank
+## lines, indentation markers and `##` too), a changed one keeps its markers and `#`s. With another number of lines
+## the lines at the start and at the end that are unchanged are kept and what is between is written new, at the
+## statement's own depth. A line the person began with `#` is taken as written. An empty box gives [] (no note).
+static func note_from_text(old: Array, text: String) -> Array:
+	var typed := []
+	for l in text.split("\n"):
+		var s := String(l).strip_edges()
+		if s != "":
+			typed.append(s)
+	if typed.is_empty():
+		return []
+	var live := []   # where the lines that are not blank are
+	for i in old.size():
+		if String(old[i]).strip_edges() != "":
+			live.append(i)
+	if typed.size() == live.size():
+		var out := old.duplicate()
+		for j in typed.size():
+			var at: int = live[j]
+			out[at] = String(old[at]) if _same_line(String(typed[j]), String(old[at])) else _written(String(typed[j]), String(old[at]))
+		return out
+	var pre := 0
+	while pre < mini(typed.size(), live.size()) and _same_line(String(typed[pre]), String(old[live[pre]])):
+		pre += 1
+	var suf := 0
+	while suf < mini(typed.size(), live.size()) - pre and _same_line(String(typed[typed.size() - 1 - suf]), String(old[live[live.size() - 1 - suf]])):
+		suf += 1
+	var made := []
+	if pre > 0:
+		made.append_array(old.slice(0, int(live[pre - 1]) + 1))
+	for j in range(pre, typed.size() - suf):
+		made.append(_written(String(typed[j]), ""))
+	if suf > 0:
+		made.append_array(old.slice(int(live[live.size() - suf])))
+	return made
+
+
+static func _same_line(typed: String, stored: String) -> bool:
+	var raw := stored.substr(marker_length(stored)).strip_edges()
+	return typed == raw if typed.begins_with("#") else typed == comment_text(stored).strip_edges()
+
+
+## A stored line for typed text: a line that begins with `#` as it is, plain words behind the `#`s (and markers) of `like`.
+static func _written(typed: String, like: String) -> String:
+	var marks := like.substr(0, marker_length(like))
+	if typed.begins_with("#"):
+		return marks + typed
+	var hashes := ""
+	var rest := like.substr(marks.length())
+	while hashes.length() < rest.length() and rest[hashes.length()] == "#":
+		hashes += "#"
+	return marks + (hashes if hashes != "" else "#") + " " + typed
+
+
+## The trailing comment a "Comment after the line" box stands for, in the spacing `old` had before its `#`.
+static func tail_from_text(old: String, text: String) -> String:
+	var t := text.strip_edges()
+	if t == "":
+		return ""
+	if old != "" and t == tail_plain(old):
+		return old
+	var gap := old.substr(0, old.length() - old.lstrip(" \t").length())
+	return (gap if gap != "" else "  ") + (t if t.begins_with("#") else "# " + t)
+
+
+## Wraps `text` into lines at most `width` wide, at most `limit` of them, the last ending in "..." when text is left.
+func _wrap_lines(text: String, width: float, limit: int, font: Font) -> PackedStringArray:
+	var out := PackedStringArray()
+	var cur := ""
+	var more := false
+	for word in text.split(" ", false):
+		var tryit: String = word if cur == "" else cur + " " + word
+		if cur == "" or font.get_string_size(tryit, HORIZONTAL_ALIGNMENT_LEFT, -1, NOTE_FONT).x <= width:
+			cur = tryit
+			continue
+		out.append(cur)
+		cur = word
+		if out.size() >= limit:
+			more = true
+			break
+	if not more and cur != "":
+		out.append(cur)
+	for k in out.size():
+		if font.get_string_size(out[k], HORIZONTAL_ALIGNMENT_LEFT, -1, NOTE_FONT).x > width:
+			out[k] = out[k] + " "   # (a single word wider than the line is cut at the end by _ellipsis)
+			_ellipsis_at(out, k, width, font)
+	if more:
+		_ellipsis(out, width, font)
+	return out
+
+
+static func _ellipsis(lines: PackedStringArray, width: float, font: Font) -> void:
+	if not lines.is_empty():
+		_ellipsis_at(lines, lines.size() - 1, width, font)
+
+
+static func _ellipsis_at(lines: PackedStringArray, k: int, width: float, font: Font) -> void:
+	var last := lines[k].strip_edges(false, true)
+	if last.ends_with("..."):
+		return
+	while last.length() > 1 and font.get_string_size(last + "...", HORIZONTAL_ALIGNMENT_LEFT, -1, NOTE_FONT).x > width:
+		last = last.left(last.length() - 1)
+	lines[k] = last.strip_edges(false, true) + "..."
+
+
+## Lays the bubble out for a node `width` wide (kept until the width changes): the note's lines, then the tail's.
+func _lay_comment(width: float, font: Font) -> void:
+	_lay_w = width
+	var inner := maxf(width, NOTE_MIN_W) - 16.0
+	_lay_note = PackedStringArray()
+	var room := NOTE_LINES
+	var cut := false
+	for i in _note.size():
+		if room <= 0:
+			cut = true
+			break
+		var wrapped := _wrap_lines(_note[i], inner, room, font)
+		# the last visible line of a note that goes on shows it
+		_lay_note.append_array(wrapped)
+		room -= wrapped.size()
+	if cut and not _lay_note.is_empty():
+		_ellipsis(_lay_note, inner, font)
+	_lay_tail = ""
+	if _tail != "":
+		var t := _wrap_lines(_tail, inner, 1, font)
+		_lay_tail = t[0] if not t.is_empty() else ""
+	_lay_font_h = font.get_height(NOTE_FONT) + 1.0
+
+
+## The comment bubble above the node: the note, a thin rule, the end-of-line comment dimmer. It sits above the
+## Unreal-style bubble when the node has that too, and takes no room in the node.
+func _draw_comment() -> void:
+	var font := get_theme_default_font()
+	if absf(_lay_w - size.x) > 0.5:
+		_lay_comment(size.x, font)
+	if _lay_note.is_empty() and _lay_tail == "":
+		return
+	comment_draws += 1
+	var lh := _lay_font_h
+	var w := maxf(size.x, NOTE_MIN_W)
+	var rows := _lay_note.size() + (1 if _lay_tail != "" else 0)
+	var h := rows * lh + 10.0 + (3.0 if (_lay_tail != "" and not _lay_note.is_empty()) else 0.0)
+	var below := 0.0   # the Unreal-style bubble, if there is one, is already above the node
+	if _bubble_text != "":
+		below = _bubble_text.count("\n") * lh + lh + 22.0 + 6.0
+	var box := Rect2(Vector2(0, -(h + 9.0 + below)), Vector2(w, h))
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = NOTE_BG
+	sb.set_corner_radius_all(5)
+	draw_style_box(sb, box)
+	if below == 0.0:
+		draw_colored_polygon(PackedVector2Array([box.position + Vector2(10, box.size.y - 0.5), box.position + Vector2(22, box.size.y - 0.5), box.position + Vector2(13, box.size.y + 7)]), NOTE_BG)
+	var y := box.position.y + 5.0 + font.get_ascent(NOTE_FONT)
+	for line in _lay_note:
+		draw_string(font, Vector2(8, y), line, HORIZONTAL_ALIGNMENT_LEFT, -1, NOTE_FONT, NOTE_TEXT)
+		y += lh
+	if _lay_tail != "":
+		if not _lay_note.is_empty():
+			draw_line(Vector2(8, y - font.get_ascent(NOTE_FONT) + 1.0), Vector2(w - 8, y - font.get_ascent(NOTE_FONT) + 1.0), Color(1, 1, 1, 0.18), 1.0)
+			y += 3.0
+		draw_string(font, Vector2(8, y), _lay_tail, HORIZONTAL_ALIGNMENT_LEFT, -1, NOTE_FONT, NOTE_TAIL)
 
 
 ## Unreal's comment bubble above the node. Drawn by a child of the title row so greying the node leaves it readable.

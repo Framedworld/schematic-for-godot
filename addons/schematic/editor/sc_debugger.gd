@@ -35,12 +35,13 @@ func _setup_session(session_id: int) -> void:
 		return
 	s.started.connect(func():
 		editor.debug_panel.session_started(session_id)
-		editor.debug_started())
+		editor.debug_started(session_id))
 	s.breaked.connect(func(can_debug: bool): editor.debug_panel.breaked(session_id, can_debug))
 	s.continued.connect(func(): editor.debug_panel.resumed(session_id))
 	s.stopped.connect(func():
 		editor.debug_panel.session_stopped(session_id)
-		editor.debug_resume())
+		editor.debug_resume()
+		editor.debug_ended(session_id))
 
 
 ## The debugger passes a 0-based line.

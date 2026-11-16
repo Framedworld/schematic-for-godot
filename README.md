@@ -26,8 +26,12 @@ off and your Schematics still run.
 
 The graph is what Schematic saves from, so a change made to the code by hand (or by a pull, or another tool) is
 not in the graph. Schematic notices: a bar above the graph says the file changed outside it, shows the differing
-lines, and nothing writes over the file until you choose to keep the graph. Bringing a hand edit into the graph
-is not done yet.
+lines, and nothing writes over the file until you choose. **Re-import Code** brings the change into the graph:
+only the functions and events that changed are rebuilt, everything else stays as it was down to where each node
+sits, and it is one step you can undo. Inside a function that did change, the nodes of the lines you did not touch
+stay where they are too, with their breakpoints; only the lines you edited get new nodes, placed beside them. A preview says first what will be rebuilt, added or removed. An edit that
+cannot be brought in (a change to a line Schematic writes for its own use, code that does not parse) is refused
+with the reason and the line, and nothing changes. Comments written by hand are kept.
 
 ## Find any node by typing
 
@@ -187,7 +191,10 @@ other projects and are not in the repository.
 The **Generated Code** tab shows the GDScript live, and the two sides are linked. Select nodes and their lines are
 highlighted: strongly for the lines a node wrote, softly for the lines it only feeds a value into. Click a line and
 the node that wrote it is selected and centred, in whichever function it is; the nodes feeding that line get an
-outline. A line no node wrote (a declaration, a helper) says what it is under the code.
+outline. A line no node wrote (a declaration, a helper) says what it is under the code. While the game is stopped
+at a breakpoint the line it stopped on is marked and followed step by step, and the tab shows the code the game is
+running even if the graph has changed since. A click in the code's gutter sets a breakpoint on the node that wrote
+that line.
 
 ### Semantics that match Blueprints
 
@@ -220,6 +227,9 @@ outline. A line no node wrote (a declaration, a helper) says what it is under th
     (or with optional parameters and captured values) it is a **Lambda** node, which makes a separate Callable each time.
     In the generated code it is written back as the lambda it was, in the place it stood, so calling it costs what it
     cost before;
+  - comments are kept where they were written: above a statement, at the end of a line, at the end of a block,
+    above a function or a variable. They sit on the node as a bubble you can edit in the Details panel, and are
+    written back into the code; blank lines inside a function are kept too;
   - an event keeps the parameter names the script gave it (`func _process(dt)` stays `dt`, on the pin and in the code);
     its locals and every loop variable keep their names too (`var speed`, `for y in range(h)`), and get a suffix or
     a number only where two of them would otherwise clash;
@@ -274,7 +284,7 @@ outline. A line no node wrote (a declaration, a helper) says what it is under th
 
 ```
 godot --headless --path . --script res://tests/test_compile.gd
-godot --path . --editor -- --sc-selftest=res://tests/shot.gd        # also shot_input, shot_panels, shot_look, shot_alias, shot_macros, shot_tieins, shot_debug, shot_debugger, shot_interfaces, shot_collapse, shot_starters, shot_libs, shot_import, shot_data, shot_reuse, shot_flow_reroute, shot_edit_converted, shot_kit_missing, shot_public_kit, shot_code_link, shot_drift
+godot --path . --editor -- --sc-selftest=res://tests/shot.gd        # also shot_input, shot_panels, shot_look, shot_alias, shot_macros, shot_tieins, shot_debug, shot_debugger, shot_interfaces, shot_collapse, shot_starters, shot_libs, shot_import, shot_data, shot_reuse, shot_flow_reroute, shot_edit_converted, shot_kit_missing, shot_public_kit, shot_kit_problems, shot_code_link, shot_code_link_run, shot_drift, shot_reimport, shot_node_comments
 godot --headless --path . --script res://tests/test_data.gd
 godot --headless --path . --script res://tests/test_import.gd
 godot --headless --path . --script res://tests/test_convert.gd     # the converter's torture test: tests/convert/*.gd run as written and converted
@@ -284,6 +294,7 @@ godot --headless --path . --script res://tests/test_kit_missing.gd # a node whos
 godot --headless --path . --script res://tests/test_public_kit.gd  # nodes shipped by another addon (tests/fake_kit)
 godot --headless --path . --script res://tests/test_drift.gd       # telling a hand-edited file from the one Schematic wrote
 godot --headless --path . --script res://tests/test_sync.gd        # a script split into its blocks: the user's code and the compiler's
+godot --headless --path . --script res://tests/test_reimport.gd    # a hand-edited file brought back into its graph, function by function
 godot --headless --path . --script res://tests/stress_convert.gd -- <folder of scripts>   # converts any scripts and checks the result (reads only)
 godot --headless --path . --script res://tests/test_libraries.gd
 godot --headless --path . --script res://tests/test_interfaces.gd

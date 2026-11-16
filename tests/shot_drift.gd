@@ -230,7 +230,7 @@ func case_code_edit() -> void:
 	check(ed.doc.drift == "code", "the state is code drift", str(ed.doc.drift))
 	check(bar_shown() and String(ed._drift_label.text).contains("code was changed outside Schematic"), "the bar shows above the graph", String(ed._drift_label.text))
 	check(ed._drift_btns.show.visible and ed._drift_btns.keep.visible and ed._drift_btns.reimport.visible and not ed._drift_btns.reload.visible, "it offers Show Changes, Keep Graph and Re-import Code")
-	check(ed._drift_btns.reimport.disabled and String(ed._drift_btns.reimport.tooltip_text).begins_with("Coming in a later version"), "Re-import Code is there but disabled, with its tooltip")
+	check(not ed._drift_btns.reimport.disabled and String(ed._drift_btns.reimport.tooltip_text).begins_with("Bring the changed code into the graph"), "Re-import Code is there and enabled, with its tooltip (tests/shot_reimport.gd tests what it does)")
 	var tab_icon: Texture2D = ed._doc_tabs.get_tab_icon(ed.docs.find(ed.doc))
 	check(tab_icon == W.icon("StatusWarning"), "the document's tab carries a warning icon")
 	await tree.create_timer(0.3).timeout

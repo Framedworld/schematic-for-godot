@@ -9,6 +9,18 @@ extends RefCounted
 ##   func = {name, params: [{name, type, default (expr or null)}], ret, body: [stmt], static, line}
 ##   stmt = {k: var|assign|expr|if|for|while|return|pass|break|continue|raw, src, line, ...}
 ##   expr = {k: num|str|name|bool|null|self|node|un|bin|tern|call|attr|index|array|dict|as|raw, ...}
+##
+## COMMENTS. Every comment a person wrote goes to the statement or declaration it belongs to (see
+## _attach_comments), in these fields:
+##   note   [String]  the lines written above it: each a comment line from its `#` on, or "" for a blank line
+##   tail   String    the comment at the end of its line, with the spaces written before it ("  # why")
+##   after  [String]  (statements) the lines below it that end the block it is the last statement of
+##   end    [String]  (functions) `#endregion` lines right below it, which close a region around it
+## A comment line indented deeper than its owner has a tab in front of the `#` for each block deeper, one less
+## indented a "<" for each block shallower ("<# about the else"). Text kept as written (a statement kept as code,
+## an enum, a property's set / get) holds the comments inside it in its text. The script's own: head_note (above
+## extends), description (a `## ` block right below extends, followed by a blank line), end_note (after the last
+## declaration). The marker line and the stored graph of a Schematic's own file are not comments of the script.
 
 const T := preload("res://addons/schematic/core/sc_types.gd")
 const KEYWORDS := ["if", "elif", "else", "for", "while", "match", "break", "continue", "pass", "return", "func", "var", "const",
@@ -26,16 +38,23 @@ var _saw_raw := false
 var _lambdas: Dictionary = {}   # placeholder name -> the lambda lifted out of a statement's text
 var _open_quote := ""           # the quote the text last given to _open() ends inside, "" when it ends outside any string
 var _open_backslash := false    # the text last given to _open() ends with a line-continuation backslash (outside comments)
+var _end_items: Array = []      # the comment and blank lines after the last logical line (see _tokenize)
 
 
 # ---------------------------------------------------------------- tokenizer
 
 ## Splits the source into logical lines (brackets and backslashes continue a line) of tokens.
+## Comments are kept beside them (see COMMENTS below): each logical line has `pre`, the comment and blank lines
+## written above it since the line before ([{text, level}], {blank: true} for a blank line; `text` from the `#`
+## on, `level` the block depth the comment is indented to), and `tail`, the comment at its end with the spaces
+## before it ("" when none). What follows the last line is in _end_items.
 func _tokenize(source: String) -> void:
 	_lines = []
+	_end_items = []
 	var raw := source.replace("\r\n", "\n").split("\n")
 	var i := 0
 	var widths := [0]   # how far each enclosing block is indented: a line's depth counts blocks, not columns
+	var pre := []
 	while i < raw.size():
 		var first := i
 		var text := raw[i]
@@ -43,6 +62,30 @@ func _tokenize(source: String) -> void:
 		var base_ws := 0
 		while base_ws < lead.length() and (lead[base_ws] == "\t" or lead[base_ws] == " "):
 			base_ws += 1
+		var bare := text.strip_edges()
+		if bare.begins_with("#~"):
+			i += 1   # a line of a Schematic's own data (the stored graph), or one re-import set aside: no comment of the script's
+			continue
+		if bare == "" or bare.begins_with("#"):
+			# a blank line or a comment standing on its own line: kept for the next logical line
+			if bare == "":
+				pre.append({"blank": true})
+			else:
+				var ci := 0
+				for k in base_ws:
+					ci += 4 if lead[k] == "\t" else 1
+				var level := widths.size() - 1
+				if ci > int(widths[-1]):
+					# deeper than the block it follows: how deep it is depends on the line after it too (see _deep_level)
+					var unit := int(widths[1]) - int(widths[0]) if widths.size() > 1 else 4
+					pre.append({"text": bare, "level": level + 1, "ci": ci, "base_w": int(widths[-1]), "base_l": level, "unit": maxi(unit, 1)})
+				else:
+					while level > 0 and int(widths[level]) > ci:
+						level -= 1
+					pre.append({"text": bare, "level": level})
+			i += 1
+			continue
+		var inner := PackedStringArray()   # comments on lines a backslash continues past
 		# keep taking lines while a bracket, a triple-quoted string or a trailing backslash is open
 		while _open(text) and i + 1 < raw.size():
 			i += 1
@@ -54,6 +97,7 @@ func _tokenize(source: String) -> void:
 				text += "\n" + more   # the rest of a string that runs over several lines: exactly as written
 			elif _open_backslash:   # (a backslash at the end of a comment continues nothing)
 				if more.strip_edges().begins_with("#"):
+					inner.append(more.strip_edges())
 					continue   # a comment between the lines of one statement: the statement goes on after it
 				text = text.strip_edges(false, true).trim_suffix("\\") + " " + more.strip_edges(true, false)
 			else:
@@ -72,7 +116,80 @@ func _tokenize(source: String) -> void:
 			widths.pop_back()
 		if indent > int(widths[-1]):
 			widths.append(indent)
-		_lines.append({"indent": indent, "level": widths.size() - 1, "toks": toks, "src": _strip_comment(text).strip_edges(), "line": first + 1})
+		var tail := _tail_of(text)
+		for more_comment in inner:
+			tail += "  " + more_comment
+		for it in pre:
+			_deep_level(it, indent, widths.size() - 1)
+		_lines.append({"indent": indent, "level": widths.size() - 1, "toks": toks, "src": _strip_comment(text).strip_edges(), "line": first + 1,
+			"pre": pre, "tail": tail})
+		pre = []
+	for it in pre:
+		_deep_level(it, -1, -1)
+	_end_items = pre
+
+
+## The depth of a comment indented deeper than the block before it, once the line after it is known (indentation
+## `indent` at depth `level`; -1 at the end of the file). As deep as that line when it is not indented deeper than
+## that line (the first line of a deeper block, however far a block is indented); deeper than both, one block for
+## each step of the file's indentation past the deeper of the two (commented-out code keeps its depth wherever it
+## is written, so that converting the result again reads it the same).
+static func _deep_level(it: Dictionary, indent: int, level: int) -> void:
+	if not it.has("ci"):
+		return
+	var ci := int(it.ci)
+	var bw := int(it.base_w)
+	var bl := int(it.base_l)
+	if indent > bw:
+		if ci <= indent:
+			it.level = level
+			return
+		bw = indent
+		bl = level
+	it.level = bl + maxi(1, roundi(float(ci - bw) / float(it.unit)))
+
+
+## The comments a logical line's text holds outside its strings, as one trailing comment: the first with the
+## spaces written before it, any further ones (on the following lines of a statement that runs over several
+## lines) after two spaces each. "" when there are none.
+func _tail_of(text: String) -> String:
+	if not text.contains("#"):
+		return ""
+	var out := ""
+	var quote := ""
+	var i := 0
+	var n := text.length()
+	while i < n:
+		var c := text[i]
+		if quote != "":
+			if c == "\\":
+				i += 1
+			elif quote.length() == 3 and text.substr(i, 3) == quote:
+				quote = ""
+				i += 2
+			elif quote.length() == 1 and c == quote:
+				quote = ""
+		elif text.substr(i, 3) == "\"\"\"" or text.substr(i, 3) == "'''":
+			quote = text.substr(i, 3)
+			i += 2
+		elif c == "\"" or c == "'":
+			quote = c
+		elif c == "#":
+			var nl := text.find("\n", i)
+			var comment := text.substr(i, (nl if nl != -1 else n) - i).strip_edges(false, true)
+			var ws := i
+			while ws > 0 and text[ws - 1] in [" ", "\t"]:
+				ws -= 1
+			var gap := text.substr(ws, i - ws)
+			if out != "" or ws == 0 or text[ws - 1] == "\n":
+				gap = "  "   # a comment on a line of its own inside the statement
+			out += gap + comment
+			if nl == -1:
+				break
+			i = nl
+			continue
+		i += 1
+	return out
 
 
 ## True while the text ends inside brackets or a triple-quoted string, or with a line-continuation backslash.
@@ -366,19 +483,32 @@ func _at_end() -> bool:
 
 func parse(source: String) -> Dictionary:
 	notes = []
-	_tokenize(source)
+	_tokenize(_own_lines_blanked(source))
 	_li = 0
 	var out := {"extends": "", "class_name": "", "tool": false, "signals": [], "vars": [], "funcs": [], "enums": [], "extra": [],
-		"notes": notes, "uses_groups": false, "crlf": _line_ends(source), "class_pre": []}
+		"notes": notes, "uses_groups": false, "crlf": _line_ends(source), "class_pre": [], "head_note": [], "description": "", "end_note": []}
 	var group := ""
-	var pending := {"export": false, "onready": false, "plain": true, "text": PackedStringArray()}
+	var pending := {"export": false, "onready": false, "plain": true, "text": PackedStringArray(), "note": []}
+	var below_class := false
+	var last_func := {}      # the function the line before ended (an `#endregion` below it closes a region around it)
+	var prev_block := false  # the declaration before has lines below its first (a function, a property's set / get) # the line just read was the extends / class_name line
 	while _li < _lines.size():
 		var ln: Dictionary = _lines[_li]
 		_t = ln.toks
 		_p = 0
+		# the comments above this line that are its own (the ones indented deeper end the block before it, when
+		# the declaration before it has a block: they are in its text, or a statement's of its function)
+		var items: Array = ln.pre.slice(_deep_prefix(ln.pre, 0) if prev_block else 0)
+		prev_block = false
+		items = _region_end(items, last_func)
+		last_func = {}
+		if below_class:
+			below_class = false
+			items = _class_doc(items, out)
+		var note := _note(items, 0)
 		if ln.indent > 0:
 			notes.append("line %d: unexpected indented line kept as text: %s" % [ln.line, ln.src])
-			out.extra.append(ln.src)
+			out.extra.append("\n".join(PackedStringArray(note)) + ("\n" if not note.is_empty() else "") + String(ln.src) + String(ln.tail))
 			_li += 1
 			continue
 		# annotations in front of (or on the line above) a declaration
@@ -417,11 +547,18 @@ func parse(source: String) -> Dictionary:
 				var ann_text := "@" + word.strip_edges()
 				if ann_text.begins_with("@icon") or ann_text.begins_with("@static_unload"):
 					of_class.append(ann_text)
+			if not of_class.is_empty() or ln.src == "@tool":
+				# (comments above the class's own lines are the script's: written above them)
+				out.head_note.append_array(_trimmed(pending.note + note, true))
+				_tail_note(out.head_note, String(ln.tail))
+				pending.note = []
+				note = []
 			if not of_class.is_empty():
 				out.class_pre.append_array(of_class)
-				pending = {"export": false, "onready": false, "plain": true, "text": PackedStringArray()}
+				pending = {"export": false, "onready": false, "plain": true, "text": PackedStringArray(), "note": []}
 			elif ln.src != "@tool":
-				pending.text.append(ln.src)
+				pending.note.append_array(note)
+				pending.text.append(String(ln.src) + String(ln.tail))
 			_li += 1
 			continue
 		var tok := _peek()
@@ -436,7 +573,10 @@ func parse(source: String) -> Dictionary:
 			var lead := String(ln.src).substr(0, maxi(String(ln.src).find(String(tok.v)), 0)).replace("@tool", "").strip_edges()
 			if lead != "":
 				out.class_pre.append(lead)
-			pending = {"export": false, "onready": false, "plain": true, "text": PackedStringArray()}
+			out.head_note.append_array(_trimmed(pending.note + note, true))
+			_tail_note(out.head_note, String(ln.tail))
+			below_class = true
+			pending = {"export": false, "onready": false, "plain": true, "text": PackedStringArray(), "note": []}
 			_p += 1
 			if tok.v == "class_name":
 				out.class_name = String(_next().v)
@@ -461,7 +601,8 @@ func parse(source: String) -> Dictionary:
 			var sig_line := String(ln.src)
 			if sig_line.begins_with("@"):
 				sig.pre.append(sig_line.substr(0, sig_line.find("signal ")).strip_edges())
-			pending = {"export": false, "onready": false, "plain": true, "text": PackedStringArray()}
+			_own_comments(sig, _trimmed(pending.note + note, true), String(ln.tail))
+			pending = {"export": false, "onready": false, "plain": true, "text": PackedStringArray(), "note": []}
 			out.signals.append(sig)
 			_li += 1
 		elif tok.t == "kw" and (tok.v == "var" or tok.v == "const"):
@@ -481,12 +622,20 @@ func parse(source: String) -> Dictionary:
 				_skip_block(ln.indent)
 			else:
 				_li += 1
-			# the declaration exactly as written, annotations included
+			# the declaration exactly as written, annotations included (and, in `text_tail`, the comment at the end
+			# of its line: where it is kept as written, the comment is part of the text)
+			# (a declaration of one line ends at that line: comments indented deeper below it go to the next one)
+			prev_block = _li - start_li > 1
+			var deep := -1 if prev_block else 1000
 			var text := PackedStringArray(pending.text)
-			text.append(_text(start_li, _li))
+			text.append(_text(start_li, _li, -1, false, false, deep))
 			v["text"] = "\n".join(text)
+			var with_tail := PackedStringArray(pending.text)
+			with_tail.append(_text(start_li, _li, -1, false, true, deep))
+			v["text_tail"] = "\n".join(with_tail)
+			_own_comments(v, _trimmed(pending.note + note, true), String(ln.tail))
 			out.vars.append(v)
-			pending = {"export": false, "onready": false, "plain": true, "text": PackedStringArray()}
+			pending = {"export": false, "onready": false, "plain": true, "text": PackedStringArray(), "note": []}
 		elif tok.t == "kw" and tok.v == "func":
 			var f := _func_decl(ln)
 			f["static"] = is_static
@@ -494,8 +643,11 @@ func parse(source: String) -> Dictionary:
 			var first_line := String(ln.src)
 			if ann_start != _p and first_line.begins_with("@"):
 				f.pre.append(first_line.substr(0, first_line.find("func ")).strip_edges().trim_suffix("static").strip_edges())
+			_own_comments(f, _trimmed(pending.note + note, true), String(ln.tail))
 			out.funcs.append(f)
-			pending = {"export": false, "onready": false, "plain": true, "text": PackedStringArray()}
+			last_func = f
+			prev_block = true
+			pending = {"export": false, "onready": false, "plain": true, "text": PackedStringArray(), "note": []}
 		else:
 			# enums, inner classes and anything else the model has no place for: carried over as written
 			var start_li := _li
@@ -515,13 +667,250 @@ func parse(source: String) -> Dictionary:
 			if tok.t == "kw" and tok.v == "class":
 				out.enums.append({"name": String(_peek(1).v), "values": [], "class": true})
 			_skip_block(ln.indent)
-			var text := PackedStringArray(pending.text)
-			text.append(_text(start_li, _li))
+			# kept as written: the comments above it and in it are part of its text
+			prev_block = _li - start_li > 1
+			var text := PackedStringArray(_trimmed(pending.note + note, true))
+			text.append_array(pending.text)
+			text.append(_text(start_li, _li, -1, false, true, -1 if prev_block else 1000))
 			out.extra.append("\n".join(text))
 			if what != "enum":
 				notes.append("line %d: %s kept as written: %s" % [ln.line, what, ln.src])
-			pending = {"export": false, "onready": false, "plain": true, "text": PackedStringArray()}
+			pending = {"export": false, "onready": false, "plain": true, "text": PackedStringArray(), "note": []}
+	# comments after the last declaration (those indented deeper end the function or block before them)
+	var end_items := _region_end(_end_items.slice(_deep_prefix(_end_items, 0) if prev_block else 0), last_func)
+	if below_class:
+		end_items = _class_doc(end_items, out)
+	out.end_note = _trimmed(pending.note + _note(end_items, 0))
+	_attach_comments(out)
 	return out
+
+
+## The source without what a Schematic's own file adds to a script: its marker line (the first) and its stored
+## graph (from the #region that holds it). The lines keep their numbers.
+func _own_lines_blanked(source: String) -> String:
+	var src := source
+	for block in ["\n#region Schematic graph data", "\n#region Blueprint graph data"]:
+		var at := src.find(block)
+		if at != -1:
+			src = src.substr(0, at + 1)
+	if src.begins_with("# @schematic") or src.begins_with("# @blueprint"):
+		var nl := src.find("\n")
+		src = "" if nl == -1 else src.substr(nl)
+	return src
+
+
+## Comment items as note lines of something at block depth `level` (see COMMENTS).
+func _note(items: Array, level: int) -> Array:
+	var out := []
+	for it in items:
+		out.append(_enc(it, level))
+	return out
+
+
+func _enc(it: Dictionary, level: int) -> String:
+	if bool(it.get("blank", false)):
+		return ""
+	var rel := int(it.level) - level
+	return ("\t".repeat(rel) if rel > 0 else "<".repeat(-rel)) + String(it.text)
+
+
+## Note lines without the blank lines they begin with (and, unless `leading_only`, end with): what stands
+## between declarations is the compiler's to lay out.
+func _trimmed(lines: Array, leading_only := false) -> Array:
+	var out := lines.duplicate()
+	while not out.is_empty() and String(out[0]) == "":
+		out.pop_front()
+	if not leading_only:
+		while not out.is_empty() and String(out[-1]) == "":
+			out.pop_back()
+	return out
+
+
+## `#endregion` lines right below a function close a region around it: they are the function's `end` (written
+## right after it, wherever the function is written), not the next declaration's note. Returns the items left.
+func _region_end(items: Array, f: Dictionary) -> Array:
+	if f.is_empty():
+		return items
+	var taken := -1
+	for k in items.size():
+		if bool(items[k].get("blank", false)):
+			continue
+		if int(items[k].level) == 0 and String(items[k].text).begins_with("#endregion"):
+			taken = k
+			continue
+		break
+	if taken == -1:
+		return items
+	var end: Array = f.get("end", [])
+	for k in taken + 1:
+		if not bool(items[k].get("blank", false)):
+			end.append(String(items[k].text))
+	f["end"] = end
+	return items.slice(taken + 1)
+
+
+## Gives a declaration its note and tail (only the fields that have something).
+func _own_comments(decl: Dictionary, note: Array, tail: String) -> void:
+	if not note.is_empty():
+		decl["note"] = note
+	if tail != "":
+		decl["tail"] = tail
+
+
+## A comment at the end of a line that has nowhere to stand at the end of a line in the converted script: a
+## comment line of its own, after `lines`.
+func _tail_note(lines: Array, tail: String) -> void:
+	if tail != "":
+		lines.append(tail.strip_edges())
+
+
+## Gives every comment inside a function to the statement it belongs to (see COMMENTS at the top):
+##   - a comment line above a statement, at its depth or shallower, is its `note` (with the blank lines above it);
+##   - a comment line indented deeper than the line below it ends the block above: it is the `after` of the last
+##     statement at its depth there (or the deepest one shallower), written after everything that statement wrote;
+##   - a comment above an `elif` / `else:` or a match arm is the `after` of the last statement of the branch or arm
+##     before it (above the first arm: the `note` of the arm's first statement); so is the comment at the end of
+##     such a line;
+##   - the comment at the end of a statement's line is its `tail`; the one at the end of the `func` line is the
+##     function's;
+##   - comments inside a statement whose text is kept as written (a lambda's body) are in that text.
+## The comments a statement holds inside (a branch's statements' own) are also in its `text`, which is what a
+## statement kept as code is written as; the importer uses one or the other.
+func _attach_comments(out: Dictionary) -> void:
+	var li_at := {}
+	for i in _lines.size():
+		li_at[int(_lines[i].line)] = i
+	for f in out.funcs:
+		if bool(f.get("abstract", false)) or not li_at.has(int(f.line)):
+			continue
+		var hli: int = li_at[int(f.line)]
+		var top := int(_lines[hli].level)
+		var fend := hli
+		while fend + 1 < _lines.size() and int(_lines[fend + 1].level) > top:
+			fend += 1
+		var entries := []
+		_comment_entries(f.body, li_at, entries)
+		for en in entries:
+			var e := int(en.li)
+			# (an if's lines go on through its elif and else lines, which are as deep as it is)
+			while e + 1 <= fend and (int(_lines[e + 1].level) > int(en.level) or (String(en.st.k) == "if" and int(_lines[e + 1].level) == int(en.level) \
+					and not _lines[e + 1].toks.is_empty() and _lines[e + 1].toks[0].t == "kw" and String(_lines[e + 1].toks[0].v) in ["elif", "else"])):
+				e += 1
+			en["end"] = e
+		var first_at := {}
+		for en in entries:
+			if not first_at.has(int(en.li)):
+				first_at[int(en.li)] = en
+		for li in range(hli + 1, fend + 1):
+			if first_at.has(li) and String(_lines[li].tail) != "":
+				first_at[li].st["tail"] = String(_lines[li].tail)
+		for at in range(hli + 1, fend + 2):
+			var items: Array = _lines[at].pre if at < _lines.size() else _end_items
+			var inside := at <= fend
+			var level := int(_lines[at].level) if inside else top
+			var upto := _deep_prefix(items, level)
+			var buf := []
+			var orphans := []   # (deeper than the line below, with nothing above it to end: above that line after all)
+			# (once a comment has gone below a statement, the ones after it go below that one or one around it, never
+			# below one inside it, which is written earlier: commented-out code indented deeper stays in order)
+			var cap := 1 << 30
+			for k in upto:
+				var it: Dictionary = items[k]
+				buf.append(it)
+				if bool(it.get("blank", false)):
+					continue
+				var owner := _deepest(entries, at - 1, mini(int(it.level), cap))
+				if not owner.is_empty() and int(owner.end) >= at:
+					owner = {}   # (the statement goes on below it: the comment ends no block, it is above the line below)
+				if not owner.is_empty():
+					cap = int(owner.level)
+				if owner.is_empty():
+					orphans.append_array(buf)
+				elif not (int(owner.level) < int(it.level) and int(owner.end) > int(owner.li) and not owner.compound):
+					_give(owner.st, "after", buf, int(owner.level))
+				buf = []
+			if not inside:
+				continue
+			var rest := orphans + items.slice(upto)
+			if not first_at.has(at) and String(_lines[at].tail) != "":
+				rest = rest + [{"text": String(_lines[at].tail).strip_edges(), "level": level}]
+			if rest.is_empty():
+				continue
+			if first_at.has(at):
+				_give(first_at[at].st, "note", rest, int(first_at[at].level))
+				continue
+			# a line that starts no statement: an elif / else: or a match arm of the statement around it (inside
+			# anything else, a lambda's body, the comments are part of that statement's text)
+			var around := {}
+			for en in entries:
+				if int(en.li) < at and at <= int(en.end) and (around.is_empty() or int(en.level) >= int(around.level)):
+					around = en
+			if around.is_empty() or not around.compound:
+				continue
+			var before := _deepest(entries, at - 1, level + 1)
+			if not before.is_empty() and int(before.li) > int(around.li):
+				_give(before.st, "after", rest, int(before.level))
+				continue
+			for en in entries:
+				if int(en.li) > at and int(en.li) <= int(around.end):
+					# (written inside the arm now, so as deep as its statements)
+					var moved := []
+					for it in rest:
+						moved.append(it if bool(it.get("blank", false)) else {"text": it.text, "level": maxi(int(it.level), int(en.level))})
+					_give(en.st, "note", moved, int(en.level))
+					break
+
+
+## Every statement of a body and of the bodies inside it, in the order they are written: [{st, li, level, compound}].
+func _comment_entries(body: Array, li_at: Dictionary, out: Array) -> void:
+	for st in body:
+		if not st is Dictionary or not li_at.has(int(st.get("line", -1))):
+			continue
+		var li: int = li_at[int(st.line)]
+		var k := String(st.get("k", ""))
+		out.append({"st": st, "li": li, "level": int(_lines[li].level), "compound": k in ["if", "for", "while", "match"]})
+		match k:
+			"if":
+				for br in st.branches:
+					_comment_entries(br[1], li_at, out)
+				_comment_entries(st["else"], li_at, out)
+			"for", "while":
+				_comment_entries(st.body, li_at, out)
+			"match":
+				for arm in st.arms:
+					_comment_entries(arm.body, li_at, out)
+
+
+## The statement whose lines hold logical line `at` that is indented deepest, but no deeper than `level` (the
+## first such one of those that are equally deep). {} when there is none.
+func _deepest(entries: Array, at: int, level: int) -> Dictionary:
+	var best := {}
+	for en in entries:
+		if int(en.li) <= at and at <= int(en.end) and int(en.level) <= level and (best.is_empty() or int(en.level) > int(best.level)):
+			best = en
+	return best
+
+
+## Adds comment items to a statement's `note` or `after`, as lines relative to the statement's depth `level`.
+func _give(st: Dictionary, field: String, items: Array, level: int) -> void:
+	var lines: Array = st.get(field, [])
+	lines.append_array(_note(items, level))
+	st[field] = lines
+
+
+## The class's doc comment: a block of `## text` lines right below the extends / class_name line, followed by a
+## blank line, is the schematic's description (which the compiler writes there); returns the items left.
+func _class_doc(items: Array, out: Dictionary) -> Array:
+	var texts := PackedStringArray()
+	var k := 0
+	while k < items.size() and not bool(items[k].get("blank", false)) and int(items[k].level) == 0 \
+			and String(items[k].text).begins_with("## ") and String(items[k].text).substr(3).strip_edges() != "":
+		texts.append(String(items[k].text).substr(3))
+		k += 1
+	if texts.is_empty() or k >= items.size() or not bool(items[k].get("blank", false)):
+		return items
+	out.description = "\n".join(texts)
+	return items.slice(k)
 
 
 ## True when the converted script is to be written with Windows line endings. The script is written with one
@@ -628,7 +1017,7 @@ func _func_decl(ln: Dictionary) -> Dictionary:
 	if inline:
 		f["body_text"] = String(ln.src).substr(String(ln.src).find(":", String(ln.src).rfind(")")) + 1).strip_edges()
 	elif body_from < _li:
-		f["body_text"] = _text(body_from, _li)
+		f["body_text"] = _text(body_from, _li, -1, true)   # (with every comment in it: a body kept whole keeps them)
 	else:
 		f["body_text"] = "pass"
 	return f
@@ -694,7 +1083,7 @@ func _block(indent: int) -> Array:
 			while _li < _lines.size() and int(_lines[_li].indent) > indent:
 				_li += 1
 			var body_text := PackedStringArray()
-			var body_src := _text(from, _li)
+			var body_src := _text(from, _li, -1, true)   # (the lambda's body with its comments)
 			var body_inside := T.lines_in_string(body_src)
 			var body_parts := body_src.split("\n")
 			for k in body_parts.size():
@@ -941,11 +1330,18 @@ func _lift_lambdas(text: String) -> String:
 		var joined_inside := T.lines_in_string(joined)
 		var joined_lines := joined.split("\n")
 		for k in joined_lines.size():
+			# (how far the body is indented is read from its first line of code, not from a comment above it)
+			if not joined_inside[k] and joined_lines[k].strip_edges() != "" and not joined_lines[k].strip_edges().begins_with("#"):
+				base = _tabs(joined_lines[k])
+				break
+		for k in joined_lines.size():
 			var body_line := joined_lines[k]
 			if joined_inside[k]:
 				body.append(body_line)   # a line of a string that runs over several lines: exactly as written
 				continue
 			if body_line.strip_edges() == "":
+				if not body.is_empty():
+					body.append("")   # a blank line the person left in the body: kept (see COMMENTS)
 				continue
 			if base == -1:
 				base = _tabs(body_line)
@@ -1064,17 +1460,57 @@ func _pattern_text(src: String) -> String:
 
 ## Source text of logical lines [from, to), re-indented with tabs relative to the first one (or to the block
 ## depth `base_level`), one tab for each block a line is nested in, however the file indents its blocks.
-func _text(from: int, to: int, base_level := -1) -> String:
+## The comments a person wrote inside the lines are part of the text: those above each line after the first and
+## at the end of each line after the first, and those after the last line that are indented deeper than `deep`
+## (the end of the last block inside it; default: deeper than the first line). With `with_first`, the comments
+## above and at the end of the first line too (a function body, a lambda's body); with `first_tail`, the one at
+## the end of the first line (a declaration kept as written).
+func _text(from: int, to: int, base_level := -1, with_first := false, first_tail := false, deep := -1) -> String:
 	var out := PackedStringArray()
 	var base := int(_lines[from].level) if base_level < 0 else base_level
-	for i in range(from, mini(to, _lines.size())):
-		var pad := "\t".repeat(maxi(int(_lines[i].level) - base, 0))
-		var src := String(_lines[i].src)
+	var last := mini(to, _lines.size())
+	for i in range(from, last):
+		var ln: Dictionary = _lines[i]
+		if i > from or with_first:
+			for it in ln.get("pre", []):
+				out.append(_comment_line(it, base))
+		var pad := "\t".repeat(maxi(int(ln.level) - base, 0))
+		var src := String(ln.src)
+		if i > from or with_first or first_tail:
+			src += String(ln.get("tail", ""))
 		var inside := T.lines_in_string(src)
 		var parts := src.split("\n")
 		for k in parts.size():
 			out.append(parts[k] if inside[k] else pad + parts[k])   # the lines of a string stay as they are
+	if last > from:
+		# (a body's text ends where its block does: what is deeper than the line that opened it)
+		var threshold := deep if deep >= 0 else (int(_lines[from].level) - (1 if with_first else 0))
+		var after: Array = _lines[last].get("pre", []) if last < _lines.size() else _end_items
+		var upto := _deep_prefix(after, threshold)
+		for k in upto:
+			out.append(_comment_line(after[k], base))
 	return "\n".join(out)
+
+
+## A comment item of a logical line's `pre` as a line of text whose blocks are counted from `base`.
+func _comment_line(it: Dictionary, base: int) -> String:
+	if bool(it.get("blank", false)):
+		return ""
+	return "\t".repeat(maxi(int(it.level) - base, 0)) + String(it.text)
+
+
+## How many of `items` (the comments above a line) end the block before it: the leading comments indented deeper
+## than `level`, with the blank lines between them (not the blank lines after the last of them).
+func _deep_prefix(items: Array, level: int) -> int:
+	var upto := 0
+	for k in items.size():
+		var it: Dictionary = items[k]
+		if bool(it.get("blank", false)):
+			continue
+		if int(it.level) <= level:
+			break
+		upto = k + 1
+	return upto
 
 
 func _if_stmt(ln: Dictionary) -> Dictionary:

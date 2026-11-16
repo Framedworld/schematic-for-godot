@@ -14,6 +14,19 @@ extends RefCounted
 ##             lambda (a function graph a converted script's lambda became: how many of its last inputs are the
 ##                     values it captures; the compiler writes it back as a lambda where it is used)}]
 ## }
+##
+## Comments a converted script wrote (the compiler writes them back where they were; a graph made in the editor
+## has none of these fields; the editor does not show them yet). A note line is "" (a blank line) or a comment
+## from its `#` on, with a tab before the `#` for each block it is indented deeper than its owner and a "<" for
+## each block shallower:
+##   schematic.note [lines above the class lines], schematic.end_note [lines after everything],
+##   schematic.description (a `## ` block right below extends, as before);
+##   variables[i].note / dispatchers[i].note [lines above], .tail (the comment at the end of its line, spaces
+##     before it included; a variable kept as written has it in its `raw` text instead);
+##   node.p.note [lines above the statement], p.tail, p.after [lines that end the block after it], on the nodes a
+##     statement became (see the importer's _block); an entry node's p.note / p.tail are its function's, p.end
+##     the `#endregion` lines right below the function; p.empty {exec pin: {note, tail}} a block of nothing but
+##     `pass` (written with the `pass` for that pin). A code node's text holds the comments inside its statement.
 
 const MARKER := "# @schematic"
 ## The plugin was called Blueprints before it was called Schematic. Files it wrote then start with this marker

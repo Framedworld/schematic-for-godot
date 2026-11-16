@@ -15,6 +15,8 @@ const Starters := preload("res://addons/schematic/core/sc_starters.gd")
 const Importer := preload("res://addons/schematic/core/sc_importer.gd")
 const DebugPanel := preload("res://addons/schematic/editor/sc_debug_panel.gd")
 const CodeLink := preload("res://addons/schematic/editor/sc_code_link.gd")
+const Sync := preload("res://addons/schematic/core/sc_sync.gd")
+const NodeVisual := preload("res://addons/schematic/editor/sc_graph_node.gd")   # (its static helpers turn comments into text and back)
 
 ## Generated-code highlights for the selected nodes: the amber the graph draws a selected node's outline in, as a
 ## wash over the code view's own background (so it reads on light and dark themes alike). A line the node itself
@@ -44,6 +46,8 @@ var _status: Label
 var _compile_btn: Button
 var _code: CodeEdit
 var _code_label: Label
+var _code_notice: Label     # above the code view while it shows the code the game runs and that is not the graph's code
+var _comments_btn: Button   # Hide Comments (a session setting: the graph view keeps it from graph to graph)
 var _right_tabs: TabContainer
 var _empty: Control
 var _body: Control
@@ -68,6 +72,10 @@ var _drift_btns: Dictionary = {}    # name -> Button
 var _close_dialog: AcceptDialog     # the question asked when closing a changed document whose file changed too
 var _diff_dialog: AcceptDialog      # Show Changes
 var recompile_skipped: Array = []   # files a macro library's save did not rewrite, because they were edited outside
+var _file_menu: MenuButton
+const FILE_REIMPORT := 4            # File > Re-import Code From File...
+var _reimport_dialog: AcceptDialog  # the Re-import Code preview (or why it can't be done)
+var reimport_last: Dictionary = {}  # the last preview: {path, text, code, both, graph_only, result} (the self-test reads it)
 
 
 func _init() -> void:
@@ -123,13 +131,20 @@ func build_ui() -> void:
 	bar.add_child(_tool("", "ShowInFileSystem", "Browse: show this schematic in the FileSystem dock", func():
 		if not doc.is_empty():
 			EditorInterface.get_file_system_dock().navigate_to_path(doc.path)))
-	bar.add_child(_tool_menu("File", ["New Schematic Class...", "Open Schematic...", "Close Schematic"], func(i: int):
+	_file_menu = _tool_menu("File", ["New Schematic Class...", "Open Schematic...", "Close Schematic", "Kits...", "Re-import Code From File..."], func(i: int):
 		if i == 0:
 			new_schematic_dialog()
 		elif i == 1:
 			_open_dialog()
+		elif i == 3:
+			show_kits_dialog()
+		elif i == FILE_REIMPORT:
+			reimport_dialog(doc)
 		elif not doc.is_empty():
-			_close_doc(docs.find(doc)), "Create, open or close schematics", "Add"))
+			_close_doc(docs.find(doc)), "Create, open or close schematics; Kits... lists the nodes other addons add", "Add")
+	_file_menu.get_popup().set_item_tooltip(FILE_REIMPORT, "Bring code changed outside Schematic into the graph (available while the file's code differs from the graph's)")
+	_file_menu.about_to_popup.connect(func(): _file_menu.get_popup().set_item_disabled(FILE_REIMPORT, not can_reimport(doc)))
+	bar.add_child(_file_menu)
 	bar.add_child(_tool_sep())
 	_compile_btn = _tool("Compile", "StatusSuccess", "Compile this schematic to GDScript and save it (F7)", func(): compile_doc(doc, true))
 	bar.add_child(_compile_btn)
@@ -150,6 +165,10 @@ func build_ui() -> void:
 		_view.hide_unrelated = on
 		_view.apply_unrelated())
 	bar.add_child(unrelated)
+	_comments_btn = _tool("Hide Comments", "NodeInfo", "Hide the comment bubbles above the nodes (the comments a script's # lines became)", func(): pass)
+	_comments_btn.toggle_mode = true
+	_comments_btn.toggled.connect(func(on: bool): _view.set_comments_hidden(on))
+	bar.add_child(_comments_btn)
 	bar.add_child(_tool_menu("", ["Find in All Schematics"], func(_i: int): find_in_all_schematics(), "More search options"))
 	bar.add_child(_tool_sep())
 	_class_btn = _tool("Class Settings", "Tools", "Parent class, class name, run in editor, execution flow", func(): _select({"kind": "class"}))
@@ -335,15 +354,27 @@ func build_ui() -> void:
 	code_box.name = "Generated Code"
 	code_box.add_theme_constant_override("separation", 2)
 	_right_tabs.add_child(code_box)
+	# While the game runs code that is not the graph's current code: a one-line notice saying so (see _shown()).
+	_code_notice = Label.new()
+	_code_notice.name = "CodeRunNotice"
+	_code_notice.visible = false
+	_code_notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_code_notice.add_theme_font_size_override("font_size", 12)
+	var ed_theme := EditorInterface.get_editor_theme()
+	_code_notice.add_theme_color_override("font_color", ed_theme.get_color("warning_color", "Editor") if ed_theme and ed_theme.has_color("warning_color", "Editor") else Color(1, 0.8, 0.35))
+	code_box.add_child(_code_notice)
 	_code = CodeEdit.new()
 	_code.name = "Code"
 	_code.editable = false
 	_code.gutters_draw_line_numbers = true
+	_code.gutters_draw_breakpoints_gutter = true   # a click there toggles the breakpoint of the line's node
+	_code.gutters_draw_executing_lines = true      # the arrow on the line the game is stopped at
 	_code.draw_tabs = false
 	_code.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	if ClassDB.class_exists("GDScriptSyntaxHighlighter"):
 		_code.syntax_highlighter = ClassDB.instantiate("GDScriptSyntaxHighlighter")
 	_code.caret_changed.connect(_on_code_caret)
+	_code.breakpoint_toggled.connect(_on_code_breakpoint)
 	code_box.add_child(_code)
 	_code_label = Label.new()
 	_code_label.name = "CodeLineLabel"
@@ -1112,8 +1143,9 @@ func drift_diff(d: Dictionary) -> Array:
 	return out
 
 
-## Show Changes: a read-only list of the differing lines.
-func show_drift_changes(d: Dictionary) -> void:
+## Show Changes: a read-only list of the differing lines. With `focus` (a line of the file on disk) the entry of that
+## line, or the nearest one, is selected and scrolled to.
+func show_drift_changes(d: Dictionary, focus := 0) -> void:
 	if _diff_dialog and is_instance_valid(_diff_dialog):
 		_diff_dialog.queue_free()
 	var dlg := AcceptDialog.new()
@@ -1139,11 +1171,592 @@ func show_drift_changes(d: Dictionary) -> void:
 	view.text = "\n".join(lines)
 	for k in diff.size():
 		view.set_line_background_color(k, Color(0.8, 0.25, 0.2, 0.22) if diff[k].op == "-" else Color(0.25, 0.75, 0.3, 0.2))
+	var at := -1
+	if focus > 0:
+		var best := 1 << 30
+		for k in diff.size():
+			var dist := absi(int(diff[k].line) - focus) * 2 + (0 if diff[k].op == "-" else 1)
+			if dist < best:
+				best = dist
+				at = k
+		head.text += "\nLine %d of the file is selected%s." % [focus, "" if at >= 0 and int(diff[at].line) == focus and diff[at].op == "-" else " (it is not itself a changed line: the nearest change is)"]
 	dlg.visibility_changed.connect(func():
 		if not dlg.visible:
 			dlg.queue_free())
 	EditorInterface.get_base_control().add_child(dlg)
 	dlg.popup_centered()
+	if at >= 0:
+		view.set_caret_line(at)
+		view.select(at, 0, at, view.get_line(at).length())
+		view.center_viewport_to_caret.call_deferred()
+
+
+# ---------------------------------------------------------------- re-import code edited by hand
+# Re-import Code (the bar's button; File > Re-import Code From File... for when the bar was dismissed with Keep Graph)
+# brings code changed outside Schematic into the graph. SCSync.reimport rebuilds only the functions and events whose
+# code differs from the graph's and accepts the result only if it compiles to the file's code.
+#   preview  a dry run on the file as it is on disk at that moment, shown in a window: what happens to each function,
+#            what the next save will write differently (dropped comments, lines in Schematic's style), or why it
+#            can't be done (then nothing changes and the bar stays).
+#   apply    the file is read again; if it changed since the preview, the preview is shown again for the new text
+#            (a preview is never applied to a file it did not read). Otherwise one undo step "Re-import Code" puts
+#            the new graph in. The document then counts as in sync with the text the re-import read (so the bar goes,
+#            and a later outside change to the file is caught as a new one) and has unsaved changes: the graph data
+#            on disk is the old one until a save, which writes the graph's code (the file's, apart from what the
+#            preview said the save rewrites).
+#   undo     the old graph comes back with the old record of what is on disk, so the bar comes back (the file still
+#            holds the edit); redo applies it again. If the file was written in between (a save), only the graph
+#            changes back: it is then an ordinary unsaved change.
+#   debug    breakpoints and pin watches on nodes the re-import replaced are removed (they could name other nodes now)
+#            and are not brought back by undo.
+# Unsaved graph changes: before the re-import the file's code is merged with the graph's code block by block
+# (functions, events, members; see _reimport_input): a block the file did not change since the graph was last saved
+# is taken from the graph as it is now, a block the file changed is the file's. Nothing is merged inside a block.
+
+## True when the document's file has code changes the graph does not have, which Re-import Code can bring in
+## (the file's graph part is the one this editor knows). Reads the file.
+func can_reimport(d: Dictionary) -> bool:
+	if d.is_empty() or not d.has("disk_graph"):
+		return false
+	return _drift_check(d, true) == "code"
+
+
+## Re-import Code: shows what it would do (or why it can't), with Re-import and Cancel.
+func reimport_dialog(d: Dictionary) -> void:
+	if d.is_empty():
+		return
+	if not can_reimport(d):
+		toast("Nothing to re-import: %s's code on disk is not changed from what the graph knows." % String(d.path).get_file())
+		return
+	_show_reimport(d, reimport_preview(d))
+
+
+## The dry run on the file as it is on disk now: {path, text, code (what is handed to the re-import), both, graph_only,
+## result: {ok, bp, report}}.
+func reimport_preview(d: Dictionary) -> Dictionary:
+	var text := FileAccess.get_file_as_string(String(d.path))
+	var inp := _reimport_input(d, text)
+	var r: Dictionary = Sync.new().reimport(d.bp, String(inp.code), {"dry": true, "path": String(d.path)})
+	reimport_last = {"path": String(d.path), "text": text, "code": inp.code, "both": inp.both, "graph_only": inp.graph_only, "result": r}
+	return reimport_last
+
+
+## The code to re-import from the file's `text`: its code part, merged with the graph's code when the graph has unsaved
+## changes. {code, both: [names changed in the graph and in the file: the file's taken], graph_only: [names changed only
+## in the graph: kept as the graph has them]}.
+func _reimport_input(d: Dictionary, text: String) -> Dictionary:
+	var out := {"code": Model.code_part(text), "both": [], "graph_only": []}
+	var saved := Model.parse_source(text)
+	if saved.is_empty():
+		return out
+	var base := Model.normalize_code(Compiler.new().compile(saved.duplicate(true)))   # the code the saved graph makes
+	var mine := Model.normalize_code(Compiler.new().compile(d.bp.duplicate(true)))     # the code the graph makes now
+	if base == mine:
+		return out   # no unsaved graph changes: the file as it is
+	var sync := Sync.new()
+	var fb := sync.split(String(out.code))
+	var bk := _block_texts(sync.split(base))
+	var gb := sync.split(mine)
+	var gk := _block_texts(gb)
+	var fk := _block_texts(fb)
+	if bk.is_empty() or gk.is_empty() or fk.is_empty():
+		return out   # a name twice: not merged
+	var parts := []   # [key, text]
+	for b in fb:
+		var k := _block_key(b)
+		if k != "" and bk.has(k) and bk[k] == String(b.text):
+			# not changed in the file: the graph's (gone if the graph no longer has it)
+			if gk.get(k, "") != bk[k] and _block_shown(k):
+				out.graph_only.append(k.get_slice(":", 1))
+			if gk.has(k):
+				parts.append([k, gk[k]])
+			continue
+		parts.append([k, String(b.text)])
+		if k != "" and bk.has(k) and gk.get(k, "") != bk[k] and _block_shown(k):
+			out.both.append(k.get_slice(":", 1))
+	# added in the graph since its last save: after the block it follows in the graph's code
+	var prev := ""
+	for b in gb:
+		var k := _block_key(b)
+		if k == "":
+			continue
+		if not bk.has(k) and not fk.has(k):
+			var at := parts.size()
+			for i in parts.size():
+				if parts[i][0] == prev and prev != "":
+					at = i + 1
+			parts.insert(at, [k, "\n" + String(b.text)])
+			if _block_shown(k):
+				out.graph_only.append(k.get_slice(":", 1))
+		prev = k
+	out.code = "\n".join(parts.map(func(p): return String(p[1])))
+	return out
+
+
+## kind:name of a block the merge goes by, or "" (blank lines, comments, regions, stray lines).
+func _block_key(b: Dictionary) -> String:
+	if String(b.kind) in ["blank", "comment", "region", "other", "graph"]:
+		return ""
+	return "%s:%s" % [b.kind, b.name]
+
+
+## Whether a merged block is worth naming in the preview (a function or event, a variable or signal of the person's).
+func _block_shown(key: String) -> bool:
+	var kind := key.get_slice(":", 0)
+	var nm := key.get_slice(":", 1)
+	return kind in ["func", "var", "signal", "enum"] and not nm.begins_with("__")
+
+
+## {kind:name: text} of a split's blocks; {} when a key is there twice.
+func _block_texts(blocks: Array) -> Dictionary:
+	var out := {}
+	for b in blocks:
+		var k := _block_key(b)
+		if k == "":
+			continue
+		if out.has(k):
+			return {}
+		out[k] = String(b.text)
+	return out
+
+
+const REIMPORT_KIND := {"function": "Function", "event": "Event", "custom": "Custom event", "lambda": "Inline function"}
+const REIMPORT_DECL := {"var": "Variable", "signal": "Signal", "enum": "Enum", "class": "Class line", "extends": "Parent class",
+	"class_name": "Class name", "tool": "Run in editor (@tool)", "carried": "Code carried over as written", "extra_code": "Code carried over as written"}
+
+
+## The words of the preview window, as BBCode: [text, line to show (0 if none)].
+func reimport_words(d: Dictionary, pv: Dictionary) -> Array:
+	var r: Dictionary = pv.result
+	var rep: Dictionary = r.report
+	var file := String(d.path).get_file()
+	var src := String(pv.code).split("\n")
+	var line_text := func(n: int) -> String:
+		return String(src[n - 1]).strip_edges().left(90) if n >= 1 and n <= src.size() else ""
+	var esc := func(s: String) -> String:
+		return s.replace("[", "[lb]")
+	var warn := "[color=#ffc552]"
+	var dim := "[color=#ffffff99]"
+	var t := PackedStringArray()
+	var show_line := 0
+	if not bool(r.ok):
+		t.append("[b]The code changed in %s can't be brought into the graph as it is.[/b] Nothing was changed." % file)
+		t.append("")
+		for x in rep.refused:
+			var n := int(x.get("line", 0))
+			if n > 0 and show_line == 0:
+				show_line = n
+			t.append("%s[b]%s[/b]  %s[/color]" % [warn, ("Line %d:" % n) if n > 0 else "Problem:", esc.call(String(x.reason))])
+		if not rep.first_difference.is_empty():
+			var f0: Dictionary = rep.first_difference[0]
+			if show_line == 0:
+				show_line = int(f0.get("line", 0))
+			t.append("")
+			t.append("First difference, at line %d%s:" % [int(f0.get("line", 0)), (" (in %s)" % f0.name) if String(f0.get("name", "")) != "" else ""])
+			t.append("    in the file:          [code]%s[/code]" % esc.call(String(f0.get("file", "")).strip_edges()))
+			t.append("    the graph would write: [code]%s[/code]" % esc.call(String(f0.get("graph", "")).strip_edges()))
+		t.append("")
+		t.append("%sFix the code (or undo the edit) and press Re-import Code again, or choose Keep Graph to keep the graph as it is.[/color]" % dim)
+		return ["\n".join(t), show_line]
+	t.append("Bring the code changed in [b]%s[/b] into the graph. Only what changed is rebuilt, as one step you can undo." % file)
+	t.append("")
+	t.append("[b]Functions and events[/b]")
+	var kept := 0
+	var listed := 0
+	for x in rep.functions:
+		var act := String(x.action)
+		if act == "kept":
+			kept += 1
+			continue
+		var what: String = REIMPORT_KIND.get(String(x.get("kind", "function")), "Function")
+		var nm := String(x.name)
+		var row := ""
+		match act:
+			"rebuilt": row = "rebuilt from the code"
+			"added": row = "added (new in the file)"
+			"removed": row = "removed (no longer in the file)"
+			"renamed": row = "renamed from %s" % String(x.get("old_name", ""))
+			"renamed+rebuilt": row = "renamed from %s, and rebuilt from the code" % String(x.get("old_name", ""))
+			_: row = act
+		listed += 1
+		if listed <= 14:
+			t.append("    %s [b]%s[/b]: %s" % [what, esc.call(nm), row])
+	if listed > 14:
+		t.append("    ... and %d more" % (listed - 14))
+	if listed == 0:
+		t.append("    No function or event changes.")
+	if kept > 0:
+		t.append("    %s%s[/color]" % [dim, "1 other function or event is unchanged." if kept == 1 else "%d other functions and events are unchanged." % kept])
+	if not rep.declarations.is_empty():
+		t.append("")
+		t.append("[b]Declarations[/b]")
+		for x in rep.declarations.slice(0, 12):
+			var k := "carried" if bool(x.get("carried", false)) else String(x.get("kind", ""))
+			var a := String(x.get("action", "rebuilt"))
+			var said := {"rebuilt": "changed", "added": "added", "removed": "removed"}.get(a, a) if a != "renamed" else "renamed from %s" % String(x.get("old_name", ""))
+			t.append("    %s [b]%s[/b]: %s" % [REIMPORT_DECL.get(k, k.capitalize()), esc.call(String(x.get("name", ""))), said])
+		if rep.declarations.size() > 12:
+			t.append("    ... and %d more" % (rep.declarations.size() - 12))
+	if not pv.graph_only.is_empty() or not pv.both.is_empty():
+		t.append("")
+		t.append("[b]Unsaved changes in the graph[/b]")
+		if not pv.graph_only.is_empty():
+			t.append("    Kept as they are in the graph (not changed in the file): %s." % esc.call(", ".join(pv.graph_only)))
+		if not pv.both.is_empty():
+			t.append("    %sChanged in both the graph and the file, so taken from the file (the graph's changes to these are lost): %s.[/color]" % [warn, esc.call(", ".join(pv.both))])
+	var notes := PackedStringArray()
+	if int(rep.comments_dropped) > 0:
+		var n := int(rep.comments_dropped)
+		notes.append("%s[b]%d hand-written comment%s %s not kept yet:[/b] %s from the file at the next save.[/color]" % [warn, n, "" if n == 1 else "s", "is" if n == 1 else "are", "it disappears" if n == 1 else "they disappear"])
+		for ln in rep.comment_lines.slice(0, 8):
+			notes.append("        line %d:  [code]%s[/code]" % [int(ln), esc.call(line_text.call(int(ln)))])
+			if show_line == 0:
+				show_line = int(ln)
+		if rep.comment_lines.size() > 8:
+			notes.append("        ... and %d more" % (rep.comment_lines.size() - 8))
+	if not rep.reformatted.is_empty():
+		var n: int = rep.reformatted.size()
+		notes.append("%s[b]%d line%s will be written in Schematic's style at the next save[/b] (same meaning):[/color]" % [warn, n, "" if n == 1 else "s"])
+		for x in rep.reformatted.slice(0, 3):
+			notes.append("        line %d:  [code]%s[/code]   becomes   [code]%s[/code]" % [int(x.line), esc.call(String(x.file).strip_edges()), esc.call(String(x.graph).strip_edges())])
+		if n > 3:
+			notes.append("        ... and %d more" % (n - 3))
+	for x in rep.renamed_locals:
+		notes.append("In %s, the local [b]%s[/b] is written [b]%s[/b] (another event has a local of that name)." % [esc.call(String(x.function)), esc.call(String(x.written)), esc.call(String(x.now))])
+	if int(rep.macros_expanded) > 0:
+		notes.append("%d function%s used a shared macro: rebuilt from the code, %s the macro's nodes in place of the macro." % [int(rep.macros_expanded), "" if int(rep.macros_expanded) == 1 else "s", "it has" if int(rep.macros_expanded) == 1 else "they have"])
+	if int(rep.code_node_lines) > 0:
+		notes.append("%d line%s stay%s as code nodes (Schematic has no nodes for %s yet)." % [int(rep.code_node_lines), "" if int(rep.code_node_lines) == 1 else "s", "s" if int(rep.code_node_lines) == 1 else "", "it" if int(rep.code_node_lines) == 1 else "them"])
+	for nt in rep.notes:
+		notes.append(esc.call(String(nt)))
+	if not notes.is_empty():
+		t.append("")
+		t.append("[b]Good to know[/b]")
+		for nt in notes:
+			t.append("    " + nt)
+	t.append("")
+	var rewrites: bool = int(rep.comments_dropped) > 0 or not rep.reformatted.is_empty() or not rep.renamed_locals.is_empty()
+	t.append("%sAfter Re-import the graph has unsaved changes; saving writes the file%s.[/color]" % [dim, " (with the changes listed above)" if rewrites else " (its code stays as it is)"])
+	return ["\n".join(t), show_line]
+
+
+func _show_reimport(d: Dictionary, pv: Dictionary) -> void:
+	if _reimport_dialog and is_instance_valid(_reimport_dialog):
+		_reimport_dialog.queue_free()
+	var ok := bool(pv.result.ok)
+	var dlg: AcceptDialog = ConfirmationDialog.new() if ok else AcceptDialog.new()
+	_reimport_dialog = dlg
+	dlg.name = "ReimportDialog"
+	dlg.title = "Re-import Code: %s" % String(d.path).get_file()
+	var words := reimport_words(d, pv)
+	var rt := RichTextLabel.new()
+	rt.name = "Words"
+	rt.bbcode_enabled = true
+	rt.fit_content = true
+	rt.selection_enabled = true
+	rt.custom_minimum_size = Vector2(760, 0)
+	rt.text = String(words[0])
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	# tall enough for the words (a wrapped line counts as more than one), up to a point; beyond that it scrolls
+	var rows := 0
+	var tags := RegEx.create_from_string("\\[[^\\]]*\\]")
+	for ln in String(words[0]).split("\n"):
+		rows += maxi(1, ceili(tags.sub(ln, "", true).length() / 82.0))
+	scroll.custom_minimum_size = Vector2(780, mini(540, 16 + 24 * rows))
+	scroll.add_child(rt)
+	dlg.add_child(scroll)
+	var line := int(words[1])
+	if ok:
+		dlg.ok_button_text = "Re-import"
+		(dlg as ConfirmationDialog).cancel_button_text = "Cancel"
+		dlg.confirmed.connect(func(): reimport_confirmed(d, pv))
+	else:
+		dlg.ok_button_text = "Close"
+		if line > 0:
+			var show_btn := dlg.add_button("Show Line %d" % line, false, "show_line")
+			show_btn.name = "ShowLine"
+			show_btn.tooltip_text = "Open the list of changes at this line"
+		dlg.custom_action.connect(func(action: StringName):
+			if action == &"show_line":
+				dlg.hide()
+				show_drift_changes(d, line))
+	dlg.visibility_changed.connect(func():
+		if not dlg.visible:
+			dlg.queue_free())
+	EditorInterface.get_base_control().add_child(dlg)
+	dlg.popup_centered()
+	dlg.get_ok_button().grab_focus.call_deferred()   # Re-import is one step that can be undone
+	# once laid out: as tall as the words really are (the estimate above only avoids a first frame that is too small)
+	get_tree().process_frame.connect(func():
+		if is_instance_valid(dlg) and is_instance_valid(rt) and rt.get_content_height() > 0:
+			scroll.custom_minimum_size.y = mini(540, rt.get_content_height() + 28)   # (+ the panel's margins)
+			dlg.reset_size()
+			dlg.move_to_center(), CONNECT_ONE_SHOT)
+
+
+## Re-import pressed in the preview. The file is read again: if it changed since the preview was made, the preview
+## is made again for what is there now (and nothing is applied); otherwise the re-import is applied.
+func reimport_confirmed(d: Dictionary, pv: Dictionary) -> bool:
+	if docs.find(d) < 0:
+		return false
+	var now := FileAccess.get_file_as_string(String(d.path))
+	if now != String(pv.text):
+		toast("%s changed again on disk since the preview: here is what Re-import Code would do now." % String(d.path).get_file())
+		if can_reimport(d):
+			_show_reimport.call_deferred(d, reimport_preview(d))
+		return false
+	return reimport_apply(d, now)
+
+
+## Brings `text` (the file's text, as read) into the document's graph as one undo step. False (with a toast) when the
+## re-import refuses it.
+func reimport_apply(d: Dictionary, text: String) -> bool:
+	var inp := _reimport_input(d, text)
+	var r: Dictionary = Sync.new().reimport(d.bp, String(inp.code), {"path": String(d.path)})
+	if not bool(r.ok):
+		var why: Array = r.report.refused
+		toast("Not re-imported: %s" % (String(why[0].reason) if not why.is_empty() else "the code could not be brought in"))
+		return false
+	var rep: Dictionary = r.report
+	var before_bp: Dictionary = d.bp.duplicate(true)
+	var after_bp: Dictionary = r.bp
+	var before_state := _disk_state(d)
+	var after_state := before_state.duplicate(true)
+	var code_hash := Model.code_hash(Model.code_part(text))
+	var graph_hash := Model.graph_part(text).md5_text()
+	# what is on disk is, from here on, the text the re-import read (time -1: the next look reads the file)
+	after_state.merge({"disk_code": code_hash, "disk_graph": graph_hash, "disk_now": [code_hash, graph_hash], "disk_time": -1,
+		"drift": "", "drift_keep": "", "drift_at_open": false}, true)
+	# the line maps of what the game runs: the file's code, which is the new graph's (comments aside)
+	var c := Compiler.new()
+	var new_code := c.compile(after_bp.duplicate(true))
+	after_state.merge({"code": new_code, "saved_lines": c.node_lines.duplicate(), "saved_map": c.line_map.duplicate(), "saved_pins": c.pin_exprs, "saved_blocks": c.block_lines}, true)
+	var dropped := _drop_debug_marks(d, rep.replaced, after_bp)
+	var gid := int(d.graph_id)
+	var ur := plugin.get_undo_redo() if plugin else null
+	if ur:
+		ur.create_action("Schematic: Re-import Code", UndoRedo.MERGE_DISABLE, self)
+		ur.add_do_method(self, "_reimport_restore", d.path, after_bp, after_state, before_state, gid)
+		ur.add_undo_method(self, "_reimport_restore", d.path, before_bp, before_state, after_state, gid)
+		ur.commit_action()
+	else:
+		_reimport_restore(d.path, after_bp, after_state, before_state, gid)
+	var did := PackedStringArray()
+	for x in rep.functions:
+		if String(x.action) != "kept":
+			did.append("%s %s" % [x.name, String(x.action).replace("+", " and ")])
+	var msg := "Code re-imported%s. Save to write the file." % ((": " + ", ".join(did.slice(0, 4)) + (" ..." if did.size() > 4 else "")) if not did.is_empty() else "")
+	if dropped[0] > 0:
+		msg += " %d breakpoint%s on rebuilt nodes %s removed." % [dropped[0], "" if dropped[0] == 1 else "s", "was" if dropped[0] == 1 else "were"]
+	if dropped[1] > 0:
+		msg += " %d watch%s on rebuilt nodes %s removed." % [dropped[1], "" if dropped[1] == 1 else "es", "was" if dropped[1] == 1 else "were"]
+	toast(msg)
+	return true
+
+
+const DISK_KEYS := ["disk_code", "disk_graph", "disk_now", "disk_time", "drift", "drift_keep", "drift_at_open", "code", "saved_lines", "saved_map", "saved_pins", "saved_blocks"]
+
+
+## What a document knows about its file on disk (and the line maps of the code there), for the undo step.
+func _disk_state(d: Dictionary) -> Dictionary:
+	var out := {}
+	for k in DISK_KEYS:
+		if d.has(k):
+			out[k] = d[k].duplicate(true) if (typeof(d[k]) == TYPE_DICTIONARY or typeof(d[k]) == TYPE_ARRAY) else d[k]
+	return out
+
+
+## The do and undo of Re-import Code: puts `bp` in and, unless the file was written since (the record of the disk is not
+## `other`, the one the step started from), the record of what is on disk that goes with it.
+func _reimport_restore(path: String, bp: Dictionary, state: Dictionary, other: Dictionary, gid: int) -> void:
+	var d := _find_doc(path)
+	if d.is_empty():
+		return
+	d.bp = bp.duplicate(true)
+	d.dirty = true
+	if String(d.get("disk_code", "")) == String(other.get("disk_code", "")) and String(d.get("disk_graph", "")) == String(other.get("disk_graph", "")):
+		for k in state:
+			d[k] = state[k].duplicate(true) if (typeof(state[k]) == TYPE_DICTIONARY or typeof(state[k]) == TYPE_ARRAY) else state[k]
+	if Model.find_graph(d.bp, gid).is_empty():
+		gid = 0
+		for g in d.bp.graphs:
+			if String(g.kind) == "event":
+				gid = int(g.id)
+				break
+		if gid == 0 and not d.bp.graphs.is_empty():
+			gid = int(d.bp.graphs[0].id)
+	d.graph_id = gid
+	_check(d)
+	_drift_check(d, true)
+	if d == doc:
+		if _view:
+			for c in _view.get_children():
+				if c is GraphElement:
+					c.selected = false
+		_sel = {"kind": "class"}
+		_refresh_all()
+	else:
+		_refresh_doc_tabs()
+
+
+## Removes the breakpoints and pin watches on nodes a re-import replaced (listed in `replaced`, or in a graph that is
+## gone). Returns [breakpoints removed, watches removed].
+func _drop_debug_marks(d: Dictionary, replaced: Dictionary, new_bp: Dictionary) -> Array:
+	var path := String(d.path)
+	var gone := func(key: String) -> bool:
+		var parts := key.split(":")
+		if parts.size() != 2:
+			return false
+		var g := int(parts[0])
+		if Model.find_graph(new_bp, g).is_empty():
+			return true
+		for k in replaced:
+			if int(k) == g:
+				return replaced[k].any(func(id): return int(id) == int(parts[1]))
+		return false
+	var all := _all_breaks()
+	var list: Array = all.get(path, []).duplicate()
+	var keep := []
+	var n_breaks := 0
+	for key in list:
+		if gone.call(String(key)):
+			n_breaks += 1
+			var line := _node_line(d, String(key))
+			if debugger and line != -1:
+				for s in debugger.get_sessions():
+					if s.is_active():
+						s.set_breakpoint(path, line, false)
+		else:
+			keep.append(key)
+	if n_breaks > 0:
+		if keep.is_empty():
+			all.erase(path)
+		else:
+			all[path] = keep
+		EditorInterface.get_editor_settings().set_project_metadata("schematics", "breakpoints", all)
+	var n_watches := 0
+	var watches: Array = debug_panel.watches if debug_panel else []
+	var left := watches.filter(func(w): return not (String(w.get("path", "")) == path and gone.call(String(w.get("key", "")))))
+	n_watches = watches.size() - left.size()
+	if n_watches > 0 and debug_panel:
+		debug_panel.watches = left
+		debug_panel._save_watches()
+	# the last values the running game showed on those nodes mean nothing now
+	if _watch.has(path):
+		for k in _watch[path].keys():
+			if gone.call("%d:%d" % [int(k) / 100000, int(k) % 100000]):
+				_watch[path].erase(k)
+	return [n_breaks, n_watches]
+
+
+## What the plugin does after the kits were loaded again: compile-check every open document (nodes of a kit that
+## went away turn into placeholders, nodes of one that came back turn normal) and redraw.
+func recheck_all() -> void:
+	for d in docs:
+		_check(d)
+	_refresh_all()
+
+
+var _kits_dialog: AcceptDialog
+var _kits_tree: Tree
+
+
+## Kits...: the addons that ship nodes (docs/KITS.md), whether each is active or why not, and the problems found
+## while loading them. Built when opened. Reload Kits asks the plugin to load them all again.
+func show_kits_dialog() -> void:
+	if _kits_dialog and is_instance_valid(_kits_dialog):
+		_kits_dialog.queue_free()
+	var dlg := AcceptDialog.new()
+	_kits_dialog = dlg
+	dlg.title = "Kits"
+	dlg.ok_button_text = "Close"
+	var box := VBoxContainer.new()
+	dlg.add_child(box)
+	var head := Label.new()
+	head.text = "Addons can ship nodes for Schematic (res://addons/<addon>/schematic_kit.gd)."
+	head.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
+	box.add_child(head)
+	_kits_tree = Tree.new()
+	_kits_tree.name = "KitList"
+	_kits_tree.hide_root = true
+	_kits_tree.custom_minimum_size = Vector2(760, 320)
+	_kits_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	box.add_child(_kits_tree)
+	var reload := Button.new()
+	reload.name = "ReloadKits"
+	reload.text = "Reload Kits"
+	reload.icon = W.icon("Reload")
+	reload.tooltip_text = "Load every kit again, as happens when an addon is switched on or off or a kit file changes"
+	reload.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	reload.pressed.connect(func():
+		if plugin:
+			plugin.reload_kits()
+		else:
+			R.reload_kits()
+		_fill_kits_tree())
+	box.add_child(reload)
+	_fill_kits_tree()
+	dlg.visibility_changed.connect(func():
+		if not dlg.visible:
+			dlg.queue_free())
+	EditorInterface.get_base_control().add_child(dlg)
+	dlg.popup_centered()
+
+
+func _fill_kits_tree() -> void:
+	var tree := _kits_tree
+	if tree == null or not is_instance_valid(tree):
+		return
+	tree.clear()
+	var root := tree.create_item()
+	var ov := Kits.overview()
+	var good := Color(0.55, 0.85, 0.6)
+	var dim := Color(1, 1, 1, 0.55)
+	var bad := Color(0.95, 0.6, 0.45)
+	var shown := {}
+	for k in ov.kits:
+		var it := tree.create_item(root)
+		var line := "%s" % k.addon
+		match String(k.state):
+			"active":
+				line += "   -   %s%s   -   %d node%s   -   active" % [k.name, (" " + k.version) if String(k.version) != "" else "", k.nodes, "" if int(k.nodes) == 1 else "s"]
+				it.set_custom_color(0, good)
+			"disabled":
+				line += "   -   not active: " + String(k.reason)
+				it.set_custom_color(0, dim)
+			_:
+				line += "   -   not active: " + String(k.reason)
+				it.set_custom_color(0, bad)
+		it.set_text(0, line)
+		it.set_autowrap_mode(0, TextServer.AUTOWRAP_WORD_SMART)
+		shown[k.addon] = true
+		for p in R.kit_problems:
+			if String(p.addon) != String(k.addon):
+				continue
+			if String(p.template) == "" and String(k.state) == "failed":
+				continue   # already the state line
+			var pi := tree.create_item(it)
+			pi.set_text(0, ("Node '%s': " % p.template if String(p.template) != "" else "") + String(p.problem))
+			pi.set_autowrap_mode(0, TextServer.AUTOWRAP_WORD_SMART)
+			pi.set_custom_color(0, bad)
+			pi.set_tooltip_text(0, String(p.path))
+		var fi := tree.create_item(it)
+		fi.set_text(0, String(k.path))
+		fi.set_custom_color(0, dim)
+	for p in R.kit_problems:
+		if not shown.has(String(p.addon)):
+			var it := tree.create_item(root)
+			it.set_text(0, "%s: %s   (%s)" % [p.addon, p.problem, p.path])
+			it.set_custom_color(0, bad)
+	if not ov.builtin.is_empty():
+		var bi := tree.create_item(root)
+		bi.set_text(0, "Built in   -   %s   -   %d nodes   -   active" % [", ".join(ov.builtin), ov.builtin_nodes])
+		bi.set_custom_color(0, good)
+	if ov.kits.is_empty() and ov.builtin.is_empty():
+		var none := tree.create_item(root)
+		none.set_text(0, "No kits found.")
+		none.set_custom_color(0, dim)
 
 
 func _tell_not_written(paths: Array, side_effect: bool) -> void:
@@ -1188,10 +1801,9 @@ func _build_drift_bar(parent: Control) -> void:
 		_drift_btns[key] = b
 	add.call("show", "Show Changes", "List the lines where the code on disk and the graph's code differ", func(): show_drift_changes(doc))
 	add.call("keep", "Keep Graph", "The graph is right: the next save replaces the file's code with the graph's", func(): drift_keep(doc))
-	add.call("reimport", "Re-import Code", "Coming in a later version: bring the changed code into the graph", func(): pass)
+	add.call("reimport", "Re-import Code", "Bring the changed code into the graph. Only the functions that changed are rebuilt.", func(): reimport_dialog(doc))
 	add.call("reload", "Reload From Disk", "Load the graph that is in the file on disk now, in place of the one here", func(): drift_reload(doc))
 	add.call("mine", "Keep Mine", "The graph here is right: the next save overwrites the file on disk", func(): drift_keep(doc))
-	_drift_btns.reimport.disabled = true
 
 
 func _drift_button_box() -> StyleBoxFlat:
@@ -1281,10 +1893,14 @@ func toggle_breakpoints(ids: Array) -> void:
 			list.append(key)
 		else:
 			list.erase(key)
-		if debugger and line != -1:
+		# The running game has the code it started with: its line for the node, when that code's records are known
+		# (a node added since is not in it: the breakpoint is kept for the next run).
+		var run := _run_rec(String(doc.path))
+		var run_line := int(run.lines.get(key, -1)) if bool(run.get("exact", false)) else line
+		if debugger and run_line != -1:
 			for s in debugger.get_sessions():
 				if s.is_active():
-					s.set_breakpoint(doc.path, line, enable)
+					s.set_breakpoint(doc.path, run_line, enable)
 	if list.is_empty():
 		all.erase(doc.path)
 	else:
@@ -1322,7 +1938,8 @@ func debug_goto(path: String, line: int) -> void:
 func debug_show(path: String, line: int) -> void:
 	if debug_info(path).is_empty() or not open_schematic(path):
 		return
-	var map: Dictionary = doc.get("saved_map", doc.line_map)
+	_exec = [path, line]   # (a line of the code the game runs: the Generated Code tab shows that code while it runs)
+	var map: Dictionary = debug_info(path).get("map", doc.get("saved_map", doc.line_map))
 	var where: Array = []
 	for back in 40:
 		if map.has(line - back):
@@ -1331,13 +1948,19 @@ func debug_show(path: String, line: int) -> void:
 	EditorInterface.set_main_screen_editor.call_deferred("Schematic")
 	if where.is_empty() or int(where[1]) == 0:
 		toast("Stopped in generated line %d (no single node maps to it)" % line)
+		_update_code()
+		_set_code_label("")
+		_exec_scroll.call_deferred()
 		return
 	_paused = [path, int(where[0]), int(where[1])]
 	doc.graph_id = int(where[0])
 	_refresh_graph()
 	_refresh_graph_tabs()
 	_refresh_members()
+	_update_code()
+	_set_code_label("")
 	_view.focus_node.call_deferred(int(where[1]))
+	_exec_scroll.call_deferred()   # (after focus_node, whose selection scrolls to the node's own lines)
 
 
 var _recompiling := false
@@ -1380,6 +2003,10 @@ func debug_flow(path: String, keys: Array, values: Dictionary = {}, edges: Array
 ## {map: line -> [graph, node], pins: function -> "graph:node" -> {pin: expression},
 ## blocks: [[first line, last line, function]], bp}. Empty for a script that is not a Schematic.
 func debug_info(path: String) -> Dictionary:
+	# While the game runs: the records of the code it started with, when they are known exactly (see _run_rec).
+	var run := _run_rec(path)
+	if bool(run.get("exact", false)):
+		return {"map": run.map, "pins": run.pins, "blocks": run.blocks, "bp": run.bp}
 	var d := _find_doc(path)
 	if not d.is_empty():
 		return {"map": d.get("saved_map", d.line_map), "pins": d.get("saved_pins", {}), "blocks": d.get("saved_blocks", []), "bp": d.bp}
@@ -1460,11 +2087,39 @@ func debug_continue() -> void:
 
 
 ## A new game session: values from the last run no longer mean anything.
-func debug_started() -> void:
+func debug_started(session_id := -1) -> void:
 	_watch.clear()
 	_debug_cache.clear()
+	# What the game runs is each file as it is now (open schematics were saved before it started, unless refused).
+	# Schematic writes files directly, so a save made while the game runs is not loaded into it: keep this text.
+	_sessions[session_id] = true
+	_game_on = true
+	_run_texts.clear()
+	_run_recs.clear()
+	_run_gen += 1
+	_exec = []
+	for d in docs:
+		if FileAccess.file_exists(String(d.path)):
+			_run_texts[String(d.path)] = FileAccess.get_file_as_string(String(d.path))
 	if not doc.is_empty():
 		_refresh_graph()
+		_update_code()
+		_set_code_label("")
+
+
+## A game session ended. When it was the last one, the Generated Code tab goes back to the graph's current code.
+func debug_ended(session_id := -1) -> void:
+	_sessions.erase(session_id)
+	if not _sessions.is_empty():
+		return
+	_game_on = false
+	_run_texts.clear()
+	_run_recs.clear()
+	_run_gen += 1
+	_exec = []
+	if not doc.is_empty():
+		_update_code()
+		_set_code_label("")
 
 
 func _graph_watch() -> Dictionary:
@@ -1486,11 +2141,14 @@ func _graph_watch() -> Dictionary:
 
 
 func debug_resume() -> void:
-	if _paused.is_empty():
+	if _paused.is_empty() and _exec.is_empty():
 		return
 	_paused = []
+	_exec = []
 	if not doc.is_empty():
 		_refresh_graph()
+		_link_apply()
+		_set_code_label("")
 
 
 # ---------------------------------------------------------------- refresh
@@ -1706,7 +2364,10 @@ func _on_result_activated(i: int) -> void:
 func _update_code(scroll := false) -> void:
 	if _code == null or doc.is_empty() or _right_tabs.current_tab != 1:
 		return
-	var text := String(doc.get("preview", doc.code))
+	var shown := _shown()
+	var text := String(shown.text)
+	_code_notice.text = String(shown.notice)
+	_code_notice.visible = String(shown.notice) != ""
 	if _code.text != text:
 		var v := _code.scroll_vertical
 		var at_line := _code.get_caret_line()
@@ -1717,9 +2378,185 @@ func _update_code(scroll := false) -> void:
 		_code.set_caret_line(mini(at_line, _code.get_line_count() - 1), false)
 		_code.set_caret_column(at_col, false)
 		_marked.clear()
+		_exec_shown = -1
+		_code.clear_executing_lines()
 		for i in _code.get_line_count():
 			_code.set_line_background_color(i, LINK_NONE)
 	_link_apply(scroll)
+
+
+# ---------------------------------------------------------------- the code the running game runs
+# The game runs each file as it was when it started. While it runs, the Generated Code tab shows that code: when it is
+# not the graph's current code (unsaved changes, a save made since, a file changed outside Schematic) a notice above
+# the code says so, the line <-> node link works from the records of the running code (for the nodes still in the
+# graph), and the line the game is stopped at is marked. Nothing here applies while no game runs.
+
+const EXEC_BG := Color(0.25, 0.85, 0.5, 0.3)   # the line the game is stopped at (selection highlights are amber)
+var _game_on := false
+var _sessions: Dictionary = {}     # debugger session ids that have started and not stopped
+var _run_texts: Dictionary = {}    # path -> the file's whole text when the game started
+var _run_recs: Dictionary = {}     # path -> _run_rec()
+var _run_gen := 0
+var _exec: Array = []              # [path, line] the line of the running code the game is stopped at (the frame shown)
+var _exec_shown := -1              # the code view line (0-based) marked as executing right now
+var _shown_cache: Dictionary = {}
+var _painting_gutter := false
+var _exec_scroll_serial := 0
+
+
+## What the game runs for `path`: {code, bp, exact, link, lines, map, pins, blocks}. The file holds its own graph, so
+## compiling that graph gives the code and every record of it; `exact` is true when that compile is the file's code
+## (then link, lines (node key -> line), map, pins and blocks are those records). It is false for a file whose code was
+## changed outside Schematic: then only the code is known. {} while no game runs, or for a file that is not a Schematic.
+func _run_rec(path: String) -> Dictionary:
+	if not _game_on or path == "":
+		return {}
+	if _run_recs.has(path):
+		return _run_recs[path]
+	var text := String(_run_texts.get(path, ""))
+	if text == "" and FileAccess.file_exists(path):
+		text = FileAccess.get_file_as_string(path)   # (a schematic first looked at during the run: as it is now)
+		_run_texts[path] = text
+	var rec := {}
+	var bp := Model.parse_source(text) if text != "" else {}
+	if not bp.is_empty():
+		var cut := Model.graph_block_at(text)
+		var code := (text.substr(0, cut) if cut > 0 else text).replace("\r\n", "\n").strip_edges(false, true) + "\n"
+		rec = {"code": code, "bp": bp, "exact": false, "link": null, "lines": {}, "map": {}, "pins": {}, "blocks": []}
+		var c := Compiler.new()
+		var made := c.compile(bp.duplicate(true))
+		if Model.normalize_code(made) == Model.normalize_code(code):
+			rec.merge({"exact": true, "link": CodeLink.new().build(c, made), "lines": c.node_lines.duplicate(),
+				"map": c.line_map.duplicate(), "pins": c.pin_exprs, "blocks": c.block_lines}, true)
+	_run_recs[path] = rec
+	return rec
+
+
+## What the Generated Code tab shows for the open document: {text, running, differs, notice, rec}. The graph's current
+## code, unless the game is running code that is not that: then the running code (`differs`) and the notice.
+func _shown() -> Dictionary:
+	var preview := String(doc.get("preview", doc.code))
+	var key := [_run_gen, String(doc.path), preview.hash(), bool(doc.dirty), String(doc.get("drift", ""))]
+	if _shown_cache.get("key") == key:
+		return _shown_cache.out
+	var rec := _run_rec(String(doc.path))
+	var out := {"text": preview, "running": not rec.is_empty(), "differs": false, "notice": "", "rec": rec}
+	if not rec.is_empty() and Model.normalize_code(String(rec.code)) != Model.normalize_code(preview):
+		out.differs = true
+		out.text = String(rec.code)
+		var why := "The graph was saved after the game started."
+		if not bool(rec.exact) or String(doc.get("drift", "")) in ["code", "replaced"]:
+			why = "The file was changed outside Schematic."
+		elif bool(doc.dirty):
+			why = "The graph has unsaved changes."
+		out.notice = "Showing the saved code the game is running. " + why
+	_shown_cache = {"key": key, "out": out}
+	return out
+
+
+## The line <-> node lookup of what the code view shows (null when the running code has no records).
+func _shown_link() -> Object:
+	var s := _shown()
+	return s.rec.get("link") if bool(s.differs) else _get_link()
+
+
+## The code view line (0-based) the game is stopped at, -1 when it is not stopped in the open document. With Show Flow
+## and Values on, a node's first line is its `__sc_trace(...)` call, which is where its breakpoint stops: the line
+## marked is then the node's own statement after it.
+func _exec_line0() -> int:
+	if _exec.size() != 2 or doc.is_empty() or String(_exec[0]) != String(doc.path):
+		return -1
+	var line := int(_exec[1])
+	var link := _shown_link()
+	if link != null and link.kind_of_line(line) == "trace":
+		var at: Array = link.nodes_at(line)
+		if not at.is_empty():
+			for l in link.own_lines_of(int(at[0][0]), int(at[0][1])):
+				if l > line and link.kind_of_line(l) != "trace":
+					return l - 1
+	return line - 1
+
+
+## Marks the line the game is stopped at: the code view's executing arrow and a background of its own. On the lines a
+## selection paints, the stop line keeps its own colour.
+func _exec_paint() -> void:
+	var want := _exec_line0()
+	var count := _code.get_line_count()
+	if _exec_shown != want and _exec_shown >= 0 and _exec_shown < count:
+		_code.set_line_as_executing(_exec_shown, false)
+		_code.set_line_background_color(_exec_shown, _marked.get(_exec_shown, LINK_NONE))
+	var moved := _exec_shown != want
+	_exec_shown = want if want < count else -1
+	if _exec_shown >= 0:
+		_code.set_line_as_executing(_exec_shown, true)
+		_code.set_line_background_color(_exec_shown, EXEC_BG)
+		if moved:
+			_exec_scroll.call_deferred()   # (it follows each step)
+
+
+## Scrolls the line the game is stopped at into view (a few lines of context above it), when it is not.
+func _exec_scroll() -> void:
+	# (a stop can hide the Schematic screen for a moment: a scroll made while the view is hidden, or in the frame it is
+	# shown again before its layout, is lost, so wait until it is visible and laid out)
+	var serial := _exec_scroll_serial + 1
+	_exec_scroll_serial = serial
+	var waited := 0
+	while is_inside_tree() and _code != null and not _code.is_visible_in_tree() and waited < 120:
+		await get_tree().process_frame
+		waited += 1
+	if not is_inside_tree():
+		return
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if serial != _exec_scroll_serial:
+		return   # (a later call does it)
+	var l := _exec_line0()
+	if l < 0 or _code == null or doc.is_empty() or _right_tabs.current_tab != 1 or l >= _code.get_line_count():
+		return
+	var top := _code.get_first_visible_line()
+	var bottom := top + maxi(_code.get_visible_line_count() - 1, 0)
+	if l < top + 2 or l > bottom - 2:
+		_code.set_line_as_first_visible(maxi(l - 3, 0))
+
+
+## Puts the gutter's breakpoint marks on the lines of the nodes that have a breakpoint, in the code shown.
+func _paint_breakpoints() -> void:
+	_painting_gutter = true
+	_code.clear_breakpointed_lines()
+	var s := _shown()
+	var lines: Dictionary = s.rec.get("lines", {}) if bool(s.differs) else doc.get("node_lines", {})
+	var count := _code.get_line_count()
+	for key in _breaks(String(doc.path)):
+		var l := int(lines.get(key, 0)) - 1
+		if l >= 0 and l < count:
+			_code.set_line_as_breakpoint(l, true)
+	_painting_gutter = false
+
+
+## A click in the code view's breakpoint gutter: toggles the breakpoint of the node that wrote that line, as F9 on
+## that node does. The marks are then put back to what the breakpoints are.
+func _on_code_breakpoint(line0: int) -> void:
+	if _painting_gutter or doc.is_empty():
+		return
+	var link := _shown_link()
+	var at: Array = link.nodes_at(line0 + 1) if link != null else []
+	if at.is_empty():
+		toast("Breakpoints go on nodes: no node wrote line %d." % (line0 + 1) if link != null else "This code was changed outside Schematic: its lines are not linked to nodes.")
+	else:
+		var gid := int(at[0][0])
+		var nid := int(at[0][1])
+		if Model.find_node(Model.find_graph(doc.bp, gid), nid).is_empty():
+			toast("The node that wrote line %d is no longer in the graph." % (line0 + 1))
+		else:
+			if gid != int(doc.graph_id):
+				doc.graph_id = gid
+				_refresh_graph()
+				_refresh_members()
+				_refresh_graph_tabs()
+			toggle_breakpoints([nid])
+	(func():
+		if _code != null and not doc.is_empty():
+			_paint_breakpoints()).call_deferred()   # (the gutter has set its own mark after this signal)
 
 
 # ---------------------------------------------------------------- code <-> nodes
@@ -1745,9 +2582,10 @@ func _hold_guard() -> void:
 			_guarding = false, CONNECT_ONE_SHOT)
 
 
-## The link works unless the game is stopped at a node: then the debugger decides what is shown.
+## The link works whenever a document is open, also while the game runs or is stopped at a node (it never touches the
+## game: a clicked line selects a node, nothing more).
 func _link_active() -> bool:
-	return not doc.is_empty() and _paused.size() != 3
+	return not doc.is_empty()
 
 
 ## The line <-> node lookup of the open document's current compile. Built the first time it is needed after a compile.
@@ -1780,15 +2618,37 @@ func _link_apply(scroll := false) -> void:
 	_clear_marks()
 	if _code == null or _view == null or doc.is_empty() or _right_tabs.current_tab != 1 or not _link_active():
 		return
+	_link_paint(scroll)
+	_paint_breakpoints()
+	_exec_paint()
+	if scroll and _marked.is_empty():
+		_exec_scroll()
+
+
+func _link_paint(scroll: bool) -> void:
 	var ids: Array = _view.selected_ids()
 	if ids.is_empty():
 		return
-	var link := _get_link()
+	var s := _shown()
+	var link := _shown_link()
 	if link == null:
+		if bool(s.differs):
+			_set_code_label("The code the game runs was changed outside Schematic: its lines are not linked to nodes.")
 		return
 	link_stats["applies"] = int(link_stats.applies) + 1
 	var gid := int(doc.graph_id)
 	var count := _code.get_line_count()
+	if bool(s.differs):
+		# nodes of the graph on screen that the running code does not have (added since it was saved)
+		var run_g := Model.find_graph(s.rec.bp, gid)
+		var missing := []
+		for id in ids:
+			if Model.find_node(run_g, int(id)).is_empty():
+				var n := Model.find_node(cur_graph(), int(id))
+				missing.append(String(R.describe(n, doc.bp, cur_graph()).title) if not n.is_empty() else "Node")
+		if not missing.is_empty():
+			_set_code_label("%s: not in the code the game is running (%s)." % [", ".join(missing),
+				"added since the game started" if not bool(doc.dirty) else "the graph has unsaved changes"])
 	for id in ids:
 		for line in link.lines_of(gid, int(id)):
 			if line - 1 < count and not _marked.has(line - 1):
@@ -1820,9 +2680,23 @@ func _link_refresh_soon() -> void:
 
 
 func _set_code_label(text: String) -> void:
+	if text == "":
+		text = _idle_label()
 	if _code_label:
 		_code_label.text = text
 		_code_label.tooltip_text = text
+
+
+## What the label under the code says when no line was clicked: nothing, unless a game is running.
+func _idle_label() -> String:
+	if doc.is_empty() or not _game_on:
+		return ""
+	if _exec.size() == 2 and String(_exec[0]) == String(doc.path):
+		var title := debug_node_title(String(doc.path), int(_paused[1]), int(_paused[2])) if _paused.size() == 3 and String(_paused[0]) == String(doc.path) else ""
+		return "Game stopped at line %d%s." % [_exec_line0() + 1, (": " + title) if title != "" else ""]
+	if _run_rec(String(doc.path)).is_empty():
+		return "The game is running."
+	return "The game is running: this is the code it runs (%s)." % String(doc.path).get_file()
 
 
 ## The caret moved in the code view. A click, the arrow keys and Page Down all come here; the line it rests on after
@@ -1844,20 +2718,34 @@ func _on_code_caret() -> void:
 ## Selects, in the graph, what wrote the clicked line (0-based `line0`) and marks the nodes whose values feed it;
 ## shows the other graph first when the line belongs to one. A line no node wrote selects nothing and is named.
 func _code_line_clicked(line0: int) -> void:
-	var link := _get_link()
-	if link == null or _view == null:
+	if _view == null:
 		return
+	var s := _shown()
+	var link := _shown_link()
 	var line := line0 + 1
+	if link == null:
+		if bool(s.differs):
+			link_stats["caret_acts"] = int(link_stats.caret_acts) + 1
+			_hold_guard()
+			_view.show_selection([], [], false)
+			_set_code_label("Line %d: the code the game runs was changed outside Schematic, so its lines are not linked to nodes." % line)
+		return
 	link_stats["caret_acts"] = int(link_stats.caret_acts) + 1
+	var src_bp: Dictionary = s.rec.bp if bool(s.differs) else doc.bp   # (the graph the shown code was compiled from)
 	var nodes: Array = link.nodes_at(line)
 	var kind: String = link.kind_of_line(line)
 	if nodes.is_empty() and kind == "function":
-		var fg := Model.find_graph(doc.bp, link.graph_of_line(line))
+		var fg := Model.find_graph(src_bp, link.graph_of_line(line))
 		for n in fg.get("nodes", []):
 			if String(n.kind) == "fn_entry":
 				nodes = [[int(fg.id), int(n.id)]]
 				break
 	_hold_guard()
+	if not nodes.is_empty() and Model.find_node(Model.find_graph(doc.bp, int(nodes[0][0])), int(nodes[0][1])).is_empty():
+		# running code whose node was deleted from the graph since
+		_view.show_selection([], [], false)
+		_set_code_label("Line %d: written by a node that is no longer in the graph." % line)
+		return
 	if nodes.is_empty():
 		_view.show_selection([], [], false)
 		var what: String = CodeLink.LABELS.get(kind, "")
@@ -1881,7 +2769,7 @@ func _code_line_clicked(line0: int) -> void:
 	var n := Model.find_node(g, int(nodes[0][1]))
 	if not n.is_empty():
 		title = String(R.describe(n, doc.bp, g).title)
-	_set_code_label("Line %d: %s" % [line, title if title != "" else "Node"])
+	_set_code_label(("Line %d: Comment on %s" if kind == "comment" else "Line %d: %s") % [line, title if title != "" else "Node"])
 
 
 func _find_in_schematic() -> void:
@@ -1896,7 +2784,7 @@ func _find_in_schematic() -> void:
 				label = String(d.outs[0].name)
 			if n.kind == "comment":
 				label = "Comment: " + label
-			items.append({"label": "%s   (%s)" % [label, g.name], "value": [int(g.id), int(n.id)]})
+			items.append({"label": "%s   (%s)%s" % [label, g.name, NodeVisual.comment_digest(n.p)], "value": [int(g.id), int(n.id)]})   # (the comment's words are in the label, so they are searched)
 	W.popup_search(_graph_tabs, items, func(v):
 		doc.graph_id = v[0]
 		_refresh_graph()
@@ -1972,7 +2860,7 @@ func all_schematic_nodes() -> Array:
 					label = String(nd.outs[0].name)
 				if n.kind == "comment":
 					label = "Comment: " + label
-				items.append({"label": "%s   (%s > %s)" % [label, path.get_file().get_basename(), g.name], "value": [path, int(g.id), int(n.id)]})
+				items.append({"label": "%s   (%s > %s)%s" % [label, path.get_file().get_basename(), g.name, NodeVisual.comment_digest(n.p)], "value": [path, int(g.id), int(n.id)]})
 	return items
 
 
@@ -2601,6 +3489,93 @@ func _cat_add(control: Control) -> void:
 	_cat_body.add_child(m)
 
 
+## Right-click > Add Comment / Edit Comment: selects the node and puts the cursor in its Comment box.
+func edit_node_note(nid: int) -> void:
+	_select({"kind": "node", "id": nid}, false)
+	focus_details()
+	for te in _details.find_children("*", "TextEdit", true, false):
+		if te.has_meta("node_note"):
+			te.grab_focus()
+			te.select_all()
+
+
+## A multi-line text box for a Details row; `on_commit(text)` runs when it loses focus with changed text.
+func _text_box(text: String, on_commit: Callable) -> TextEdit:
+	var te := TextEdit.new()
+	te.text = text
+	te.custom_minimum_size = Vector2(0, 66)
+	te.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	te.scroll_fit_content_height = true
+	te.add_theme_font_size_override("font_size", 13)
+	var shown := [text]   # (what the box held when last committed: the panel is not rebuilt after an edit)
+	te.focus_exited.connect(func():
+		if te.text != shown[0]:
+			shown[0] = te.text
+			on_commit.call(te.text))
+	return te
+
+
+## A one-line box for a Details row that, like _text_box, commits when it loses focus.
+func _live_line(text: String, on_commit: Callable) -> LineEdit:
+	var le := LineEdit.new()
+	le.text = text
+	var shown := [text]
+	le.text_submitted.connect(func(_t): le.release_focus())
+	le.focus_exited.connect(func():
+		if le.text != shown[0]:
+			shown[0] = le.text
+			on_commit.call(le.text))
+	return le
+
+
+## What the Comment box of a node, variable or signal writes: `holder.note` made from the text by
+## NodeVisual.note_from_text (so lines left alone stay as they were), or no note for an empty box. One undo step.
+func set_note(holder: Dictionary, text: String) -> void:
+	var made := NodeVisual.note_from_text(holder.get("note", []), text)
+	if made == holder.get("note", []) or (made.is_empty() and not holder.has("note")):
+		return
+	mutate("Edit Comment", func():
+		if made.is_empty():
+			holder.erase("note")
+		else:
+			holder["note"] = made)
+
+
+## The same for the comment at the end of the statement's line (`tail`).
+func set_tail(holder: Dictionary, text: String) -> void:
+	var made := NodeVisual.tail_from_text(String(holder.get("tail", "")), text)
+	if made == String(holder.get("tail", "")):
+		return
+	mutate("Edit Comment After the Line", func():
+		if made == "":
+			holder.erase("tail")
+		else:
+			holder["tail"] = made)
+
+
+## The Details rows of a node's comments: the `#` lines above its statement and the comment at the end of its line.
+## (An entry node's are its function's.) What a node of a hand-made graph gets here is written the same way.
+func _comment_rows(n: Dictionary) -> void:
+	var p: Dictionary = n.p
+	_section("Comment")
+	var box := _text_box("\n".join(NodeVisual.note_plain(p.get("note", []))), func(t: String): set_note(p, t))
+	box.set_meta("node_note", true)
+	box.placeholder_text = "Written as # lines above this node's line of code"
+	_row("Comment (# above the line)", box, "One comment per line, without the #. Written into the code above this node's line, at the same indentation; empty removes it. A line you begin with # is written as typed (## stays ##).")
+	var tl := _live_line(NodeVisual.tail_plain(String(p.get("tail", ""))), func(t: String): set_tail(p, t))
+	tl.set_meta("node_tail", true)
+	tl.placeholder_text = "Written at the end of the node's line"
+	_row("Comment after the line", tl, "Written at the end of this node's line of code, after two spaces and a #.")
+
+
+## The Comment box of a variable or a signal: its `note`, the # lines written above its declaration.
+func _member_note_row(holder: Dictionary) -> void:
+	var box := _text_box("\n".join(NodeVisual.note_plain(holder.get("note", []))), func(t: String): set_note(holder, t))
+	box.set_meta("node_note", true)
+	box.placeholder_text = "Written as # lines above the declaration"
+	_row("Comment (# above the line)", box, "One comment per line, without the #. Written into the code above the declaration; empty removes it. (The Description is the ## line Godot shows as a tooltip.)")
+
+
 ## One Details row: name on the left, value on the right, a hairline under it.
 func edit_node_comment(nid: int) -> void:
 	_select({"kind": "node", "id": nid}, false)
@@ -2631,6 +3606,10 @@ func _row(label: String, control: Control, tip := "", reset := Callable()) -> vo
 	l.text = label
 	l.custom_minimum_size.x = 132
 	l.clip_text = true
+	if label.length() > 20:   # (a long name wraps instead of being cut: the Comment rows)
+		l.clip_text = false
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		l.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	l.add_theme_font_size_override("font_size", 13)
 	l.add_theme_color_override("font_color", Color(1, 1, 1, 0.8))
 	l.tooltip_text = tip if tip != "" else label
@@ -2871,8 +3850,9 @@ func _fill_details() -> void:
 					_refresh_details()), "Calls the function on_<name>_changed every time the variable is set (like RepNotify / OnRep).")
 				_row("Category", _line(String(v.get("category", "")), func(t: String):
 					mutate("Set Category", func(): v["category"] = t)))
-				_row("Tooltip", _line(String(v.get("tooltip", "")), func(t: String):
-					mutate("Set Tooltip", func(): v["tooltip"] = t)))
+				_row("Description (## doc, shown as tooltip)", _line(String(v.get("tooltip", "")), func(t: String):
+					mutate("Set Tooltip", func(): v["tooltip"] = t)), "The ## line above the variable; Godot shows it as the variable's tooltip.")
+				_member_note_row(v)
 			_section("Default Value")
 			var ed := W.make_value_editor(String(v.type), ("@" + String(v.enum)) if (String(v.type) == "int" and String(v.get("enum", "")) != "") else "", String(v.get("default", "")), func(lit: String):
 				if String(v.get("default", "")) != lit:
@@ -2934,6 +3914,7 @@ func _fill_details() -> void:
 				return
 			_details_title.text = "Event Dispatcher"
 			_row("Name", _line(String(dsp.name), func(t: String): _rename_member("dispatcher", String(dsp.name), t)))
+			_member_note_row(dsp)
 			_section("Inputs")
 			_cat_add(W.make_param_list(dsp.get("params", []), func(list: Array):
 				mutate("Edit Dispatcher Inputs", func(): dsp["params"] = list)
@@ -3072,6 +4053,8 @@ func _node_details(g: Dictionary, n: Dictionary) -> void:
 				_refresh_details()))
 		"fn_entry", "fn_return", "macro_in", "macro_out":
 			_graph_details(g)
+			if n.kind in ["fn_entry", "fn_return"]:
+				_comment_rows(n)
 			return
 		"timeline":
 			_timeline_details(n)
@@ -3164,8 +4147,14 @@ func _node_details(g: Dictionary, n: Dictionary) -> void:
 			_row("Function / Event", _line(String(p.get("fn", "")), func(t: String): mutate("Change Event", func(): p["fn"] = t)))
 		"signal_event":
 			_row("Node Path", _line(String(p.get("path", ".")), func(t: String): mutate("Edit Node Path", func(): p["path"] = t)))
+	if n.kind != "comment":
+		if d.pure and not (n.kind == "reroute" and String(p.get("t", "")) == "exec"):
+			# (a value node is written inside the line of the node that reads it: no line of its own to carry a comment)
+			_section("Comment")
+			_note("A value node (no exec pins) is written inside the line of the node that reads it, so it has no line of its own for a comment. Comment that node instead.")
+		else:
+			_comment_rows(n)
 	if not n.kind in ["fn_entry", "fn_return", "macro_in", "macro_out", "comment"]:
-		_section("Comment")
 		var cle := _line(String(n.get("c", "")), func(t: String):
 			mutate("Edit Node Comment", func():
 				if t.strip_edges() == "":
@@ -3174,7 +4163,7 @@ func _node_details(g: Dictionary, n: Dictionary) -> void:
 					n["c"] = t.strip_edges()))
 		cle.placeholder_text = "Shown in a bubble above the node"
 		cle.set_meta("node_comment", true)
-		_row("Node Comment", cle, "A note drawn in a bubble above this node.")
+		_row("Graph Note", cle, "A note drawn in a bubble above this node. It stays in the graph: it is not written to the code (use Comment for that).")
 		_section("About")
 	if d.sub != "":
 		_note(d.sub)

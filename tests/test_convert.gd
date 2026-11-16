@@ -177,5 +177,40 @@ func _init() -> void:
 		var source := FileAccess.get_file_as_string(path).replace("\r\n", "\n")
 		await judge(name, source, path)
 		await judge(name + " (crlf)", source.replace("\n", "\r\n"), path)
+	if only == "" or only == "long_function":
+		await long_function(3000)
 	print("\nCONVERT FAILS: %d" % fails)
 	quit()
+
+
+## One function of `count` flat statements, made here (not a file in the repository): the converter's walks must
+## not grow the engine's stack with the length of a block (they once overflowed it at about 1,200 statements).
+static func long_source(count: int) -> String:
+	var lines := PackedStringArray(["extends Node", "", "var total := 0", "var count := 0", "var last := 0", "var values: Array = []", "",
+		"func _ready() -> void:", "\trun_all()", "", "func run_all() -> void:"])
+	for i in count:
+		match i % 4:
+			0: lines.append("\ttotal += %d" % (i % 9 + 1))
+			1: lines.append("\tcount += 1")
+			2: lines.append("\tlast = total - %d" % (i % 5))
+			3: lines.append("\tvalues.append(last)")
+	lines.append("")
+	return "\n".join(lines)
+
+
+func long_function(count: int) -> void:
+	var name := "long_function (%d statements, generated)" % count
+	var source := long_source(count)
+	var t0 := Time.get_ticks_usec()
+	var out: Dictionary = Importer.new().convert(source, {})
+	var ms := (Time.get_ticks_usec() - t0) / 1000.0
+	var g := Model.graph_named(out.bp, "run_all")
+	check("%s: converts (%.0f ms), every statement a node: %d of %d lines are nodes" % [name, ms, int(out.report.as_nodes), int(out.report.lines)],
+		not g.is_empty() and int(out.report.as_code) == 0 and int(out.report.as_nodes) >= count and g.nodes.size() > count, str(out.report.notes.slice(0, 3)))
+	var c := Compiler.new()
+	t0 = Time.get_ticks_usec()
+	var code := Model.normalize_code(c.compile(out.bp.duplicate(true)))
+	var cms := (Time.get_ticks_usec() - t0) / 1000.0
+	var body := source.substr(source.find("func run_all")).strip_edges()
+	check("%s: compiles (%.0f ms) to the same function, line for line" % [name, cms], c.errors.filter(func(e): return not e.w).is_empty() and code.contains(body))
+	await judge(name, source, "res://tests/convert/long_function.gd")
