@@ -1123,6 +1123,9 @@ func expand_macro(nid: int) -> void:
 			if src.kind in ["macro_in", "macro_out"]:
 				continue
 			var c: Dictionary = src.duplicate(true)
+			var use_vars: Dictionary = call.p.get("vars", {})
+			if use_vars.has(str(int(src.id))):
+				c.p["var"] = String(use_vars[str(int(src.id))])   # this use's name for the loop variable
 			Model.forget_place(c)   # where the name belonged was a place in the graph the macro was made from
 			c.id = int(graph.next_id)
 			graph.next_id = int(graph.next_id) + 1

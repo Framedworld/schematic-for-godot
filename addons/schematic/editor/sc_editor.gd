@@ -61,11 +61,20 @@ var _paused: Array = []   # [path, graph_id, node_id] while the game is stopped 
 var debug_panel: DebugPanel
 var _step_tools: Array = []   # toolbar buttons shown only while the game is paused
 var _debug_cache: Dictionary = {}   # path -> line maps of schematics that are not open (see debug_info)
+# Changes made to a document's file outside this editor (see "changes made outside Schematic" below).
+var _drift_bar: PanelContainer
+var _drift_label: Label
+var _drift_btns: Dictionary = {}    # name -> Button
+var _close_dialog: AcceptDialog     # the question asked when closing a changed document whose file changed too
+var _diff_dialog: AcceptDialog      # Show Changes
+var recompile_skipped: Array = []   # files a macro library's save did not rewrite, because they were edited outside
 
 
 func _init() -> void:
 	if Engine.is_editor_hint():
-		EditorInterface.get_resource_filesystem().filesystem_changed.connect(func(): R.invalidate_libraries())
+		EditorInterface.get_resource_filesystem().filesystem_changed.connect(func():
+			R.invalidate_libraries()
+			check_drift_all.call_deferred())
 	name = "Schematic"
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
 	size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -276,6 +285,7 @@ func build_ui() -> void:
 	_crumb.add_theme_font_size_override("font_size", 18)
 	_crumb.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
 	nav_row.add_child(_crumb)
+	_build_drift_bar(gbox)
 	_view = GraphView.new()
 	_view.editor = self
 	_view.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -451,31 +461,47 @@ func _find_doc(path: String) -> Dictionary:
 func open_schematic(path: String) -> bool:
 	var d := _find_doc(path)
 	if d.is_empty():
-		var bp := Model.load_file(path)
+		var text := FileAccess.get_file_as_string(path)
+		var bp := Model.parse_source(text)
 		if bp.is_empty():
 			toast("%s is not a Schematic script" % path.get_file())
 			return false
-		var text := FileAccess.get_file_as_string(path)
-		var cut := Model.graph_block_at(text)
-		d = {"path": path, "bp": bp, "graph_id": int(bp.graphs[0].id) if not bp.graphs.is_empty() else 0, "dirty": false,
-			"errors": [], "code": text.substr(0, cut) if cut > 0 else "", "line_map": {}, "node_lines": {}}
+		d = {"path": path}
+		_load_into(d, bp, text)
 		docs.append(d)
-		_check(d)
-		var on_disk := _file_maps(bp, String(d.code))
-		d["saved_lines"] = on_disk.lines
-		d["saved_map"] = on_disk.map
-		d["saved_pins"] = on_disk.pins
-		d["saved_blocks"] = on_disk.blocks
+	else:
+		_drift_check(d)
 	doc = d
 	_sel = {"kind": "class"}
 	_refresh_all()
 	return true
 
 
+## Fills a document from its file's text (opening it, or Reload From Disk), and remembers what was read.
+func _load_into(d: Dictionary, bp: Dictionary, text: String) -> void:
+	var cut := Model.graph_block_at(text)
+	d.merge({"bp": bp, "graph_id": int(bp.graphs[0].id) if not bp.graphs.is_empty() else 0, "dirty": false,
+		"errors": [], "code": text.substr(0, cut) if cut > 0 else "", "line_map": {}, "node_lines": {}}, true)
+	_check(d)
+	var on_disk := _file_maps(bp, String(d.code))
+	d["saved_lines"] = on_disk.lines
+	d["saved_map"] = on_disk.map
+	d["saved_pins"] = on_disk.pins
+	d["saved_blocks"] = on_disk.blocks
+	_disk_remember(d, text)
+	# Code edited while the file was closed: its code is not the code its graph data says was generated. (A file
+	# whose code is what this version generates is fine whatever the fingerprint says.)
+	if Model.code_edited(text) and Model.code_part(text) != Model.normalize_code(String(d.preview)):
+		d["disk_code"] = Model.stored_code_hash(text)
+		d["drift_at_open"] = true
+		_drift_check(d, true)
+
+
 func _on_doc_tab(i: int) -> void:
 	if _suppress_tabs or i < 0 or i >= docs.size():
 		return
 	doc = docs[i]
+	_drift_check(doc)
 	_sel = {"kind": "class"}
 	_refresh_all()
 
@@ -485,11 +511,49 @@ func _close_doc(i: int) -> void:
 		return
 	var d: Dictionary = docs[i]
 	if d.dirty:
-		compile_doc(d, true)
+		# Unsaved graph changes, and the file changed outside too: saving would overwrite that, so ask.
+		if not _may_write(d):
+			_ask_close(d)
+			return
+		compile_doc(d, true, true)
+	_remove_doc(d)
+
+
+func _remove_doc(d: Dictionary) -> void:
+	var i := docs.find(d)
+	if i < 0:
+		return
 	docs.remove_at(i)
 	if doc == d or doc.is_empty():
 		doc = docs[mini(i, docs.size() - 1)] if not docs.is_empty() else {}
 	_refresh_all()
+
+
+## Closing a document with unsaved graph changes whose file was changed outside Schematic. Enter keeps it open, so
+## nothing is lost by default; the file is overwritten only when that is picked.
+func _ask_close(d: Dictionary) -> void:
+	if _close_dialog and is_instance_valid(_close_dialog):
+		_close_dialog.queue_free()
+	var dlg := AcceptDialog.new()
+	_close_dialog = dlg
+	dlg.title = "Close %s" % String(d.path).get_file()
+	var outside := "its code was changed outside Schematic" if d.drift == "code" else "the file was replaced outside Schematic"
+	dlg.dialog_text = "%s has unsaved changes in the graph, and %s since it was opened.\n\nSaving now would overwrite the file on disk, losing the outside changes. Closing without saving keeps the file as it is on disk and loses the graph changes." % [String(d.path).get_file(), outside]
+	dlg.ok_button_text = "Keep Open"
+	dlg.add_button("Close Without Saving", false, "discard")
+	dlg.add_button("Overwrite File and Close", false, "overwrite")
+	dlg.custom_action.connect(func(action: StringName):
+		dlg.hide()
+		if action == &"overwrite":
+			drift_keep(d)
+			compile_doc(d, true, true)
+		_remove_doc(d))
+	dlg.visibility_changed.connect(func():
+		if not dlg.visible:
+			dlg.queue_free())
+	EditorInterface.get_base_control().add_child(dlg)
+	dlg.popup_centered(Vector2i(560, 0))
+	dlg.get_ok_button().grab_focus.call_deferred()
 
 
 func _open_dialog() -> void:
@@ -534,6 +598,17 @@ func convert_script(path: String) -> Dictionary:
 ## Writes a conversion made by convert_script(): the original is kept beside it as <name>.gd.orig.
 func convert_script_apply(path: String, result: Dictionary) -> bool:
 	if not bool(result.get("ok", false)):
+		return false
+	# A Schematic still open for this path (its file was replaced by plain GDScript outside the editor): the
+	# conversion replaces the document, so it must not hold graph changes that would be lost.
+	var open_doc := _find_doc(path)
+	if not open_doc.is_empty():
+		if open_doc.dirty:
+			toast("%s is open in Schematic with unsaved changes: save or close it before converting the file." % path.get_file())
+			return false
+		_remove_doc(open_doc)
+	if FileAccess.get_file_as_string(path) != String(result.source):
+		toast("%s changed since it was read for converting: convert it again." % path.get_file())
 		return false
 	var keep_path := path + ".orig"
 	if not FileAccess.file_exists(keep_path):
@@ -788,52 +863,78 @@ func _validate(d: Dictionary, code: String) -> bool:
 	return false
 
 
-func compile_doc(d: Dictionary, save: bool) -> bool:
+## Compiles a document, and with `save` writes its file. The file is not written when it was changed outside
+## Schematic and the person has not chosen to keep the graph (see _may_write()); then false is returned and a toast
+## says why. `side_effect` is for writes the person did not ask for as such (closing, running, a breakpoint).
+func compile_doc(d: Dictionary, save: bool, side_effect := false) -> bool:
 	if d.is_empty():
 		return false
+	var refused := save and not _may_write(d)
 	var ok := _check_valid(d)
-	if ok:
+	if ok and not refused:
 		d.code = d.preview
 		d["saved_lines"] = d.node_lines.duplicate()
 		d["saved_map"] = d.line_map.duplicate()
 		d["saved_pins"] = d.get("pins", {})
 		d["saved_blocks"] = d.get("blocks", [])
-	if save:
+	if refused:
+		_tell_not_written([String(d.path)], side_effect)
+	elif save:
 		var code: String = d.code
 		if code == "":
 			code = "%s\nextends %s\n" % [Model.MARKER + " v%d (not compiled yet - fix the errors in the Schematic editor)" % Model.VERSION, R.self_class(d.bp)]
 		var src := Model.build_source(code, d.bp)
-		var f := FileAccess.open(d.path, FileAccess.WRITE)
-		if f == null:
-			toast("Can't write %s" % d.path)
+		if not _write_schematic(String(d.path), src):
 			return false
-		f.store_string(src)
-		f.close()
 		d.dirty = false
-		var scr := ResourceLoader.load(d.path, "", ResourceLoader.CACHE_MODE_REUSE) as GDScript
-		if scr:
-			scr.source_code = src
-			scr.reload(true)
-		EditorInterface.get_resource_filesystem().update_file(d.path)
+		_disk_remember(d, src)
 		R.invalidate_libraries()
 		if String(d.bp.get("library", "")) == "macro" and not _recompiling:
 			_recompiling = true
+			recompile_skipped = []
 			var users := _recompile_users(String(d.path))
 			_recompiling = false
-			if users > 0:
-				toast("Recompiled %d schematic%s using this macro library." % [users, "" if users == 1 else "s"])
+			if users > 0 or not recompile_skipped.is_empty():
+				var msg := "Recompiled %d schematic%s using this macro library." % [users, "" if users == 1 else "s"]
+				if not recompile_skipped.is_empty():
+					msg += " Not rewritten, because %s changed outside Schematic: %s." % ["it was" if recompile_skipped.size() == 1 else "they were",
+						", ".join(recompile_skipped.map(func(p): return String(p).get_file()))]
+					print("Schematic: ", msg, " (", ", ".join(recompile_skipped), ")")
+				toast(msg)
 	if d == doc:
 		_refresh_graph()
 		_refresh_status()
 		_refresh_doc_tabs()
 		_update_code()
-	return ok
+	return ok and not refused
+
+
+## Writes a Schematic's whole text and tells Godot the script changed. False (with a toast) when it can't be written.
+func _write_schematic(path: String, src: String) -> bool:
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		toast("Can't write %s" % path)
+		return false
+	f.store_string(src)
+	f.close()
+	var scr := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_REUSE) as GDScript
+	if scr:
+		scr.source_code = src
+		scr.reload(true)
+	EditorInterface.get_resource_filesystem().update_file(path)
+	return true
 
 
 func save_all() -> void:
+	var skipped := []
 	for d in docs:
 		if d.dirty:
-			compile_doc(d, true)
+			if not _may_write(d):
+				skipped.append(String(d.path))
+				continue
+			compile_doc(d, true, true)
+	if not skipped.is_empty():
+		_tell_not_written(skipped, true)
 
 
 func has_unsaved() -> bool:
@@ -841,6 +942,307 @@ func has_unsaved() -> bool:
 		if d.dirty:
 			return true
 	return false
+
+
+## Open documents with unsaved graph changes whose file was also changed outside Schematic (they are not saved by
+## Save All, so their graph changes are lost when Godot closes).
+func unsaved_and_changed_outside() -> Array:
+	var out := []
+	for d in docs:
+		if d.dirty and String(d.get("drift", "")) in ["code", "replaced"] and not _keep_chosen(d):
+			out.append(String(d.path))
+	return out
+
+
+# ---------------------------------------------------------------- changes made outside Schematic
+# A Schematic's file can change while it is open here: its GDScript edited by hand (in Godot's script editor or any
+# other), a git pull or checkout, another tool. Each document remembers what this editor last read from or wrote to
+# its file: the fingerprint of the code part, of the graph part, and the file's time (a cheap first look only).
+# Comparing the file with that gives its state, doc.drift:
+#   ""          in sync: nobody else wrote the file since; saving is safe
+#   "code"      the code part changed, the graph part did not: an edit to the code the graph does not know about
+#   "replaced"  the graph part changed: the whole file was replaced (its graph on disk may be newer)
+#   "missing"   the file was deleted or moved; saving writes it again
+# The file is looked at when Godot's file system reports changes, when a script is saved in Godot, when the
+# Schematic screen is shown or the editor gets the focus back, on switching documents, and always just before
+# writing. A file that is not in sync is never overwritten until the person chooses so in the bar above the graph.
+
+const DRIFT_RECENT := 2   # seconds: a file changed this recently is read even when its time looks unchanged
+
+
+## Remembers `text` as what this editor last read from or wrote to the document's file: in sync from here on.
+func _disk_remember(d: Dictionary, text: String) -> void:
+	d["disk_code"] = Model.code_hash(Model.code_part(text))
+	d["disk_graph"] = Model.graph_part(text).md5_text()
+	d["disk_now"] = [d.disk_code, d.disk_graph]
+	d["disk_time"] = FileAccess.get_modified_time(d.path) if FileAccess.file_exists(d.path) else 0
+	d["drift"] = ""
+	d["drift_keep"] = ""
+	d["drift_at_open"] = false
+	if d == doc:
+		_refresh_drift()
+
+
+## Looks at a document's file and returns its state (see above). Unless `read`, a file whose time has not changed
+## since the last look (and is not very recent) is not read again.
+func _drift_check(d: Dictionary, read := false) -> String:
+	if d.is_empty() or not d.has("disk_graph"):
+		return ""   # a new schematic, never written yet: nothing to compare with
+	var path := String(d.path)
+	var state := ""
+	if not FileAccess.file_exists(path):
+		state = "missing"
+	else:
+		var time := FileAccess.get_modified_time(path)
+		if not read and d.drift != "missing" and time == int(d.disk_time) and int(Time.get_unix_time_from_system()) - time > DRIFT_RECENT:
+			return String(d.drift)
+		d.disk_time = time
+		var text := FileAccess.get_file_as_string(path)
+		var now := [Model.code_hash(Model.code_part(text)), Model.graph_part(text).md5_text()]
+		d.disk_now = now
+		if now[1] != d.disk_graph:
+			state = "replaced"
+		elif now[0] != d.disk_code:
+			state = "code"
+	if state != String(d.drift):
+		d.drift = state
+		if d == doc:
+			_refresh_drift()
+		_refresh_doc_tabs()
+	return state
+
+
+## Looks at every open document's file (cheap: the file is read only when its time changed).
+func check_drift_all() -> void:
+	for d in docs:
+		_drift_check(d)
+
+
+## A script was saved in Godot (its script editor): look at that file now.
+func check_drift_path(path: String) -> void:
+	var d := _find_doc(path)
+	if not d.is_empty():
+		_drift_check(d, true)
+
+
+## The person chose, for the file as it is on disk now, that the graph wins (Keep Graph / Keep Mine).
+func _keep_chosen(d: Dictionary) -> bool:
+	return String(d.get("drift_keep", "")) != "" and String(d.get("drift_keep", "")) == str(d.get("disk_now", []))
+
+
+## Whether this editor may write the document's file now: it is in sync, gone, or the person chose to overwrite
+## exactly what is there. Always reads the file.
+func _may_write(d: Dictionary) -> bool:
+	var state := _drift_check(d, true)
+	return state == "" or state == "missing" or _keep_chosen(d)
+
+
+## Keep Graph / Keep Mine: the next save overwrites the file as it is on disk now with what the graph says. (If the
+## file changes again before that save, the person is asked again.)
+func drift_keep(d: Dictionary) -> void:
+	if _drift_check(d, true) in ["", "missing"]:
+		return
+	d.drift_keep = str(d.disk_now)
+	d.dirty = true
+	if d == doc:
+		_refresh_drift()
+		_refresh_status()
+	_refresh_doc_tabs()
+
+
+## Reload From Disk: the graph in memory (and any unsaved change to it) is replaced by the file's.
+func drift_reload(d: Dictionary) -> bool:
+	var text := FileAccess.get_file_as_string(String(d.path))
+	var bp := Model.parse_source(text)
+	if bp.is_empty():
+		toast("%s on disk is not a Schematic any more: there is no graph to load." % String(d.path).get_file())
+		return false
+	_load_into(d, bp, text)
+	if d == doc:
+		_sel = {"kind": "class"}
+		_refresh_all()
+	toast("%s reloaded from disk." % String(d.path).get_file())
+	return true
+
+
+## The lines that differ between the code on disk and the code the graph compiles to now:
+## [{"op": "-" (only on disk) or "+" (only in the graph's code), "line": line number on its side, "text"}].
+func drift_diff(d: Dictionary) -> Array:
+	var disk := Model.code_part(FileAccess.get_file_as_string(String(d.path))).split("\n")
+	var mine := Model.normalize_code(String(d.get("preview", ""))).split("\n")
+	var a0 := 0
+	while a0 < disk.size() and a0 < mine.size() and disk[a0] == mine[a0]:
+		a0 += 1
+	var a1 := disk.size()
+	var b1 := mine.size()
+	while a1 > a0 and b1 > a0 and disk[a1 - 1] == mine[b1 - 1]:
+		a1 -= 1
+		b1 -= 1
+	var out := []
+	var n := a1 - a0
+	var m := b1 - a0
+	if n * m > 250000:
+		# too long a stretch to match line by line here: show all of it
+		for i in range(a0, a1):
+			out.append({"op": "-", "line": i + 1, "text": disk[i]})
+		for j in range(a0, b1):
+			out.append({"op": "+", "line": j + 1, "text": mine[j]})
+		return out
+	# longest common subsequence of the differing stretch
+	var lcs := PackedInt32Array()
+	lcs.resize((n + 1) * (m + 1))
+	for i in range(n - 1, -1, -1):
+		for j in range(m - 1, -1, -1):
+			if disk[a0 + i] == mine[a0 + j]:
+				lcs[i * (m + 1) + j] = lcs[(i + 1) * (m + 1) + j + 1] + 1
+			else:
+				lcs[i * (m + 1) + j] = maxi(lcs[(i + 1) * (m + 1) + j], lcs[i * (m + 1) + j + 1])
+	var i := 0
+	var j := 0
+	while i < n or j < m:
+		if i < n and j < m and disk[a0 + i] == mine[a0 + j]:
+			i += 1
+			j += 1
+		elif i < n and (j == m or lcs[(i + 1) * (m + 1) + j] >= lcs[i * (m + 1) + j + 1]):
+			out.append({"op": "-", "line": a0 + i + 1, "text": disk[a0 + i]})
+			i += 1
+		else:
+			out.append({"op": "+", "line": a0 + j + 1, "text": mine[a0 + j]})
+			j += 1
+	return out
+
+
+## Show Changes: a read-only list of the differing lines.
+func show_drift_changes(d: Dictionary) -> void:
+	if _diff_dialog and is_instance_valid(_diff_dialog):
+		_diff_dialog.queue_free()
+	var dlg := AcceptDialog.new()
+	_diff_dialog = dlg
+	dlg.title = "Changes outside Schematic: %s" % String(d.path).get_file()
+	var box := VBoxContainer.new()
+	dlg.add_child(box)
+	var head := Label.new()
+	head.text = "-  a line in the file on disk that the graph does not make\n+  a line the graph makes that is not in the file on disk"
+	box.add_child(head)
+	var view := CodeEdit.new()
+	view.name = "Diff"
+	view.editable = false
+	view.custom_minimum_size = Vector2(760, 420)
+	view.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	box.add_child(view)
+	var diff := drift_diff(d)
+	var lines := PackedStringArray()
+	for e in diff:
+		lines.append("%s %5d | %s" % [e.op, int(e.line), String(e.text)])
+	if diff.is_empty():
+		lines.append("(the code on disk is the code the graph makes)")
+	view.text = "\n".join(lines)
+	for k in diff.size():
+		view.set_line_background_color(k, Color(0.8, 0.25, 0.2, 0.22) if diff[k].op == "-" else Color(0.25, 0.75, 0.3, 0.2))
+	dlg.visibility_changed.connect(func():
+		if not dlg.visible:
+			dlg.queue_free())
+	EditorInterface.get_base_control().add_child(dlg)
+	dlg.popup_centered()
+
+
+func _tell_not_written(paths: Array, side_effect: bool) -> void:
+	var names := ", ".join(paths.map(func(p): return String(p).get_file()))
+	if side_effect:
+		toast("%s %s not rewritten: changed outside Schematic (see the bar above the graph)." % [names, "was" if paths.size() == 1 else "were"])
+	else:
+		toast("Not saved: %s changed outside Schematic. Choose what to keep in the bar above the graph." % names)
+
+
+func _build_drift_bar(parent: Control) -> void:
+	_drift_bar = PanelContainer.new()
+	_drift_bar.name = "DriftBar"
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color(0.29, 0.21, 0.06)
+	bg.border_color = Color(1.0, 0.72, 0.1)
+	bg.border_width_left = 3
+	bg.content_margin_left = 8
+	bg.content_margin_right = 6
+	bg.content_margin_top = 3
+	bg.content_margin_bottom = 3
+	_drift_bar.add_theme_stylebox_override("panel", bg)
+	_drift_bar.visible = false
+	parent.add_child(_drift_bar)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	_drift_bar.add_child(row)
+	var icon := TextureRect.new()
+	icon.texture = W.icon("StatusWarning")
+	icon.stretch_mode = TextureRect.STRETCH_KEEP_CENTERED
+	row.add_child(icon)
+	_drift_label = Label.new()
+	_drift_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_drift_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_drift_label.add_theme_color_override("font_color", Color(1, 0.9, 0.7))
+	row.add_child(_drift_label)
+	var add := func(key: String, text: String, tip: String, fn: Callable) -> void:
+		var b := _tool(text, "", tip, fn)
+		b.name = key
+		b.add_theme_stylebox_override("normal", _drift_button_box())
+		row.add_child(b)
+		_drift_btns[key] = b
+	add.call("show", "Show Changes", "List the lines where the code on disk and the graph's code differ", func(): show_drift_changes(doc))
+	add.call("keep", "Keep Graph", "The graph is right: the next save replaces the file's code with the graph's", func(): drift_keep(doc))
+	add.call("reimport", "Re-import Code", "Coming in a later version: bring the changed code into the graph", func(): pass)
+	add.call("reload", "Reload From Disk", "Load the graph that is in the file on disk now, in place of the one here", func(): drift_reload(doc))
+	add.call("mine", "Keep Mine", "The graph here is right: the next save overwrites the file on disk", func(): drift_keep(doc))
+	_drift_btns.reimport.disabled = true
+
+
+func _drift_button_box() -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(1, 1, 1, 0.08)
+	sb.set_corner_radius_all(4)
+	sb.content_margin_left = 7
+	sb.content_margin_right = 7
+	sb.content_margin_top = 4
+	sb.content_margin_bottom = 4
+	return sb
+
+
+## Shows, words and buttons the bar above the graph for the document on screen.
+func _refresh_drift() -> void:
+	if _drift_bar == null:
+		return
+	var state := "" if doc.is_empty() else String(doc.get("drift", ""))
+	_drift_bar.visible = state != ""
+	if state == "":
+		return
+	var file := String(doc.path).get_file()
+	var kept := _keep_chosen(doc)
+	var unsaved := " The graph also has unsaved changes." if doc.dirty and not kept else ""
+	var text := ""
+	var wanted := ["show"]
+	match state:
+		"code":
+			if kept:
+				text = "You chose to keep the graph: the next save replaces the code that was changed outside Schematic."
+			else:
+				text = "This file's code was changed outside Schematic%s. The graph does not include those changes.%s" % [" while it was closed" if bool(doc.get("drift_at_open", false)) else "", unsaved]
+				wanted.append_array(["keep", "reimport"])
+		"replaced":
+			if kept:
+				text = "You chose to keep your graph: the next save overwrites the file on disk."
+			else:
+				text = "%s was replaced outside Schematic (for example by git or another editor): the graph on disk is not the one here.%s" % [file, unsaved]
+				wanted.append_array(["reload", "mine"])
+		"missing":
+			text = "%s was deleted or moved outside Schematic. Saving writes it again here." % file
+			wanted = []
+	_drift_label.text = text
+	for key in _drift_btns:
+		_drift_btns[key].visible = wanted.has(key)
+	_drift_btns.reload.text = "Reload From Disk (discard unsaved changes)" if doc.dirty else "Reload From Disk"
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_FOCUS_IN or (what == NOTIFICATION_VISIBILITY_CHANGED and is_visible_in_tree()):
+		check_drift_all.call_deferred()
 
 
 # ---------------------------------------------------------------- debugging
@@ -864,7 +1266,8 @@ func toggle_breakpoints(ids: Array) -> void:
 	if doc.is_empty() or ids.is_empty():
 		return
 	if doc.dirty:
-		compile_doc(doc, true)
+		# (a file changed outside Schematic is not rewritten: the breakpoint goes on the lines last saved)
+		compile_doc(doc, true, true)
 	var all := _all_breaks()
 	var list: Array = all.get(doc.path, []).duplicate()
 	for id in ids:
@@ -1115,8 +1518,9 @@ func _refresh_doc_tabs() -> void:
 	_suppress_tabs = true
 	_doc_tabs.clear_tabs()
 	for d in docs:
-		_doc_tabs.add_tab(d.path.get_file().get_basename() + ("*" if d.dirty else ""), W.class_icon(R.self_class(d.bp)))
-		_doc_tabs.set_tab_tooltip(_doc_tabs.tab_count - 1, d.path)
+		var outside := String(d.get("drift", "")) != ""
+		_doc_tabs.add_tab(d.path.get_file().get_basename() + ("*" if d.dirty else ""), W.icon("StatusWarning") if outside else W.class_icon(R.self_class(d.bp)))
+		_doc_tabs.set_tab_tooltip(_doc_tabs.tab_count - 1, d.path + ("\nChanged outside Schematic" if outside else ""))
 	var i := docs.find(doc)
 	if i >= 0:
 		_doc_tabs.current_tab = i
@@ -1250,6 +1654,7 @@ func _refresh_graph() -> void:
 
 
 func _refresh_status() -> void:
+	_refresh_drift()
 	_results.clear()
 	if doc.is_empty():
 		_status.text = ""
@@ -1970,25 +2375,27 @@ func _recompile_users(lib_path: String, seen := {}) -> int:
 					uses = true
 		if not uses:
 			continue
-		count += 1
 		if not open_doc.is_empty():
-			compile_doc(open_doc, not open_doc.dirty)   # unsaved edits stay unsaved
+			# unsaved edits stay unsaved; a file changed outside Schematic is not rewritten
+			if not open_doc.dirty and not _may_write(open_doc):
+				recompile_skipped.append(path)
+				_check(open_doc)
+				continue
+			count += 1
+			compile_doc(open_doc, not open_doc.dirty)
 			continue
+		# not open: the fingerprint in the file says whether its code was edited since a Schematic writer wrote it
+		var text := FileAccess.get_file_as_string(path)
+		if Model.code_edited(text):
+			recompile_skipped.append(path)
+			continue
+		count += 1
 		var c := Compiler.new()
 		var code := c.compile(ubp)
 		if c.errors.any(func(e): return not e.w):
 			toast("%s uses %s and no longer compiles: open it to see why." % [path.get_file(), lib_path.get_file()])
 			continue
-		var src := Model.build_source(code, ubp)
-		var f := FileAccess.open(path, FileAccess.WRITE)
-		if f:
-			f.store_string(src)
-			f.close()
-			var scr := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_REUSE) as GDScript
-			if scr:
-				scr.source_code = src
-				scr.reload(true)
-			EditorInterface.get_resource_filesystem().update_file(path)
+		_write_schematic(path, Model.build_source(code, ubp))
 		if String(ubp.get("library", "")) == "macro":
 			R.invalidate_libraries()
 			count += _recompile_users(path, seen)

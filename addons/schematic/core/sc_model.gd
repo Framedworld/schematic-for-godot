@@ -22,6 +22,9 @@ const OLD_MARKER := "# @blueprint"
 const GRAPH_BLOCK := "\n#region Schematic graph data"
 const OLD_GRAPH_BLOCK := "\n#region Blueprint graph data"
 const DATA_PREFIX := "#~ "
+## The line in the graph data that holds the fingerprint of the code above it (see code_hash()). It starts with
+## "#~" but not "#~ ", so parse_source() of this and of older versions passes over it.
+const CODE_HASH_PREFIX := "#~code "
 const VERSION := 1
 
 
@@ -197,6 +200,50 @@ static func parse_source(src: String) -> Dictionary:
 	return normalize(parsed)
 
 
+## The code part of a Schematic's text (everything before its graph data, or all of it when it has none), in the
+## form two texts are compared in: line endings, spaces at the ends of lines and blank lines at the end do not count.
+static func code_part(text: String) -> String:
+	var cut := graph_block_at(text)
+	return normalize_code(text.substr(0, cut) if cut != -1 else text)
+
+
+## The graph data part of a Schematic's text, normalised like code_part(); "" when there is none.
+static func graph_part(text: String) -> String:
+	var cut := graph_block_at(text)
+	return normalize_code(text.substr(cut)) if cut != -1 else ""
+
+
+static func normalize_code(code: String) -> String:
+	var lines := code.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+	for i in lines.size():
+		lines[i] = lines[i].rstrip(" \t")
+	return "\n".join(lines).strip_edges(false, true)
+
+
+## A fingerprint of generated code. Every writer stores it in the graph data (a `#~code ` line, which readers of
+## the graph skip), so a file whose code no longer matches it was edited by hand or by another tool.
+static func code_hash(code: String) -> String:
+	return normalize_code(code).md5_text()
+
+
+## The code fingerprint stored in a Schematic's text, or "" (files written before it was stored have none).
+static func stored_code_hash(text: String) -> String:
+	var cut := graph_block_at(text)
+	if cut == -1:
+		return ""
+	var at := text.find("\n" + CODE_HASH_PREFIX, cut)
+	if at == -1:
+		return ""
+	return text.substr(at + 1 + CODE_HASH_PREFIX.length(), 32)
+
+
+## True when the code part of `text` is not the code its stored fingerprint was taken of. A file with no
+## fingerprint is never said to be edited (there is nothing to tell a hand edit from an older plugin by).
+static func code_edited(text: String) -> bool:
+	var stored := stored_code_hash(text)
+	return stored != "" and stored != code_hash(code_part(text))
+
+
 static func load_file(path: String) -> Dictionary:
 	var f := FileAccess.open(path, FileAccess.READ)
 	if f == null:
@@ -267,6 +314,7 @@ static func build_source(code: String, bp: Dictionary) -> String:
 	out.append("")
 	out.append("")
 	out.append("#region Schematic graph data (machine-written; edit this file in the Schematic editor)")
+	out.append(CODE_HASH_PREFIX + code_hash(code))
 	for line in graph_lines(bp):
 		out.append(DATA_PREFIX + line)
 	out.append("#endregion")

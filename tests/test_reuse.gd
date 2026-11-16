@@ -166,6 +166,161 @@ func lean(n: Node3D, at: Vector3):
 """
 
 
+## The same loop in three functions, each written with a variable of its own. Only the numbers and texts differ.
+const LOOPS := """extends Node
+
+var total := 0
+var log: Array = []
+
+func _ready():
+	a([1, 2, 3, 4, 5])
+	b([6, 7, 8])
+	c([2, 9])
+
+func a(items: Array):
+	for x in items:
+		total += x * 2
+		log.append(x + 1)
+		log.append("a %d" % x)
+		if x > 3:
+			log.append(x * x)
+
+func b(items: Array):
+	for col in items:
+		total += col * 3
+		log.append(col + 1)
+		log.append("b %d" % col)
+		if col > 6:
+			log.append(col * col)
+
+func c(items: Array):
+	for cell in items:
+		total += cell * 4
+		log.append(cell + 1)
+		log.append("c %d" % cell)
+		if cell > 1:
+			log.append(cell * cell)
+"""
+
+## Loops inside loops, written with other variable names in each function.
+const NESTED := """extends Node
+
+var total := 0
+var log: Array = []
+
+func _ready():
+	a([[1, 2], [3, 4]])
+	b([[5, 6], [7]])
+	c([[8], [9, 1]])
+
+func a(rows: Array):
+	for r in rows:
+		for k in r:
+			total += k * 2
+			log.append(k + 1)
+			log.append("a %d" % k)
+			if k > 2:
+				log.append(k * k)
+
+func b(rows: Array):
+	for row in rows:
+		for cell in row:
+			total += cell * 3
+			log.append(cell + 1)
+			log.append("b %d" % cell)
+			if cell > 5:
+				log.append(cell * cell)
+
+func c(rows: Array):
+	for line in rows:
+		for item in line:
+			total += item * 4
+			log.append(item + 1)
+			log.append("c %d" % item)
+			if item > 8:
+				log.append(item * item)
+"""
+
+## A lambda made in the loop reads the loop variable by its name.
+const LAMBDAS := """extends Node
+
+var total := 0
+var log: Array = []
+var calls: Array = []
+
+func _ready():
+	a([1, 2, 3])
+	b([4, 5])
+	c([6, 7, 8])
+	for f in calls:
+		log.append(f.call())
+
+func a(items: Array):
+	for x in items:
+		var f := func(): return x * 10
+		calls.append(f)
+		total += x * 2
+		log.append(x + 1)
+		log.append("a %d" % x)
+
+func b(items: Array):
+	for col in items:
+		var g := func(): return col * 10
+		calls.append(g)
+		total += col * 3
+		log.append(col + 1)
+		log.append("b %d" % col)
+
+func c(items: Array):
+	for cell in items:
+		var h := func(): return cell * 10
+		calls.append(h)
+		total += cell * 4
+		log.append(cell + 1)
+		log.append("c %d" % cell)
+"""
+
+## The steps at the start of each loop body are the same, the rest of the bodies are not: a group made of the
+## body only, the variable of the loop outside it coming in as a value.
+const BODIES := """extends Node
+
+var total := 0
+var log: Array = []
+
+func _ready():
+	a([1, 2, 3])
+	b([4, 5])
+	c([6, 7, 8])
+
+func a(items: Array):
+	for x in items:
+		total += x * 2
+		log.append(x + 1)
+		log.append("a %d" % x)
+		if x > 1:
+			log.append(x * x)
+		log.append("after a")
+
+func b(items: Array):
+	for col in items:
+		total += col * 3
+		log.append(col + 1)
+		log.append("b %d" % col)
+		if col > 4:
+			log.append(col * col)
+		total -= 1
+
+func c(items: Array):
+	for cell in items:
+		total += cell * 4
+		log.append(cell + 1)
+		log.append("c %d" % cell)
+		if cell > 6:
+			log.append(cell * cell)
+		log.append(cell)
+"""
+
+
 func check(label: String, ok: bool, detail := "") -> void:
 	print("%s  %s  %s" % ["PASS" if ok else "FAIL", label, detail])
 	if not ok:
@@ -224,6 +379,34 @@ func state_of(code: String) -> String:
 	n.queue_free()
 	await process_frame
 	return str(out)
+
+
+## True when a macro that reuse made holds a loop.
+func macro_has_loop(bp: Dictionary) -> bool:
+	for g in bp.graphs:
+		if g.kind == "macro" and bool(g.get("reuse", false)):
+			for n in g.nodes:
+				if n.kind in Reuse.LOOPVAR:
+					return true
+	return false
+
+
+## Converts a script, runs reuse over it and checks what must hold whatever the loops are written with: nothing
+## put back, the same script, the same state when it runs. `mutate` may change the converted Schematic first.
+func loop_case(label: String, source: String, mutate := Callable()) -> Dictionary:
+	var bp := converted(source)
+	if mutate.is_valid():
+		mutate.call(bp)
+	var before := compiled(bp)
+	var r := Reuse.new()
+	var rep := r.run([{"path": DIR + "/loops.gd", "bp": bp}], "")
+	var after := compiled(bp)
+	var ok: bool = not before.begins_with("ERROR") and not after.begins_with("ERROR") and Reuse.same_code(before, after) and rep.undone.is_empty()
+	var ran_before: String = await state_of(before)
+	var ran_after: String = await state_of(after)
+	check(label + ": the script is the same and nothing was put back", ok, "; ".join(r.notes) + " " + after.left(100) if not ok else "")
+	check(label + ": it runs to the same state", ran_before == ran_after and ran_before.contains("total"), ran_after.left(160))
+	return {"bp": bp, "before": before, "after": after, "rep": rep, "r": r, "per_use": r._per_use()}
 
 
 func _init() -> void:
@@ -358,6 +541,74 @@ func _init() -> void:
 		and compiled(fa3.bp) == code_a and macro_uses(fa3.bp).all(func(n): return not n.p.has("lib")))
 	DirAccess.remove_absolute(LIB)
 	R.invalidate_libraries()
+
+	# ---------------------------------------------------------------- loop variable names
+	# The name of a loop variable is no part of what a group is. Whether groups that differ in it are one macro
+	# depends on the compiler being able to write each use's own name (Compiler.PER_USE_LOOP_VARS); when it
+	# cannot, they stay apart, and every script is still the script it was.
+	var per_use: bool = Reuse.new()._per_use()
+	print("-- loop variables: the compiler %s per-use names" % ["writes" if per_use else "does not write"])
+
+	var lc: Dictionary = await loop_case("loops, other names", LOOPS)
+	check("loops, other names: one macro for the loop iff each use can keep its name", macro_has_loop(lc.bp) == per_use,
+		"%d uses; %s" % [macro_uses(lc.bp).size(), "; ".join(lc.r.notes)])
+	check("loops, other names: every function keeps the name it wrote",
+		lc.after.contains("for x in items:") and lc.after.contains("for col in items:") and lc.after.contains("for cell in items:") and lc.after == lc.before,
+		lc.after.left(200))
+	if per_use:
+		var seen := []
+		for n in macro_uses(lc.bp):
+			for v in (n.p.get("vars", {}) as Dictionary).values():
+				seen.append(String(v))
+		seen.sort()
+		check("loops, other names: each use records its own name", seen == ["cell", "col", "x"], str(seen))
+
+	var same_names: String = LOOPS.replace("col", "x").replace("cell", "x")
+	var sc: Dictionary = await loop_case("loops, same name", same_names)
+	check("loops, same name: one macro for the loop", macro_has_loop(sc.bp) and macro_uses(sc.bp).size() >= 3 and sc.after == sc.before,
+		"%d uses; %s" % [macro_uses(sc.bp).size(), "; ".join(sc.r.notes)])
+
+	var nc: Dictionary = await loop_case("nested loops", NESTED)
+	check("nested loops: one macro iff each use can keep its names", macro_has_loop(nc.bp) == per_use, "; ".join(nc.r.notes))
+	check("nested loops: every function keeps its names", nc.after == nc.before and nc.after.contains("for row in rows:") and nc.after.contains("for item in line:")
+		and nc.after.contains("for r in rows:") and nc.after.contains("for k in r:"), nc.after.left(200))
+
+	var lm: Dictionary = await loop_case("loop variable in a lambda", LAMBDAS)
+	check("loop variable in a lambda: every function keeps its names", lm.after.contains("for x in items:") and lm.after.contains("for col in items:")
+		and lm.after.contains("for cell in items:") and lm.after == lm.before, lm.after.left(300))
+	check("loop variable in a lambda: the lambdas read the loop variables", lm.after.contains("x * 10") and lm.after.contains("col * 10") and lm.after.contains("cell * 10"))
+
+	var bc: Dictionary = await loop_case("loop body only", BODIES)
+	check("loop body only: groups were made and the names are kept", macro_uses(bc.bp).size() >= 3 and bc.after == bc.before
+		and bc.after.contains("for x in items:") and bc.after.contains("for col in items:"), "%d uses; %s" % [macro_uses(bc.bp).size(), "; ".join(bc.r.notes)])
+
+	var ec: Dictionary = await loop_case("loops made in the editor", LOOPS, func(b):
+		for g in b.graphs:
+			for n in g.nodes:
+				if n.kind in Reuse.LOOPVAR:
+					n.p.erase("var"))
+	var no_vars := true
+	for n in macro_uses(ec.bp):
+		no_vars = no_vars and not n.p.has("vars")
+	check("loops made in the editor: one macro for the loop, nothing to name", macro_has_loop(ec.bp) and no_vars and not ec.after.contains("for x in"),
+		"%d uses; %s" % [macro_uses(ec.bp).size(), "; ".join(ec.r.notes)])
+	check("loops made in the editor: numbered as before", ec.after.contains("for item_"), ec.after.left(200))
+
+	# a name that would clash where it is written is numbered by the compiler, before and after
+	var cl: Dictionary = await loop_case("clashing loop variables", LOOPS, func(b):
+		for g in b.graphs:
+			for n in g.nodes:
+				if n.kind in Reuse.LOOPVAR:
+					if g.name == "b":
+						n.p["var"] = "total"   # a member of the script
+					elif g.name == "c":
+						n.p["var"] = "items")  # a parameter of the function
+	check("clashing loop variables: written the way the compiler wrote them before",
+		not cl.after.contains("for total in") and not cl.after.contains("for items in") and cl.after.contains("for x in items:") and cl.before.contains("for item_"),
+		cl.after.left(300))
+	# (with per-use names all three are one macro; without, only the two numbered ones could be, which the steps
+	# inside the loop may outweigh, so that is not asked for)
+	check("clashing loop variables: the loops are one macro when each use can keep its name", macro_has_loop(cl.bp) or not per_use, "; ".join(cl.r.notes))
 
 	print("\n%s (%d failed)" % ["ALL PASS" if fails == 0 else "FAILURES", fails])
 	quit(1 if fails else 0)

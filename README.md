@@ -24,6 +24,11 @@ The graph compiles to plain, readable GDScript, and the graph itself is kept in 
 block. What runs in your game is the code on the right: no interpreter and no per-node cost. Turn the plugin
 off and your Schematics still run.
 
+The graph is what Schematic saves from, so a change made to the code by hand (or by a pull, or another tool) is
+not in the graph. Schematic notices: a bar above the graph says the file changed outside it, shows the differing
+lines, and nothing writes over the file until you choose to keep the graph. Bringing a hand edit into the graph
+is not done yet.
+
 ## Find any node by typing
 
 ![The action menu filtered by the word rotate](docs/images/action_menu.png)
@@ -269,7 +274,7 @@ outline. A line no node wrote (a declaration, a helper) says what it is under th
 
 ```
 godot --headless --path . --script res://tests/test_compile.gd
-godot --path . --editor -- --sc-selftest=res://tests/shot.gd        # also shot_input, shot_panels, shot_look, shot_alias, shot_macros, shot_tieins, shot_debug, shot_debugger, shot_interfaces, shot_collapse, shot_starters, shot_libs, shot_import, shot_data, shot_reuse, shot_flow_reroute, shot_edit_converted, shot_kit_missing, shot_public_kit, shot_code_link
+godot --path . --editor -- --sc-selftest=res://tests/shot.gd        # also shot_input, shot_panels, shot_look, shot_alias, shot_macros, shot_tieins, shot_debug, shot_debugger, shot_interfaces, shot_collapse, shot_starters, shot_libs, shot_import, shot_data, shot_reuse, shot_flow_reroute, shot_edit_converted, shot_kit_missing, shot_public_kit, shot_code_link, shot_drift
 godot --headless --path . --script res://tests/test_data.gd
 godot --headless --path . --script res://tests/test_import.gd
 godot --headless --path . --script res://tests/test_convert.gd     # the converter's torture test: tests/convert/*.gd run as written and converted
@@ -277,6 +282,8 @@ godot --headless --path . --script res://tests/test_fixed_point.gd # converting 
 godot --headless --path . --script res://tests/test_code_link.gd   # every generated line to its nodes, and back
 godot --headless --path . --script res://tests/test_kit_missing.gd # a node whose addon is missing keeps its wires
 godot --headless --path . --script res://tests/test_public_kit.gd  # nodes shipped by another addon (tests/fake_kit)
+godot --headless --path . --script res://tests/test_drift.gd       # telling a hand-edited file from the one Schematic wrote
+godot --headless --path . --script res://tests/test_sync.gd        # a script split into its blocks: the user's code and the compiler's
 godot --headless --path . --script res://tests/stress_convert.gd -- <folder of scripts>   # converts any scripts and checks the result (reads only)
 godot --headless --path . --script res://tests/test_libraries.gd
 godot --headless --path . --script res://tests/test_interfaces.gd

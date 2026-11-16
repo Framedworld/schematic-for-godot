@@ -20,6 +20,8 @@ const T := preload("res://addons/schematic/core/sc_types.gd")
 const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
 
 const LOOPS := ["for", "for_each", "for_each_dict", "while"]
+## Loops with a variable of their own (`p.var`, the name the script wrote it with).
+const LOOPVAR := ["for", "for_each", "for_each_dict"]
 const LEAVES := ["local_get", "var_get", "const", "self", "autoload"]
 ## Never part of a group: they leave the function or loop they are in, hold state per node, or are text.
 const NEVER := ["fn_return", "loop_break", "loop_continue", "macro_in", "macro_out", "fn_entry", "timeline", "comment",
@@ -39,6 +41,27 @@ var notes: Array = []  # what was done, one line each
 var _used: Dictionary = {}   # "graph key:node id" -> true, nodes already given to a macro in this pass
 var _gas: Array = []
 var _globals: Dictionary = {}
+var _pu := -1   # _per_use, looked up once
+
+
+## Can the compiler (and Expand Node) put each use's own loop variable name on the expanded loop? It says so with
+## the constant PER_USE_LOOP_VARS. When it can, groups that differ only in loop variable names are one macro: the
+## macro's loops have no name, and each use says which name stands where (`vars` on the macro node, loop node id in
+## the macro -> name). When it cannot, only groups whose loops are written with the same names are one macro (a
+## name the compiler numbers anyway counts as none), as the macro's loop has to carry the one name.
+func _per_use() -> bool:
+	if _pu == -1:
+		var script: Script = Compiler
+		_pu = 1 if script.get_script_constant_map().has("PER_USE_LOOP_VARS") else 0
+	return _pu == 1
+
+
+## A loop variable name as the compiler would write it without being told: "" for a numbered one (i_12).
+func _written(v: String) -> String:
+	for stem in ["i_", "item_", "key_"]:
+		if v.begins_with(stem) and v.substr(stem.length()).is_valid_int():
+			return ""
+	return v
 
 
 ## `files` is [{path, bp}]; the schematics are changed in place. `library_path` ("" for none) is where macros
@@ -398,7 +421,7 @@ func _block(ga: Dictionary, start: int) -> Dictionary:
 func _statement(ga: Dictionary, id: int) -> Dictionary:
 	var n: Dictionary = ga.nodes[id]
 	var d: Dictionary = ga.desc[id]
-	var st := {"head": id, "nodes": [id], "execs": [id], "slots": [], "sets": [], "selfs": [], "ok": true, "exit": [], "next": -1, "key": ""}
+	var st := {"head": id, "nodes": [id], "execs": [id], "slots": [], "sets": [], "selfs": [], "lids": [], "lvars": [], "ok": true, "exit": [], "next": -1, "key": ""}
 	if String(d.err) != "" or n.kind in NEVER:
 		st.ok = false
 	var key := _tree(ga, id, st)
@@ -434,6 +457,8 @@ func _statement(ga: Dictionary, id: int) -> Dictionary:
 				st.slots.append_array(s.slots)
 				st.sets.append_array(s.sets)
 				st.selfs.append_array(s.selfs)
+				st.lids.append_array(s.lids)
+				st.lvars.append_array(s.lvars)
 				if not bool(s.ok):
 					st.ok = false
 				key += String(s.key) + ";"
@@ -455,6 +480,15 @@ func _tree(ga: Dictionary, id: int, st: Dictionary) -> String:
 		p = p.duplicate()
 		st.sets.append(String(p.get("name", "")))
 		p["name"] = "?"
+	elif n.kind in LOOPVAR:
+		# the loop variable's name is not part of the shape (it is kept per use, see _per_use); the names are
+		# kept in order, next to the loops they belong to
+		p = p.duplicate()
+		var written := _written(String(p.get("var", "")))
+		st.lids.append(id)
+		st.lvars.append(written)
+		if written == "" or _per_use():
+			p.erase("var")
 	var out: String = n.kind + JSON.stringify(p, "", true) + JSON.stringify(n.get("split", {}), "", true) + "("
 	var wired: Dictionary = ga.vin.get(id, {})
 	var known := 0
@@ -509,7 +543,7 @@ func _flat(occ: Array) -> Dictionary:
 	var gi := int(occ[0])
 	var ga: Dictionary = _gas[gi]
 	var stmts: Array = ga.blocks[int(occ[1])].s.slice(int(occ[2]), int(occ[2]) + int(occ[3]))
-	var f := {"gi": gi, "ga": ga, "nodes": {}, "execs": [], "slots": [], "sets": [], "selfs": [], "entry": int(stmts[0].head),
+	var f := {"gi": gi, "ga": ga, "nodes": {}, "execs": [], "slots": [], "sets": [], "selfs": [], "lids": [], "lvars": [], "entry": int(stmts[0].head),
 		"exit": stmts[-1].exit, "block": int(occ[1]), "at": int(occ[2]), "len": int(occ[3]), "lmap": {}, "lnames": []}
 	for st in stmts:
 		for id in st.nodes:
@@ -520,6 +554,8 @@ func _flat(occ: Array) -> Dictionary:
 		f.slots.append_array(st.slots)
 		f.sets.append_array(st.sets)
 		f.selfs.append_array(st.selfs)
+		f.lids.append_array(st.lids)
+		f.lvars.append_array(st.lvars)
 	for nm in f.sets:
 		if not f.lmap.has(nm):
 			f.lmap[nm] = f.lnames.size()
@@ -894,6 +930,7 @@ func _apply(c: Dictionary, target: Dictionary, lib_path: String) -> void:
 			if String(ref.slots[int(si)].t) == "leaf":
 				feeders[int(ref.slots[int(si)].src)] = true
 	var remap := {}
+	var per_use := _per_use()
 	var low := Vector2(INF, INF)
 	var high := -INF
 	var g0: Dictionary = ref.ga.g
@@ -903,6 +940,8 @@ func _apply(c: Dictionary, target: Dictionary, lib_path: String) -> void:
 			continue
 		var copy: Dictionary = n.duplicate(true)
 		Model.forget_place(copy)   # inside a macro a name is just a name
+		if copy.kind in LOOPVAR and (per_use or _written(String(copy.p.get("var", ""))) == ""):
+			copy.p.erase("var")   # the uses name it (`vars`), or it is numbered at every use
 		copy.id = int(mg.next_id)
 		mg.next_id = int(mg.next_id) + 1
 		remap[id] = int(copy.id)
@@ -936,6 +975,9 @@ func _apply(c: Dictionary, target: Dictionary, lib_path: String) -> void:
 	for nm in ref.lnames:
 		mg.locals.append(_local(g0, nm).duplicate(true))
 
+	# the loops of the macro, in the order every place lists its own
+	c["lmacro"] = ref.lids.map(func(id): return int(remap[int(id)]))
+
 	# every place: one macro node instead of the group
 	for f in flats:
 		_replace(f, c, name, lib_path, out_names)
@@ -955,6 +997,13 @@ func _replace(f: Dictionary, c: Dictionary, name: String, lib_path: String, out_
 		for i in f.lnames.size():
 			names[String(ref.lnames[i])] = String(f.lnames[i])
 		p["names"] = names
+	if _per_use():
+		var vars := {}
+		for i in f.lids.size():
+			if String(f.lvars[i]) != "":
+				vars[str(int(c.lmacro[i]))] = String(f.lvars[i])
+		if not vars.is_empty():
+			p["vars"] = vars
 	var mnode := Model.add_node(g, "macro", Vector2(float(head.x), float(head.y)), p)
 	var mid := int(mnode.id)
 	var gone: Dictionary = f.nodes.duplicate()

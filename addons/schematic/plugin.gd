@@ -101,6 +101,8 @@ func _enter_tree() -> void:
 	add_debugger_plugin(_debugger)
 	_watch_file_dock()
 	_watch_kits()
+	# a script saved in Godot (its script editor) may be an open Schematic edited there by hand
+	resource_saved.connect(_on_resource_saved)
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--sc-selftest="):
 			_selftest.call_deferred(arg.trim_prefix("--sc-selftest="))
@@ -290,6 +292,11 @@ func reload_kits() -> void:
 		editor.toast("Schematic kits: %d problem%s, listed in the Output." % [R.kit_problems.size(), "" if R.kit_problems.size() == 1 else "s"])
 
 
+func _on_resource_saved(res: Resource) -> void:
+	if editor and res is Script and res.resource_path != "":
+		editor.check_drift_path(res.resource_path)
+
+
 func _selftest(path: String) -> void:
 	var s := load(path) as GDScript
 	if s:
@@ -323,6 +330,7 @@ func _make_visible(visible: bool) -> void:
 		editor.visible = not _showing_table
 		if visible and editor.visible:
 			editor._refresh_components()
+			editor.check_drift_all()
 	if table_editor:
 		table_editor.visible = _showing_table
 
@@ -418,6 +426,10 @@ func _save_external_data() -> void:
 
 func _get_unsaved_status(for_scene: String) -> String:
 	if for_scene == "" and editor and editor.has_unsaved():
+		var changed: Array = editor.unsaved_and_changed_outside()
+		if not changed.is_empty():
+			return "Save changes to open Schematics before closing?\n%s also changed outside Schematic: saving does not overwrite %s, so %s graph changes will be lost. Cancel to choose in the Schematic editor." % [
+				", ".join(changed.map(func(p): return String(p).get_file())), "it" if changed.size() == 1 else "them", "its" if changed.size() == 1 else "their"]
 		return "Save changes to open Schematics before closing?"
 	return ""
 

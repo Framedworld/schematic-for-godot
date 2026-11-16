@@ -11,6 +11,9 @@ const Model := preload("res://addons/schematic/core/sc_model.gd")
 const R := preload("res://addons/schematic/core/sc_registry.gd")
 
 const MAX_STATEMENTS := 20000
+## A macro use can say what each loop inside the macro calls its variable at that use (`p.vars`: loop node id in
+## the macro -> name); the reuse step looks for this constant before it shares loops whose names differ.
+const PER_USE_LOOP_VARS := true
 
 var bp: Dictionary
 var errors: Array = []      # [{g, n, m, w}]
@@ -25,6 +28,13 @@ var line_kinds: Dictionary = {}
 ## (function name -> "gid:nid" -> {pin id: expression}), and the lines each function covers ([first, last, name]).
 var pin_exprs: Dictionary = {}
 var block_lines: Array = []
+## For two-way editing (core/sc_sync.gd), one entry per line of the generated text as it reads (index = line - 1;
+## a string that runs over several lines counts each of its lines): the line of line_map / line_kinds / block_lines
+## it belongs to (those count a statement holding such a string as one line). Negative (that line negated) for a
+## line the compiler put at the top of a function that is no node's code: the prelude merged into _ready, _init or
+## _unhandled_input (input-action and key dispatch, signal wiring, timeline autoplay) and the Construction
+## Script's call and editor guard.
+var text_lines := PackedInt32Array()
 var _cur_block := ""
 var _chain_from := 0   # the node whose exec pin leads to the chain about to be written (0: not known)
 
@@ -121,6 +131,7 @@ func _take(other: Object, code: String) -> String:
 	line_kinds = other.line_kinds
 	pin_exprs = other.pin_exprs
 	block_lines = other.block_lines
+	text_lines = other.text_lines
 	lambda_notes = lambda_notes.merged(other.lambda_notes, true)
 	return code
 
@@ -133,6 +144,7 @@ func _compile_once(schematic: Dictionary) -> String:
 	line_kinds.clear()
 	pin_exprs.clear()
 	block_lines.clear()
+	text_lines.clear()
 	R.ensure_api()
 	var is_node := T.is_a(R.self_class(bp), "Node")
 	if not T.class_known(R.self_class(bp)):
@@ -256,7 +268,7 @@ func _compile_once(schematic: Dictionary) -> String:
 		_err(int(cg.id), 0, "A Construction Script needs a Node-derived schematic")
 		_construct = false
 	if _construct:
-		var guard := [] if bp.get("tool", false) else [[1, "if Engine.is_editor_hint():", 0, 0], [2, "return", 0, 0]]
+		var guard := [] if bp.get("tool", false) else [[1, "if Engine.is_editor_hint():", 0, 0, "guard"], [2, "return", 0, 0, "guard"]]
 		var ready := {}
 		for b in _blocks:
 			if b.name == "_ready":
@@ -264,7 +276,7 @@ func _compile_once(schematic: Dictionary) -> String:
 		if ready.is_empty():
 			ready = {"name": "_ready", "header": "func _ready() -> void:", "lines": [], "gid": 0, "nid": 0}
 			_blocks.push_front(ready)
-		ready.lines = [[1, "ConstructionScript()", 0, 0]] + guard + ready.lines
+		ready.lines = [[1, "ConstructionScript()", 0, 0, "guard"]] + guard + ready.lines
 		for b in _blocks:
 			if b.name != "_ready" and (b.get("event", false) or b.name == "_unhandled_input"):
 				b.lines = guard + b.lines
@@ -350,15 +362,24 @@ func _types_of(params: Array) -> PackedStringArray:
 
 func _assemble() -> String:
 	var lines := PackedStringArray()
-	var add := func(text: String, gid := 0, nid := 0, kind := "") -> void:
+	# Line numbers are those of the text as it is written: a piece that runs over several lines (a string with
+	# line breaks in a declaration or a statement) takes that many, and every one of them is recorded.
+	var at := [0]
+	var add := func(text: String, gid := 0, nid := 0, kind := "", own := false) -> void:
 		lines.append(text)
-		if kind != "":
-			line_kinds[lines.size()] = kind
+		var first: int = int(at[0]) + 1
+		var span := text.count("\n") + 1
+		at[0] = int(at[0]) + span
+		for k in span:
+			text_lines.append(-first if own else first)
+			if kind != "":
+				line_kinds[first + k] = kind
+			if nid != 0:
+				line_map[first + k] = [gid, nid]
 		if nid != 0:
-			line_map[lines.size()] = [gid, nid]
 			var key := "%d:%d" % [gid, nid]
 			if not node_lines.has(key):
-				node_lines[key] = lines.size()
+				node_lines[key] = first
 	add.call(Model.MARKER + " v%d - generated from a Schematic graph. Edit it in the Schematic editor, not by hand." % Model.VERSION, 0, 0, "header")
 	if bp.get("tool", false) or _construct:
 		add.call("@tool", 0, 0, "header")
@@ -466,12 +487,12 @@ func _assemble() -> String:
 		for pre_line in b.get("pre", []):
 			add.call(pre_line, b.gid, b.nid, "function")
 		add.call(("static " + String(b.header)) if (_lib and String(b.header).begins_with("func ")) else b.header, b.gid, b.nid, "helper" if b.get("helper", false) else "function")
-		var first_line := lines.size()
+		var first_line := int(at[0])
 		if b.lines.is_empty():
 			add.call("\tpass", b.gid, b.nid, "helper" if b.get("helper", false) else "")
 		for l in b.lines:
-			add.call("\t".repeat(l[0]) + l[1], l[2], l[3], "helper" if b.get("helper", false) else "")
-		block_lines.append([first_line, lines.size(), String(b.name)])
+			add.call("\t".repeat(l[0]) + l[1], l[2], l[3], "helper" if b.get("helper", false) else "", l.size() > 4 and typeof(l[4]) == TYPE_STRING)
+		block_lines.append([first_line, int(at[0]), String(b.name)])
 		add.call("")
 	return "\n".join(lines)
 
@@ -479,12 +500,13 @@ func _assemble() -> String:
 func _merge_prelude(fn: String, header: String, pre: Array) -> void:
 	if pre.is_empty():
 		return
+	pre = pre.map(func(l): return [l[0], l[1], l[2], l[3], "prelude"])   # (the mark is read by _assemble: text_lines)
 	for b in _blocks:
 		if b.name == fn:
 			# the prelude reads the engine's parameter names; an event may call its parameters otherwise
 			var own: Array = b.get("arg_names", [])
 			if fn == "_unhandled_input" and not own.is_empty() and String(own[0]) != "event":
-				pre = pre.map(func(l): return [l[0], _replace_word(String(l[1]), "event", String(own[0])), l[2], l[3]])
+				pre = pre.map(func(l): return [l[0], _replace_word(String(l[1]), "event", String(own[0])), l[2], l[3], l[4]])
 			b.lines = pre + b.lines
 			return
 	_blocks.push_front({"name": fn, "header": header, "lines": pre, "gid": 0, "nid": 0})
@@ -959,11 +981,14 @@ func _expand(g: Dictionary) -> Dictionary:
 		var remap := {}
 		var kinds := {}
 		var clones := {}
+		var use_vars: Dictionary = call.p.get("vars", {})
 		for mn in m.nodes:
 			kinds[int(mn.id)] = mn.kind
 			if mn.kind in ["macro_in", "macro_out", "comment"]:
 				continue
 			var c: Dictionary = mn.duplicate(true)
+			if use_vars.has(str(int(mn.id))):
+				c.p["var"] = String(use_vars[str(int(mn.id))])   # this use's name for the loop variable
 			c.id = int(x.next_id)
 			x.next_id = int(x.next_id) + 1
 			remap[int(mn.id)] = int(c.id)

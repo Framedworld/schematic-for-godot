@@ -66,6 +66,7 @@ func _init() -> void:
 	test_inline_lambda()
 	test_trace()
 	test_whole_scripts()
+	test_multi_line_strings()
 	test_speed()
 	print("CODE LINK FAILS: ", fails)
 	quit()
@@ -521,3 +522,40 @@ func test_speed() -> void:
 	var t3 := Time.get_ticks_usec()
 	print("TIMING synthetic script: %d lines, %d nodes: compile %.1f ms, build %.1f ms, then every query once %.1f ms" % [link.line_count, nodes, (t1 - t0) / 1000.0, (t2 - t1) / 1000.0, (t3 - t2) / 1000.0])
 	check("speed: the synthetic script is about 2,000 lines and the link built", link.line_count > 1500, str(link.line_count))
+
+
+## A string that runs over several lines takes several lines of the text: what is recorded for the lines after it
+## must still be those lines (the function header's record on the header's line, a node's record on its line).
+func test_multi_line_strings() -> void:
+	var src := "extends Node
+
+var banner := \"\"\"first
+second
+third\"\"\"
+var count := 0
+
+
+func bump(n: int) -> void:
+	count += n
+	print(\"\"\"a
+b\"\"\")
+	count -= 1
+"
+	var m := make(Importer.new().convert(src, {}).bp)
+	var header := line_starting(m, "func bump(")
+	var plus := line_starting(m, "count += n")
+	var minus := line_starting(m, "count -= 1")
+	check("multi-line strings: the script has the three lines looked for", header > 0 and plus > header and minus > plus, "%d %d %d" % [header, plus, minus])
+	check("multi-line strings: the header line is recorded as the function", m.link.kind_of_line(header) == "function", m.link.kind_of_line(header))
+	check("multi-line strings: the line after the member's string is a declaration", m.link.kind_of_line(line_starting(m, "var count")) == "declaration")
+	var plus_nodes: Array = m.link.nodes_at(plus)
+	var minus_nodes: Array = m.link.nodes_at(minus)
+	check("multi-line strings: a statement before the string in the body has its node", not plus_nodes.is_empty() and ints(m.link.own_lines_of(int(plus_nodes[0][0]), int(plus_nodes[0][1]))).has(plus), str(plus_nodes))
+	check("multi-line strings: a statement after the string in the body has its node", not minus_nodes.is_empty() and ints(m.link.own_lines_of(int(minus_nodes[0][0]), int(minus_nodes[0][1]))).has(minus), str(minus_nodes))
+	check("multi-line strings: the two statements are different nodes", plus_nodes != minus_nodes)
+	var blocks: Array = m.c.block_lines
+	var found := false
+	for b in blocks:
+		if String(b[2]) == "bump":
+			found = int(b[0]) == header and int(b[1]) == minus
+	check("multi-line strings: the function's block runs from its header to its last line", found, str(blocks))
