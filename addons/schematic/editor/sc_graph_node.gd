@@ -1,6 +1,6 @@
 @tool
 extends GraphNode
-## Visual for one schematic node: Unreal-style header colour, exec arrows, typed pins, inline defaults.
+## Visual for one schematic node: category accents, typed pins and inline defaults.
 
 const T := preload("res://addons/schematic/core/sc_types.gd")
 const W := preload("res://addons/schematic/editor/sc_widgets.gd")
@@ -33,7 +33,7 @@ const EVENT_KINDS := ["event", "custom_event", "input_action", "key_event", "sig
 const GHOST_TEXT := "This node is disabled and will not be called.\nDrag off pins to build functionality."
 
 
-## Title icons drawn as vectors in Unreal's shapes (event diamond, italic f, branch fork...).
+## Title icons drawn as vectors, in the node's accent colour (a bolt for events, brackets for calls, a fork...).
 class Glyph extends Control:
 	var shape := ""
 	var tint := Color(1, 1, 1, 0.95)
@@ -48,15 +48,12 @@ class Glyph extends Control:
 		var o := (size - Vector2(16, 16)) * 0.5
 		match shape:
 			"event":
-				var d := PackedVector2Array([o + Vector2(8, 0.5), o + Vector2(15.5, 8), o + Vector2(8, 15.5), o + Vector2(0.5, 8), o + Vector2(8, 0.5)])
-				draw_polyline(d, tint, 1.7, true)
-				draw_line(o + Vector2(4.5, 8), o + Vector2(10.5, 8), tint, 1.7, true)
-				draw_colored_polygon(PackedVector2Array([o + Vector2(8.2, 4.8), o + Vector2(11.8, 8), o + Vector2(8.2, 11.2)]), tint)
+				draw_colored_polygon(PackedVector2Array([o + Vector2(9.6, 0.5), o + Vector2(3.0, 9.2), o + Vector2(7.4, 9.2),
+					o + Vector2(6.0, 15.5), o + Vector2(13.0, 6.4), o + Vector2(8.6, 6.4)]), tint)
 			"function":
-				var f := get_theme_font("bold", "EditorFonts") if has_theme_font("bold", "EditorFonts") else get_theme_default_font()
-				draw_set_transform_matrix(Transform2D(Vector2(1, 0), Vector2(-0.28, 1), o + Vector2(7.5, 0)))
-				draw_string(f, Vector2(0, 13.5), "f", HORIZONTAL_ALIGNMENT_LEFT, -1, 16, tint)
-				draw_set_transform_matrix(Transform2D.IDENTITY)
+				draw_arc(o + Vector2(9.2, 8), 7.0, deg_to_rad(138), deg_to_rad(222), 10, tint, 1.8, true)
+				draw_arc(o + Vector2(6.8, 8), 7.0, deg_to_rad(-42), deg_to_rad(42), 10, tint, 1.8, true)
+				draw_circle(o + Vector2(8, 8), 1.5, tint, true, -1.0, true)
 			"branch":
 				draw_rect(Rect2(o + Vector2(0.5, 5.5), Vector2(5, 5)), tint)
 				draw_polyline(PackedVector2Array([o + Vector2(5, 8), o + Vector2(8.5, 8), o + Vector2(8.5, 3.5), o + Vector2(15, 3.5)]), tint, 1.6, true)
@@ -81,8 +78,23 @@ class Glyph extends Control:
 				draw_circle(o + Vector2(11, 8), 1.7, tint, true, -1.0, true)
 
 
-const PIN_X := 16          # how far inside the node edge a pin sits (Unreal draws pins inside the body)
+const PIN_X := 16          # how far inside the node edge a pin sits
 const ROW_H := 24
+
+# Each header uses the registry or kit's category colour. Its lighter accent marks the lower edge.
+const CARD := Color("#1e1c1af7")
+const CARD_EDGE := W.EDGE
+const PIN_HOLE := Color(0.06, 0.065, 0.08, 0.9)
+const EXEC_COLOR := Color(1, 1, 1)
+const SELECT := Color(1.0, 0.72, 0.1)
+const RADIUS := 7
+
+var _accent := Color(0.7, 0.72, 0.78)
+
+
+## The bright version of a node colour.
+static func accent_of(c: Color) -> Color:
+	return Color.from_hsv(c.h, c.s * 0.68, lerpf(c.v, 1.0, 0.72))
 
 
 func setup(view: Node, node: Dictionary, d: Dictionary, wired_in: Dictionary, wired_out: Dictionary, error: String, mark := "") -> void:
@@ -130,7 +142,7 @@ func setup(view: Node, node: Dictionary, d: Dictionary, wired_in: Dictionary, wi
 					row.add_child(sl)
 		var spacer := Control.new()
 		spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		spacer.custom_minimum_size.x = 14
+		spacer.custom_minimum_size.x = 10 if not pi.is_empty() and not po.is_empty() else 0
 		spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		row.add_child(spacer)
 		if d.compact and i == 0 and d.title != "" and (kind == "op" or kind == "math"):
@@ -300,8 +312,8 @@ func _pin_tip(pi: Dictionary, po: Dictionary) -> String:
 	return "\n\n".join(lines)
 
 
-## Unreal's pin shapes: a pentagon arrow for exec, a ring (filled once connected) with a small nub for data,
-## a grid for arrays and dictionaries.
+## The pin shapes: a triangle for exec, a ring for data (both filled once connected), a square for arrays and
+## dictionaries.
 func _draw_port(slot_index: int, pos: Vector2i, left: bool, color: Color) -> void:
 	var entry: Array = (_slot_in if left else _slot_out).get(slot_index, [])
 	if entry.is_empty():
@@ -311,66 +323,46 @@ func _draw_port(slot_index: int, pos: Vector2i, left: bool, color: Color) -> voi
 	var p := Vector2(pos)
 	var t := String(pin.type)
 	if t == "exec":
-		var pts := PackedVector2Array([p + Vector2(-5.5, -6), p + Vector2(0.5, -6), p + Vector2(6, 0), p + Vector2(0.5, 6), p + Vector2(-5.5, 6)])
-		if wired:
-			draw_colored_polygon(pts, Color.WHITE)
-		else:
-			draw_colored_polygon(pts, Color(0, 0, 0, 0.35))
-		pts.append(pts[0])
-		draw_polyline(pts, Color.WHITE, 1.6, true)
+		var pts := PackedVector2Array([p + Vector2(-4.5, -5.5), p + Vector2(5.0, 0), p + Vector2(-4.5, 5.5)])
+		draw_colored_polygon(pts, EXEC_COLOR if wired else PIN_HOLE)
+		# (the outline starts and ends in the middle of the flat side, so no corner is left open)
+		draw_polyline(PackedVector2Array([p + Vector2(-4.5, 0), pts[0], pts[1], pts[2], p + Vector2(-4.5, 0)]), EXEC_COLOR, 1.8, true)
 		return
 	if kind == "reroute":
 		draw_circle(p, 4.5, color, true, -1.0, true)
 		return
 	if t.begins_with("Array") or t.begins_with("Packed") or t == "Dictionary":
-		for gy in range(-1, 2):
-			for gx in range(-1, 2):
-				if gx == 0 and gy == 0 and not wired:
-					continue
-				draw_rect(Rect2(p + Vector2(gx * 4 - 1.5, gy * 4 - 1.5), Vector2(3, 3)), color)
+		var box := Rect2(p - Vector2(4.5, 4.5), Vector2(9, 9))
+		draw_rect(box, color if wired else PIN_HOLE)
+		draw_rect(box, color, false, 1.8)
+		if not wired:
+			draw_rect(Rect2(p - Vector2(1.5, 1.5), Vector2(3, 3)), color)
 		return
 	if wired:
-		draw_circle(p, 5.0, color, true, -1.0, true)
+		draw_circle(p, 5.2, color, true, -1.0, true)
 	else:
-		draw_circle(p, 4.4, Color(0, 0, 0, 0.45), true, -1.0, true)
-		draw_circle(p, 4.4, color, false, 1.7, true)
-	draw_colored_polygon(PackedVector2Array([p + Vector2(6.6, -2.6), p + Vector2(9.4, 0), p + Vector2(6.6, 2.6)]), color)
+		draw_circle(p, 4.4, PIN_HOLE, true, -1.0, true)
+		draw_circle(p, 4.4, color, false, 1.8, true)
 
 
-## Title treatment drawn over the flat header: colour spilling from the left into the dark body, a soft gloss
-## along the top edge, and the breakpoint marker on the corner.
+## The title catches light along the top and casts a short shadow onto the body.
+const HEADER_SHADE := [Color.TRANSPARENT, Color.TRANSPARENT, Color(0, 0, 0, 0.19), Color(0, 0, 0, 0.19)]
+const CONTACT_SHADE := [Color(0, 0, 0, 0.26), Color(0, 0, 0, 0.26), Color.TRANSPARENT, Color.TRANSPARENT]
+
 func _draw() -> void:
 	if not _headless:
 		var hb := get_titlebar_hbox()
-		var w := size.x
 		var h := hb.position.y + hb.size.y + _head_bottom
-		var i := _inset
-		var r := 7.0
-		var outline := PackedVector2Array([Vector2(i, h), Vector2(i, r)])
-		for k in range(1, 6):
-			var ang := PI + (PI * 0.5) * k / 5.0
-			outline.append(Vector2(r, r) + Vector2(cos(ang), sin(ang)) * (r - i))
-		for k in range(0, 5):
-			var ang := PI * 1.5 + (PI * 0.5) * k / 5.0
-			outline.append(Vector2(w - r, r) + Vector2(cos(ang), sin(ang)) * (r - i))
-		outline.append(Vector2(w - i, r))
-		outline.append(Vector2(w - i, h))
-		var spill := PackedColorArray()
-		var gloss := PackedColorArray()
-		var gloss_pts := PackedVector2Array()
-		for pt in outline:
-			spill.append(Color(0.035, 0.035, 0.04, 0.78 * pow(clampf(pt.x / maxf(w, 1.0), 0.0, 1.0), 0.75)))
-			var gp := Vector2(pt.x, minf(pt.y, h * 0.55))
-			gloss_pts.append(gp)
-			gloss.append(Color(1, 1, 1, 0.16 * (1.0 - gp.y / (h * 0.55))))
-		draw_polygon(outline, spill)
-		draw_polygon(gloss_pts, gloss)
-	if not _headless and kind in EVENT_KINDS:
-		var hb2 := get_titlebar_hbox()
-		var cy := hb2.position.y + hb2.size.y * 0.5
-		var sq := Rect2(size.x - 19, cy - 4.5, 9, 9)
-		draw_rect(sq, Color(0.95, 0.12, 0.1), false, 1.6)
-		draw_rect(sq.grow(-2.5), Color(0.95, 0.12, 0.1, 0.85))
+		var inset := maxf(_inset, 2.0 if selected else 1.0)
+		var right := size.x - inset
+		if h > RADIUS and right > inset:
+			draw_polygon(PackedVector2Array([Vector2(inset, RADIUS), Vector2(right, RADIUS),
+				Vector2(right, h), Vector2(inset, h)]), HEADER_SHADE)
+			draw_polygon(PackedVector2Array([Vector2(inset, h), Vector2(right, h),
+				Vector2(right, h + 4), Vector2(inset, h + 4)]), CONTACT_SHADE)
+			draw_line(Vector2(inset, h - 1), Vector2(right, h - 1), Color(_accent, 0.8))
+	if kind != "reroute" and size.x > RADIUS * 2:
+		draw_line(Vector2(RADIUS, _inset + 1), Vector2(size.x - RADIUS, _inset + 1), Color(1, 1, 1, 0.24))
 	if _breakpoint:
 		draw_circle(Vector2(2, 2), 8.0, Color(0.25, 0.02, 0.02), true, -1.0, true)
 		draw_circle(Vector2(2, 2), 6.5, Color(0.93, 0.1, 0.08), true, -1.0, true)
@@ -685,6 +677,8 @@ func _title_icon() -> Texture2D:
 
 func _header(d: Dictionary) -> void:
 	var hb := get_titlebar_hbox()
+	var category: Color = d.color
+	var ink := Color("#101820") if category.srgb_to_linear().get_luminance() > 0.22 else Color.WHITE
 	if d.compact and kind != "op" and kind != "math" and d.title == "":
 		return
 	var bold := EditorInterface.get_editor_theme().get_font("bold", "EditorFonts") if EditorInterface.get_editor_theme() else null
@@ -692,12 +686,11 @@ func _header(d: Dictionary) -> void:
 		if c is Label:
 			if bold:
 				c.add_theme_font_override("font", bold)
-			c.add_theme_color_override("font_color", Color(1, 1, 1, 0.96))
-			c.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.5))
-			c.add_theme_constant_override("shadow_offset_y", 1)
+			c.add_theme_color_override("font_color", ink)
 	var shape := _glyph_shape()
 	if shape != "" and not _headless:
 		var gl := Glyph.new(shape)
+		gl.tint = ink
 		hb.add_child(gl)
 		hb.move_child(gl, 0)
 	var ic := _title_icon() if shape == "" else null
@@ -705,7 +698,7 @@ func _header(d: Dictionary) -> void:
 		var tr := TextureRect.new()
 		tr.texture = ic
 		tr.stretch_mode = TextureRect.STRETCH_KEEP_CENTERED
-		tr.modulate = Color(1, 1, 1, 0.92)
+		tr.modulate = ink
 		tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		hb.add_child(tr)
 		hb.move_child(tr, 0)
@@ -719,6 +712,7 @@ func _header(d: Dictionary) -> void:
 		vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		var tl := Label.new()
 		tl.text = d.title
+		tl.add_theme_color_override("font_color", ink)
 		tl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		if bold:
 			tl.add_theme_font_override("font", bold)
@@ -727,7 +721,7 @@ func _header(d: Dictionary) -> void:
 			var sl := Label.new()
 			sl.text = d.sub
 			sl.add_theme_font_size_override("font_size", 10)
-			sl.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
+			sl.add_theme_color_override("font_color", Color(ink, 0.86))
 			sl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			sl.clip_text = true
 			sl.custom_minimum_size.x = 120
@@ -743,10 +737,11 @@ func _header(d: Dictionary) -> void:
 
 func _style(d: Dictionary, has_error: bool) -> void:
 	var c: Color = d.color
-	var edge := Color(0, 0, 0, 0.85) if not has_error else Color(0.9, 0.15, 0.1)
+	_accent = accent_of(c)
+	var edge := CARD_EDGE if not has_error else Color(0.95, 0.25, 0.2)
 	var body := StyleBoxFlat.new()
-	body.bg_color = Color(0.055, 0.055, 0.06, 0.9)
-	body.set_corner_radius_all(8)
+	body.bg_color = CARD
+	body.set_corner_radius_all(RADIUS)
 	body.corner_radius_top_left = 0
 	body.corner_radius_top_right = 0
 	body.set_border_width_all(1)
@@ -754,43 +749,42 @@ func _style(d: Dictionary, has_error: bool) -> void:
 	body.border_color = edge
 	body.content_margin_left = PIN_X + 14
 	body.content_margin_right = PIN_X + 14
-	body.content_margin_top = 5
+	body.content_margin_top = 6
 	body.content_margin_bottom = 7
-	body.shadow_color = Color(0, 0, 0, 0.3)
+	body.shadow_color = Color(0.01, 0.025, 0.04, 0.52)
 	body.shadow_size = 9
-	body.shadow_offset = Vector2(0, 3)
+	body.shadow_offset = Vector2(0, 4)
 	body.anti_aliasing_size = 1.0
 	var head := StyleBoxFlat.new()
-	head.bg_color = Color(c.r, c.g, c.b, 0.97)
-	head.set_corner_radius_all(8)
+	head.bg_color = Color(c, 1.0)
+	head.set_corner_radius_all(RADIUS)
 	head.corner_radius_bottom_left = 0
 	head.corner_radius_bottom_right = 0
 	head.set_border_width_all(1)
 	head.border_width_bottom = 0
 	head.border_color = edge
 	head.content_margin_left = 10
-	head.content_margin_right = 26 if kind in ["event", "custom_event", "input_action", "key_event", "signal_event"] else 12
+	head.content_margin_right = 12
 	head.content_margin_top = 5
-	head.content_margin_bottom = 5
-	head.shadow_color = Color(0, 0, 0, 0.3)
-	head.shadow_size = 9
-	head.shadow_offset = Vector2(0, 3)
-	_head_bottom = 5.0
+	head.content_margin_bottom = 6
+	head.shadow_color = Color(0.01, 0.025, 0.04, 0.28)
+	head.shadow_size = 6
+	head.shadow_offset = Vector2(0, 2)
+	_head_bottom = 6.0
 	_headless = d.compact and (d.title == "" or kind == "op" or kind == "math")
 	if _headless:
 		head = StyleBoxFlat.new()
 		head.bg_color = Color(0, 0, 0, 0)
 		head.content_margin_top = 0
 		head.content_margin_bottom = 0
-		body.set_corner_radius_all(15)
+		# Compact nodes (a variable, a constant): a small card carrying a tint of the node colour, outlined in it.
+		body.set_corner_radius_all(RADIUS)
 		body.set_border_width_all(1)
-		# Unreal's compact nodes: a dark pill carrying a tint of the node colour.
-		body.bg_color = Color(0.05 + c.r * 0.28, 0.05 + c.g * 0.28, 0.05 + c.b * 0.28, 0.93)
-		body.border_color = Color(c.r * 0.75, c.g * 0.75, c.b * 0.75, 0.9) if not has_error else edge
+		body.bg_color = Color.from_hsv(c.h, c.s * 0.78, 0.19, CARD.a)
+		body.border_color = Color(_accent.r, _accent.g, _accent.b, 0.5) if not has_error else edge
 		if kind == "op" or kind == "math":
-			body.bg_color = Color(0.1, 0.1, 0.105, 0.94)
-			body.border_color = Color(0.3, 0.3, 0.31, 0.95) if not has_error else edge
-			body.set_corner_radius_all(10)
+			body.bg_color = CARD
+			body.border_color = Color(1, 1, 1, 0.16) if not has_error else edge
 		body.content_margin_top = 3
 		body.content_margin_bottom = 3
 		if kind == "reroute":
@@ -801,7 +795,7 @@ func _style(d: Dictionary, has_error: bool) -> void:
 			body.shadow_size = 0
 	var body_sel := body.duplicate() as StyleBoxFlat
 	var head_sel := head.duplicate() as StyleBoxFlat
-	var sel_col := Color(1.0, 0.72, 0.1)
+	var sel_col := SELECT
 	body_sel.border_color = sel_col
 	body_sel.set_border_width_all(2)
 	if not _headless:

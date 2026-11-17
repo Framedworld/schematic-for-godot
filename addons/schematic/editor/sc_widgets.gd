@@ -5,6 +5,16 @@ extends RefCounted
 const T := preload("res://addons/schematic/core/sc_types.gd")
 const R := preload("res://addons/schematic/core/sc_registry.gd")
 
+# Shared surfaces and interaction colours for the Schematic workspace.
+const CANVAS := Color("#373330")
+const CHROME := Color("#2c2926")
+const INSET := Color("#23211f")
+const EDGE := Color("#504a44")
+const ACCENT := Color("#81d8c3")
+const ACTIVE := Color("#24554e")
+const TEXT := Color("#ebe7e2")
+const MUTED := Color("#bbb3ab")
+
 static var _swatches: Dictionary = {}
 static var _exec_icon: Texture2D
 static var _exec_icon_hollow: Texture2D
@@ -91,12 +101,13 @@ static func _small_line(text: String, width: float) -> LineEdit:
 	le.add_theme_font_size_override("font_size", 12)
 	le.select_all_on_focus = true
 	le.context_menu_enabled = false
-	# Unreal's inline pin value box: near-black with a thin light outline.
+	# Keep the focused pin field visible against both the card and its category tint.
 	for state in ["normal", "focus", "read_only"]:
 		var box := StyleBoxFlat.new()
-		box.bg_color = Color(0.02, 0.02, 0.022, 0.6)
+		box.bg_color = Color("#1d1a18")
 		box.set_border_width_all(1)
-		box.border_color = Color(0.78, 0.78, 0.78, 0.85) if state != "focus" else Color(0.3, 0.6, 1.0)
+		box.border_color = EDGE if state != "focus" else ACCENT
+		box.border_width_top = 2 if state != "focus" else 1
 		box.set_corner_radius_all(4)
 		box.content_margin_left = 6
 		box.content_margin_right = 6
