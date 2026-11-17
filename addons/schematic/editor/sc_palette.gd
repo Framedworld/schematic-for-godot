@@ -31,11 +31,10 @@ func _init() -> void:
 	vb.custom_minimum_size = Vector2(440, 470)
 	add_child(vb)
 	var frame := StyleBoxFlat.new()
-	vb.add_theme_constant_override("separation", 6)
-	frame.bg_color = W.CHROME
+	frame.bg_color = Color(0.09, 0.09, 0.095)
 	frame.set_border_width_all(1)
-	frame.border_color = W.EDGE
-	frame.set_corner_radius_all(9)
+	frame.border_color = Color(0.3, 0.3, 0.3)
+	frame.set_corner_radius_all(5)
 	frame.set_content_margin_all(8)
 	frame.shadow_color = Color(0, 0, 0, 0.4)
 	frame.shadow_size = 8
@@ -46,7 +45,7 @@ func _init() -> void:
 	_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_title.clip_text = true
 	_title.add_theme_font_size_override("font_size", 13)
-	_title.add_theme_color_override("font_color", W.ACCENT)
+	_title.add_theme_color_override("font_color", Color(1, 1, 1, 0.75))
 	top.add_child(_title)
 	_context = CheckBox.new()
 	_context.text = "Context Sensitive"
@@ -57,7 +56,7 @@ func _init() -> void:
 		_search.grab_focus())
 	top.add_child(_context)
 	_search = LineEdit.new()
-	_search.placeholder_text = "Search nodes"
+	_search.placeholder_text = "Search"
 	_search.clear_button_enabled = true
 	_search.text_changed.connect(func(_t): _fill())
 	_search.text_submitted.connect(func(_t): _activate())

@@ -114,12 +114,10 @@ func build_ui() -> void:
 	_parent_btn.pressed.connect(func(): _select({"kind": "class"}))
 	tab_row.add_child(_parent_btn)
 
-	# --- workspace toolbar
+	# --- toolbar: flat icon buttons on a dark strip, in Unreal's order
 	var strip := PanelContainer.new()
 	var strip_bg := StyleBoxFlat.new()
-	strip_bg.bg_color = W.CHROME
-	strip_bg.border_width_bottom = 1
-	strip_bg.border_color = W.EDGE
+	strip_bg.bg_color = Color(0.082, 0.082, 0.086)
 	strip_bg.content_margin_left = 6
 	strip_bg.content_margin_right = 6
 	strip_bg.content_margin_top = 3
@@ -226,7 +224,7 @@ func build_ui() -> void:
 	var comp_box := VBoxContainer.new()
 	comp_box.custom_minimum_size.y = 150
 	left.add_child(comp_box)
-	comp_box.add_child(_header("Scene nodes"))
+	comp_box.add_child(_header("Components"))
 	_components = Tree.new()
 	_components.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_components.hide_root = false
@@ -237,7 +235,7 @@ func build_ui() -> void:
 	comp_box.add_child(_components)
 	var mem_box := VBoxContainer.new()
 	left.add_child(mem_box)
-	mem_box.add_child(_header("Members"))
+	mem_box.add_child(_header("My Schematic"))
 	var mem_top := HBoxContainer.new()
 	mem_box.add_child(mem_top)
 	var mem_add := _tool_menu("Add", ["Variable", "Function", "Macro", "Custom Event", "Event Dispatcher", "Enumeration"], func(i: int):
@@ -280,7 +278,7 @@ func build_ui() -> void:
 	grow.add_child(_graph_tabs)
 	var nav := PanelContainer.new()
 	var nav_bg := StyleBoxFlat.new()
-	nav_bg.bg_color = W.INSET
+	nav_bg.bg_color = Color(0.1, 0.1, 0.105)
 	nav_bg.content_margin_left = 6
 	nav_bg.content_margin_right = 6
 	nav_bg.content_margin_top = 2
@@ -301,13 +299,13 @@ func build_ui() -> void:
 	var crumb_icon := TextureRect.new()
 	crumb_icon.texture = W.icon("GraphEdit")
 	crumb_icon.stretch_mode = TextureRect.STRETCH_KEEP_CENTERED
-	crumb_icon.modulate = W.ACCENT
+	crumb_icon.modulate = Color(1, 1, 1, 0.7)
 	nav_row.add_child(crumb_icon)
 	_crumb = Label.new()
-	_crumb.add_theme_font_size_override("font_size", 14)
 	_crumb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_crumb.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	_crumb.add_theme_color_override("font_color", W.TEXT)
+	_crumb.add_theme_font_size_override("font_size", 18)
+	_crumb.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
 	nav_row.add_child(_crumb)
 	_build_drift_bar(gbox)
 	_view = GraphView.new()
@@ -396,7 +394,8 @@ func build_ui() -> void:
 	_refresh_all()
 
 
-## A toolbar command with a distinct persistent state for toggles.
+## Panel caption, styled like the dark title band on Unreal's Components / My Blueprint / Details panels.
+## A flat toolbar button: icon and optional label, lit on hover, blue while toggled on.
 func _tool(text: String, icon_name: String, tip: String, on_press: Callable) -> Button:
 	var b := Button.new()
 	b.text = text
@@ -415,7 +414,7 @@ func _tool(text: String, icon_name: String, tip: String, on_press: Callable) -> 
 		match state:
 			"normal", "disabled": sb.bg_color = Color(0, 0, 0, 0)
 			"hover": sb.bg_color = Color(1, 1, 1, 0.1)
-			_: sb.bg_color = W.ACTIVE
+			_: sb.bg_color = Color(0.05, 0.42, 0.87)
 		b.add_theme_stylebox_override(state, sb)
 	b.pressed.connect(on_press)
 	return b
@@ -456,9 +455,7 @@ func _header(text: String) -> Label:
 	if bold:
 		l.add_theme_font_override("font", bold)
 	var band := StyleBoxFlat.new()
-	band.bg_color = W.CHROME
-	band.border_width_left = 3
-	band.border_color = W.ACCENT
+	band.bg_color = Color(0, 0, 0, 0.28)
 	band.set_corner_radius_all(3)
 	band.content_margin_left = 8
 	band.content_margin_right = 8
@@ -2209,7 +2206,7 @@ func _refresh_graph_tabs() -> void:
 		_graph_tabs.current_tab = cur
 	_suppress_tabs = false
 	var g := cur_graph()
-	_crumb.text = "%s   /   %s" % [doc.path.get_file().get_basename(), g.get("name", "")]
+	_crumb.text = "%s  >  %s" % [doc.path.get_file().get_basename(), g.get("name", "")]
 	# graph history for the back / forward arrows
 	if not doc.has("nav"):
 		doc["nav"] = []
@@ -2808,7 +2805,7 @@ func _find_in_schematic() -> void:
 func open_palette(screen_pos: Vector2, ctx: Dictionary, on_pick: Callable) -> void:
 	var bp: Dictionary = doc.bp
 	var g := cur_graph()
-	var title := "Add node"
+	var title := "All Actions for this Schematic"
 	if not ctx.is_empty():
 		var tn := "Exec" if ctx.type == "exec" else ("Wildcard" if ctx.type == "any" else String(ctx.type))
 		title = ("Actions taking a %s" if ctx.out else "Actions providing a %s") % tn
@@ -3462,7 +3459,7 @@ func _section(text: String) -> void:
 	head.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
 	for state in ["normal", "hover", "pressed", "focus"]:
 		var band := StyleBoxFlat.new()
-		band.bg_color = W.CHROME if state != "hover" else W.EDGE
+		band.bg_color = Color(0.17, 0.17, 0.175) if state != "hover" else Color(0.22, 0.22, 0.225)
 		band.border_width_bottom = 1
 		band.border_width_top = 1
 		band.border_color = Color(0, 0, 0, 0.55)
@@ -3785,7 +3782,7 @@ func _fill_details() -> void:
 		"defaults":
 			_details_title.text = "Class Defaults"
 			if bp.variables.is_empty():
-				_note("This schematic has no variables yet. Add one in Members to edit its default here.")
+				_note("This schematic has no variables yet. Add one in My Schematic; its default value shows up here.")
 			var by_cat := {}
 			var order := []
 			for dv in bp.variables:
@@ -3972,7 +3969,7 @@ func _interface_rows(bp: Dictionary) -> void:
 		if not mine.has(iname):
 			choices.append(String(iname))
 	var add := _tool_menu("Add Interface", choices, func(i: int): implement_interface(String(choices[i])),
-		"Make this schematic implement a Schematic Interface: its functions are added to Members for you to fill in.", "Add")
+		"Make this schematic implement a Schematic Interface: its functions are added to My Schematic for you to fill in.", "Add")
 	add.disabled = choices.is_empty()
 	_row("Interfaces", add, "Schematic Interfaces are made with New Schematic Class > Schematic Interface." if not choices.is_empty() or not mine.is_empty() else "There is no Schematic Interface in this project yet. Make one with New Schematic Class > Schematic Interface.")
 

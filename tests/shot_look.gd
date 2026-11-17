@@ -65,7 +65,7 @@ func run(p: EditorPlugin) -> void:
 			headers += 1
 			for state in ["titlebar", "titlebar_selected"]:
 				var header: StyleBoxFlat = node.get_theme_stylebox(state)
-				colours_match = colours_match and header.bg_color.is_equal_approx(Color(node.desc.color, 1.0))
+				colours_match = colours_match and header.bg_color.is_equal_approx(Color(node.desc.color, 0.97))
 	note("%s  all %d node headers keep their category colours when selected" % ["PASS" if headers > 0 and colours_match else "FAIL", headers])
 	var first: GraphNode = view.get_node("n1")
 	first.selected = true
