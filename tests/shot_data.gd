@@ -3,12 +3,14 @@ extends RefCounted
 ## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_data.gd
 ## With `-- --sc-selftest=res://tests/shot_data.gd --keep-demo` it writes the same things to res://demo/data
 ## and leaves them there as a sample.
+const Scan := preload("res://tests/editor_scan.gd")
 const Model := preload("res://addons/schematic/core/sc_model.gd")
 const R := preload("res://addons/schematic/core/sc_registry.gd")
 const T := preload("res://addons/schematic/core/sc_types.gd")
 
-var DIR := "res://demo/tmp_data"
-var ROW := "SC_TRow"
+var run_id := ResourceUID.id_to_text(ResourceUID.create_id()).trim_prefix("uid://")
+var DIR := "res://demo/tmp_data_" + run_id
+var ROW := "SC_TRow_" + run_id
 var keep := false
 var passed := 0
 var failed := 0
@@ -65,13 +67,14 @@ func cleanup() -> void:
 			ed._close_doc(i)
 	if keep:
 		return
+	await Scan.idle(tree)
 	plugin.table_editor.table = null
 	var dir := DirAccess.open(DIR)
 	if dir:
 		for f in dir.get_files():
 			dir.remove(f)
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(DIR))
-	EditorInterface.get_resource_filesystem().scan()
+	await Scan.rescan(tree)
 
 
 func run(p: EditorPlugin) -> void:
@@ -85,9 +88,8 @@ func run(p: EditorPlugin) -> void:
 	note("--- start%s" % (" (writing the sample to demo/data)" if keep else ""))
 	tree.create_timer(110.0).timeout.connect(func():
 		note("watchdog quit")
-		cleanup()
-		tree.quit())
-	await tree.create_timer(2.5).timeout
+		tree.quit(1))
+	await Scan.idle(tree)
 	EditorInterface.set_main_screen_editor("Schematic")
 	await tree.create_timer(0.6).timeout
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(DIR))
@@ -97,7 +99,7 @@ func run(p: EditorPlugin) -> void:
 	var row_path := await create("Resource", "data_asset", ROW)
 	check("Data Asset starter opens with no errors", ed.doc.path == row_path and ed.doc.errors.is_empty() and ed.doc.bp.get("library", "") == "data", str(ed.doc.errors))
 	check("its variables compile to exported fields", FileAccess.get_file_as_string(row_path).contains("@export var display_name: String") and FileAccess.get_file_as_string(row_path).contains("extends Resource"))
-	EditorInterface.get_resource_filesystem().scan()
+	await Scan.rescan(tree)
 	var waited := 0.0
 	while waited < 15.0:
 		await tree.create_timer(0.5).timeout
@@ -155,8 +157,12 @@ func run(p: EditorPlugin) -> void:
 	# 4. undo and redo
 	var ur := p.get_undo_redo()
 	var history: UndoRedo = ur.get_history_undo_redo(ur.get_object_history_id(table))
+	te.edit(table.duplicate(true))
 	history.undo()
 	await frames(4)
+	on_disk = ResourceLoader.load(table_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	check("undo saves its original table while another table is open", is_equal_approx(on_disk.get_row(&"gem").weight, 1.0))
+	te.edit(table)
 	check("undo takes back the last cell edit", is_equal_approx(table.get_row(&"gem").weight, 1.0), str(table.get_row(&"gem").weight))
 	history.redo()
 	await frames(4)
@@ -224,7 +230,7 @@ func run(p: EditorPlugin) -> void:
 	plugin.show_table(false)
 
 	# 9. a graph reads the table
-	var user_path := await create("Node", "", "SC_Shop" if keep else "SC_TUser")
+	var user_path := await create("Node", "", "SC_Shop" if keep else "SC_TUser_" + run_id)
 	var ids := {}
 	ed.mutate("Read the table", func():
 		var bp: Dictionary = ed.doc.bp
@@ -265,7 +271,6 @@ func run(p: EditorPlugin) -> void:
 	await tree.create_timer(0.5).timeout
 	EditorInterface.get_base_control().get_viewport().get_texture().get_image().save_png("res://tests/out/look_22_data_graph.png")
 
-	cleanup()
-	await tree.create_timer(1.0).timeout
+	await cleanup()
 	note("passed %d, failed %d" % [passed, failed])
-	tree.quit()
+	tree.quit(1 if failed else 0)

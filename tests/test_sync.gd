@@ -37,7 +37,7 @@ func _init() -> void:
 	test_speed()
 	print("informational: %s" % str(info))
 	print("SYNC FAILS: ", fails)
-	quit()
+	quit(1 if fails else 0)
 
 
 # ================================================================ helpers

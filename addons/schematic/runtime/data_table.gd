@@ -268,7 +268,9 @@ static func text_to_value(text: String, column: Dictionary) -> Array:
 						return [true, int(parts[1]) if parts.size() > 1 else i]
 			if trimmed == "":
 				return [true, 0]
-			return [trimmed.is_valid_int() or trimmed.is_valid_float(), int(trimmed.to_float())]
+			if trimmed.is_valid_int():
+				return [true, trimmed.to_int()]
+			return [trimmed.is_valid_float(), int(trimmed.to_float())]
 		TYPE_FLOAT:
 			if trimmed == "":
 				return [true, 0.0]

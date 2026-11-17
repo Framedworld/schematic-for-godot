@@ -86,5 +86,24 @@ func _init() -> void:
 	var crlf_text := Model.build_source(code, bp_crlf)
 	check("a CRLF schematic is written with CRLF and its fingerprint matches", crlf_text.contains("\r\n") and Model.stored_code_hash(crlf_text) == stored and not Model.code_edited(crlf_text))
 
+	var lit_src := "extends Node\nconst VERSE = \"\"\"first  \n#~ literal\n#region Schematic graph data\n#~ {example}\n#endregion\nlast\"\"\"\n"
+	var lit_bp: Dictionary = preload("res://addons/schematic/core/sc_importer.gd").new().convert(lit_src, {}).bp
+	var lit_code := Compiler.new().compile(lit_bp)
+	var literal := Model.build_source(lit_code, lit_bp)
+	check("fixture contains its literal whitespace and graph lookalike", lit_code.contains("first  \n#~ literal"))
+	for region in [Model.GRAPH_BLOCK, Model.OLD_GRAPH_BLOCK]:
+		var saved := literal.substr(0, Model.graph_block_at(literal)) + literal.substr(Model.graph_block_at(literal)).replace(Model.GRAPH_BLOCK, region)
+		check("only the real trailing graph is decoded", Compiler.new().compile(Model.parse_source(saved)) == lit_code)
+		check("a literal graph header stays in the code", Model.code_part(saved) == Model.normalize_code(lit_code))
+		check("a literal space edit triggers drift", not Model.code_edited(saved) and Model.code_edited(saved.replace("first  \n", "first \n")))
+	var imitation := Model.MARKER + "\nextends Node\nconst TEXT = \"\"\"\n#region Schematic graph data\n#~ {}\n#endregion\n\"\"\"\n#endregion\n"
+	check("a quoted footer alone is never treated as metadata", Model.graph_block_at(imitation) < 0 and Model.parse_source(imitation).is_empty())
+	var legacy := literal.replace("#~hash-v2\n", "").replace(Model.stored_code_hash(literal), Model.code_hash(lit_code.replace("first  \n", "first\n")))
+	check("legacy fingerprint tolerates the original literal", not Model.code_edited(legacy))
+	check("legacy fingerprint protects deleted literal spaces", Model.code_edited(legacy.replace("first  \n", "first\n")))
+	lit_bp["crlf"] = true
+	var win := Model.build_source(lit_code, lit_bp)
+	check("preserve CRLF inside a literal", not Model.code_edited(win) and Model.code_edited(win.replace("first  \r\n", "first  \n")))
+
 	print("%s  verdict: %d check%s failed" % ["PASS" if fails == 0 else "FAIL", fails, "" if fails == 1 else "s"])
 	quit(1 if fails else 0)

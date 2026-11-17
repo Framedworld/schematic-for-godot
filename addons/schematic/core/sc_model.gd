@@ -28,6 +28,7 @@ extends RefCounted
 ##     the `#endregion` lines right below the function; p.empty {exec pin: {note, tail}} a block of nothing but
 ##     `pass` (written with the `pass` for that pin). A code node's text holds the comments inside its statement.
 
+const Types := preload("res://addons/schematic/core/sc_types.gd")
 const MARKER := "# @schematic"
 ## The plugin was called Blueprints before it was called Schematic. Files it wrote then start with this marker
 ## and name their graph block differently; they still open, and are written the new way when saved.
@@ -180,8 +181,20 @@ static func is_schematic_source(src: String) -> bool:
 
 ## Where the stored graph begins in a script's text (the generated code is everything before it), or -1.
 static func graph_block_at(text: String) -> int:
-	var at := text.find(GRAPH_BLOCK)
-	return at if at != -1 else text.find(OLD_GRAPH_BLOCK)
+	var at := maxi(text.rfind(GRAPH_BLOCK), text.rfind(OLD_GRAPH_BLOCK))
+	if at < 0:
+		return -1
+	var first := text.find("\n", at + 1)
+	if first < 0 or text.substr(first + 1, 2) != "#~":
+		return -1
+	var end := text.rfind("\n#endregion")
+	if end < first or text.substr(end).strip_edges() != "#endregion":
+		return -1
+	# The complete footer contains only machine comment lines, even if the script itself quotes a fake footer.
+	for line in text.substr(first + 1, end - first - 1).split("\n"):
+		if not line.begins_with("#~"):
+			return -1
+	return at
 
 
 static func is_schematic_file(path: String) -> bool:
@@ -200,7 +213,10 @@ static func parse_source(src: String) -> Dictionary:
 		return {}
 	src = src.replace("\r\n", "\n")
 	var json := PackedStringArray()
-	for line in src.split("\n"):
+	var at := graph_block_at(src)
+	if at < 0:
+		return {}
+	for line in src.substr(at).split("\n"):
 		if line.begins_with(DATA_PREFIX):
 			json.append(line.substr(DATA_PREFIX.length()))
 		elif line == "#~":
@@ -214,7 +230,7 @@ static func parse_source(src: String) -> Dictionary:
 
 
 ## The code part of a Schematic's text (everything before its graph data, or all of it when it has none), in the
-## form two texts are compared in: line endings, spaces at the ends of lines and blank lines at the end do not count.
+## form used for drift checks. Whitespace inside a string belongs to its value.
 static func code_part(text: String) -> String:
 	var cut := graph_block_at(text)
 	return normalize_code(text.substr(0, cut) if cut != -1 else text)
@@ -227,10 +243,25 @@ static func graph_part(text: String) -> String:
 
 
 static func normalize_code(code: String) -> String:
-	var lines := code.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+	# Preserve the physical line ending and any spaces that belong to a string value.
+	var lines := code.split("\n")
+	var states := []
+	if has_multiline_syntax(code):
+		states = Types.lines_in_string(code)
 	for i in lines.size():
-		lines[i] = lines[i].rstrip(" \t")
-	return "\n".join(lines).strip_edges(false, true)
+		if i + 1 < states.size() and states[i + 1]:
+			continue
+		lines[i] = lines[i].rstrip(" \t\r")
+	return "\n".join(lines).rstrip(" \t\r\n")
+
+
+static func has_multiline_syntax(code: String) -> bool:
+	return code.contains("\"\"\"") or code.contains("'''") or code.contains("\\\n") or code.contains("\\\r\n")
+
+
+## Compiler output uses LF internally. Apply the document's line endings before comparing literal values.
+static func file_code(code: String, bp: Dictionary) -> String:
+	return code.replace("\r\n", "\n").replace("\n", "\r\n") if bool(bp.get("crlf", false)) else code
 
 
 ## A fingerprint of generated code. Every writer stores it in the graph data (a `#~code ` line, which readers of
@@ -254,7 +285,17 @@ static func stored_code_hash(text: String) -> String:
 ## fingerprint is never said to be edited (there is nothing to tell a hand edit from an older plugin by).
 static func code_edited(text: String) -> bool:
 	var stored := stored_code_hash(text)
-	return stored != "" and stored != code_hash(code_part(text))
+	if stored == "":
+		return false
+	var code := code_part(text)
+	if text.find("\n#~hash-v2", graph_block_at(text)) >= 0 or not has_multiline_syntax(code):
+		return stored != code_hash(code)
+	# Legacy fingerprints discarded literal whitespace. Recover the expected literal from the embedded graph.
+	var bp := parse_source(text)
+	if bp.is_empty():
+		return true
+	var compiler = load("res://addons/schematic/core/sc_compiler.gd").new()
+	return code != normalize_code(file_code(compiler.compile(bp), bp))
 
 
 static func load_file(path: String) -> Dictionary:
@@ -327,7 +368,8 @@ static func build_source(code: String, bp: Dictionary) -> String:
 	out.append("")
 	out.append("")
 	out.append("#region Schematic graph data (machine-written; edit this file in the Schematic editor)")
-	out.append(CODE_HASH_PREFIX + code_hash(code))
+	out.append(CODE_HASH_PREFIX + code_hash(file_code(code, bp)))
+	out.append("#~hash-v2")
 	for line in graph_lines(bp):
 		out.append(DATA_PREFIX + line)
 	out.append("#endregion")
@@ -335,4 +377,4 @@ static func build_source(code: String, bp: Dictionary) -> String:
 	# A script converted from one with Windows line endings keeps them: a string that runs over several lines
 	# holds the line breaks of its file, so its value would change with them.
 	var text := "\n".join(out)
-	return text.replace("\n", "\r\n") if bool(bp.get("crlf", false)) else text
+	return file_code(text, bp)

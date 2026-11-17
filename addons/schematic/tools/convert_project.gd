@@ -19,6 +19,7 @@ extends Node
 ## scripts (to an autoload, for instance) become nodes instead of carried-over code.
 ## A script whose converted form does not compile is left as it was.
 
+const ProjectFiles := preload("res://addons/schematic/core/sc_project_files.gd")
 const Model := preload("res://addons/schematic/core/sc_model.gd")
 const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
 const R := preload("res://addons/schematic/core/sc_registry.gd")
@@ -28,15 +29,7 @@ const ReuseTool := preload("res://addons/schematic/tools/reuse_project.gd")
 
 
 func _find(dir_path: String, out: Array) -> void:
-	var dir := DirAccess.open(dir_path)
-	if dir == null:
-		return
-	for f in dir.get_files():
-		if f.get_extension() == "gd":
-			out.append(dir_path.path_join(f))
-	for sub in dir.get_directories():
-		if not sub.begins_with(".") and not (dir_path == "res://" and sub == "addons"):
-			_find(dir_path.path_join(sub), out)
+	ProjectFiles.find(dir_path, ["gd"], out)
 
 
 ## Does GDScript load this generated code? Fills `bad_lines` with the lines it complained about.
@@ -112,7 +105,13 @@ func _ready() -> void:
 	var done := 0
 	for path in files:
 		var orig: String = path + ".orig"
-		var source := FileAccess.get_file_as_string(orig) if FileAccess.file_exists(orig) else FileAccess.get_file_as_string(path)
+		var current := FileAccess.get_file_as_string(path)
+		var source := current
+		if FileAccess.file_exists(orig):
+			source = FileAccess.get_file_as_string(orig)
+			if current != source and not ReuseTool.matches_disk(current, Model.parse_source(current)):
+				print("SKIP  %s  edited since conversion" % path)
+				continue
 		if Model.is_schematic_source(source):
 			continue   # made in the Schematic editor (or the macro library), nothing to convert
 		var opts := {"path": path}
@@ -153,19 +152,25 @@ func _ready() -> void:
 		if not errs.is_empty():
 			failed.append(path)
 			continue
+		if not dry:
+			if FileAccess.get_file_as_string(path) != current:
+				print("SKIP  %s  changed during conversion" % path)
+				continue
+			if not FileAccess.file_exists(orig):
+				var keep := FileAccess.open(orig, FileAccess.WRITE)
+				if keep == null or not keep.store_string(source):
+					push_error("Could not back up " + String(path))
+					continue
+				keep.close()
+			var f := FileAccess.open(path, FileAccess.WRITE)
+			if f == null or not f.store_string(Model.build_source(code, out.bp)):
+				push_error("Could not write " + String(path))
+				continue
+			f.close()
 		lines += int(rep.lines)
 		as_code += int(rep.as_code)
 		done += 1
 		converted.append({"path": path, "bp": out.bp})
-		if dry:
-			continue
-		if not FileAccess.file_exists(orig):
-			var keep := FileAccess.open(orig, FileAccess.WRITE)
-			keep.store_string(source)
-			keep.close()
-		var f := FileAccess.open(path, FileAccess.WRITE)
-		f.store_string(Model.build_source(code, out.bp))
-		f.close()
 	print("converted %d of %d scripts; %d of %d lines became nodes, %d were carried over as code" % [done, files.size(), lines - as_code, lines, as_code])
 	for path in failed:
 		print("left as GDScript: ", path)

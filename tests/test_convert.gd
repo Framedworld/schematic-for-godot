@@ -84,7 +84,7 @@ func snapshot(n: Object) -> Dictionary:
 
 
 ## Runs both scripts side by side through the same frames and returns their two snapshots.
-func run_pair(a: GDScript, b: GDScript) -> Array:
+func run_pair(a: GDScript, b: GDScript, wait_for_results: bool) -> Array:
 	var made := []
 	for scr in [a, b]:
 		var base := String(scr.get_instance_base_type())
@@ -100,6 +100,13 @@ func run_pair(a: GDScript, b: GDScript) -> Array:
 			obj.call("run")
 	for i in FRAMES:
 		await process_frame
+	if wait_for_results:
+		# The waiting fixture publishes both results after its nested coroutines complete.
+		for frame in 60:
+			if made.all(func(obj): return obj.out.size() == 2):
+				break
+			await process_frame
+		check("both waiting fixtures finished before teardown", made.all(func(obj): return obj.out.size() == 2))
 	var snaps := [snapshot(made[0]), snapshot(made[1])]
 	for obj in made:
 		if obj is Node:
@@ -146,7 +153,7 @@ func judge(name: String, source: String, path: String) -> void:
 		return
 	var changes: Array = checks.interface_changes(checks.interface(original[0]), checks.interface(saved[0]))
 	check("%s: the same functions, variables, signals and constants" % name, changes.is_empty(), str(changes))
-	var snaps: Array = await run_pair(original[0], saved[0])
+	var snaps: Array = await run_pair(original[0], saved[0], name.trim_suffix(" (crlf)") == "waiting")
 	var want: Dictionary = snaps[0]
 	var got: Dictionary = snaps[1]
 	var diff := []
@@ -180,7 +187,7 @@ func _init() -> void:
 	if only == "" or only == "long_function":
 		await long_function(3000)
 	print("\nCONVERT FAILS: %d" % fails)
-	quit()
+	quit(1 if fails else 0)
 
 
 ## One function of `count` flat statements, made here (not a file in the repository): the converter's walks must

@@ -26,11 +26,12 @@ var _menu_watch: Array = []
 const FlowOverlay := preload("res://addons/schematic/editor/sc_flow_overlay.gd")
 var flow_overlay: FlowOverlay
 var _last_selection := ""
+var _document_path := ""
 var watch: Dictionary = {}    # node id -> {pin id: text}: last values reported by the running game
 var hide_unrelated := false   # Unreal's Hide Unrelated: fade every node not linked to the selection
 var hide_comments := false    # the comment bubbles a converted script's comments became are not drawn (the editor's toggle)
 var _soft_ids: Array = []     # nodes marked softly (see set_soft), without being selected
-const SOFT_COLOR := Color(1.0, 0.72, 0.1, 0.6)   # the selection's amber, fainter
+const SOFT_COLOR := Color(BPNode.SELECT, 0.6)
 
 
 func _init() -> void:
@@ -39,18 +40,20 @@ func _init() -> void:
 	show_arrange_button = false
 	connection_lines_thickness = EXEC_WIRE
 	connection_lines_curvature = 0.6
-	snapping_distance = GRID
-	# Unreal's graph has no toolbar and draws its own grid (a rule line every 8 cells), so both are replaced.
+	snapping_distance = 16
 	show_menu = false
-	show_grid = false
+	show_grid = true
+	grid_pattern = GraphEdit.GRID_PATTERN_DOTS
+	add_theme_color_override("grid_minor", Color("#2b3841"))
+	add_theme_color_override("grid_major", Color("#40545e"))
 	var bg := StyleBoxFlat.new()
-	bg.bg_color = BG_COLOR
+	bg.bg_color = W.CANVAS
 	add_theme_stylebox_override("panel", bg)
 	add_theme_stylebox_override("panel_focus", StyleBoxEmpty.new())
 	add_theme_color_override("connection_rim_color", Color(0, 0, 0, 0.0))
 	add_theme_color_override("connection_hover_tint_color", Color(1, 1, 1, 0.35))
-	add_theme_color_override("selection_fill", Color(1, 1, 1, 0.06))
-	add_theme_color_override("selection_stroke", Color(1, 1, 1, 0.75))
+	add_theme_color_override("selection_fill", Color(W.ACCENT, 0.10))
+	add_theme_color_override("selection_stroke", W.ACCENT)
 	add_theme_color_override("activity", Color(1.0, 0.75, 0.2))
 	add_theme_constant_override("port_hotzone_inner_extent", 18)
 	add_theme_constant_override("port_hotzone_outer_extent", 14)
@@ -87,72 +90,19 @@ func _init() -> void:
 
 # ---------------------------------------------------------------- look
 
-const GRID := 16
-const RULE_PERIOD := 8
 const EXEC_WIRE := 3.0
 const DATA_WIRE := 1.9
-const BG_COLOR := Color(0.149, 0.149, 0.149)
-const GRID_LINE := Color(0.2, 0.2, 0.2)
-const GRID_RULE := Color(0.09, 0.09, 0.09)
-const GRID_CENTRE := Color(0.045, 0.045, 0.045)
 
 
-## Background grid and the corner texts, drawn the way Unreal's graph panel does.
 func _draw() -> void:
-	var z := zoom
-	var step := GRID * z
-	var rule_only := step < 6.0
-	if rule_only:
-		step *= RULE_PERIOD
-	if step >= 3.0:
-		var first_x := int(floor(scroll_offset.x / step))
-		var first_y := int(floor(scroll_offset.y / step))
-		for pass_rule in [false, true]:
-			var ix := first_x
-			while ix * step - scroll_offset.x <= size.x:
-				var x := roundf(ix * step - scroll_offset.x)
-				var is_rule := rule_only or posmod(ix, RULE_PERIOD) == 0
-				if is_rule == pass_rule:
-					draw_line(Vector2(x, 0), Vector2(x, size.y), _grid_color(ix, is_rule), 1.0)
-				ix += 1
-			var iy := first_y
-			while iy * step - scroll_offset.y <= size.y:
-				var y := roundf(iy * step - scroll_offset.y)
-				var is_rule := rule_only or posmod(iy, RULE_PERIOD) == 0
-				if is_rule == pass_rule:
-					draw_line(Vector2(0, y), Vector2(size.x, y), _grid_color(iy, is_rule), 1.0)
-				iy += 1
-	var font := get_theme_font("bold", "EditorFonts") if has_theme_font("bold", "EditorFonts") else get_theme_default_font()
 	if graph.is_empty():
 		return
-	# Unreal's hint on a graph nobody has wired yet.
+	var font := get_theme_default_font()
+	var label := "%d%%" % roundi(zoom * 100.0)
+	var label_width := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
+	draw_string(font, Vector2(size.x - label_width - 22, 23), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, W.MUTED)
 	if graph.get("wires", []).is_empty():
-		var hint := "Right-Click to Create New Nodes."
-		var hs := 24
-		var hw := font.get_string_size(hint, HORIZONTAL_ALIGNMENT_LEFT, -1, hs).x
-		var box := Rect2((size.x - hw) * 0.5 - 12, 16, hw + 24, 40)
-		draw_style_box(_hint_box(), box)
-		draw_string(font, Vector2(box.position.x + 12, box.position.y + 28), hint, HORIZONTAL_ALIGNMENT_LEFT, -1, hs, Color(1, 1, 1, 0.72))
-	var mark := "MACRO" if graph.get("kind", "") == "macro" else ("FUNCTION" if graph.get("kind", "") == "function" else "SCHEMATIC")
-	var mark_size := 54
-	var mw := font.get_string_size(mark, HORIZONTAL_ALIGNMENT_LEFT, -1, mark_size).x
-	draw_string(font, Vector2(size.x - mw - 28, size.y - 30), mark, HORIZONTAL_ALIGNMENT_LEFT, -1, mark_size, Color(1, 1, 1, 0.09))
-	var zt := "Zoom 1:1" if is_equal_approx(z, 1.0) else "Zoom %d%%" % int(round(z * 100.0))
-	var zw := font.get_string_size(zt, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
-	draw_string(font, Vector2(size.x - zw - 22, 24), zt, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(1, 1, 1, 0.3))
-
-
-func _hint_box() -> StyleBoxFlat:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.06, 0.06, 0.065, 0.85)
-	sb.set_corner_radius_all(4)
-	return sb
-
-
-func _grid_color(index: int, is_rule: bool) -> Color:
-	if index == 0:
-		return GRID_CENTRE
-	return GRID_RULE if is_rule else GRID_LINE
+		draw_string(font, Vector2(14, 23), "Right-click or press Tab to add a node", HORIZONTAL_ALIGNMENT_LEFT, maxf(size.x - label_width - 60, 0), 13, W.MUTED)
 
 
 ## Unreal's wire shape: a Hermite spline whose horizontal tangent grows with the distance between the pins,
@@ -196,9 +146,15 @@ func _style_wires(layer: Control) -> void:
 
 func show_graph(p_bp: Dictionary, p_graph: Dictionary, errors: Dictionary = {}, marks: Dictionary = {}) -> void:
 	_loading = true
-	var same := not graph.is_empty() and not p_graph.is_empty() and int(graph.get("id", -1)) == int(p_graph.id)
+	var path := String(editor.doc.get("path", "")) if editor else ""
+	var same := path == _document_path and not graph.is_empty() and not p_graph.is_empty() and int(graph.get("id", -1)) == int(p_graph.id)
+	_document_path = path
+	if not same:
+		_last_selection = ""
+		if flow_overlay:
+			flow_overlay.clear()
 	# (a selection is carried over a rebuild of the same graph; another graph's node ids mean other nodes)
-	var selected := _pending_select if not _pending_select.is_empty() else (selected_ids() if same or graph.is_empty() else [])
+	var selected := _pending_select if not _pending_select.is_empty() else (selected_ids() if same else [])
 	_pending_select = []
 	_soft_ids = []
 	bp = p_bp
@@ -208,7 +164,7 @@ func show_graph(p_bp: Dictionary, p_graph: Dictionary, errors: Dictionary = {}, 
 	# logs an error if that frame has already been replaced.
 	var keep := {}
 	for kn in graph.get("nodes", []):
-		if kn.kind == "comment":
+		if same and kn.kind == "comment":
 			keep[int(kn.id)] = true
 	# Keyboard focus sits on the clicked node; when that node is replaced, the canvas takes the focus over
 	# so Delete, Ctrl+C and the other shortcuts keep working.
@@ -293,17 +249,17 @@ func _add_frame(n: Dictionary) -> void:
 		f.autoshrink_enabled = false
 		f.tint_color_enabled = false
 		f.resizable = true
-		# Unreal comment box: a translucent pane with a stronger title band and large title text.
+		# A translucent group with a separate caption band.
 		for sel in [false, true]:
 			var pane := StyleBoxFlat.new()
 			pane.bg_color = Color(1, 1, 1, 0.06)
 			pane.set_border_width_all(2 if sel else 1)
 			pane.border_width_top = 0
-			pane.border_color = Color(1.0, 0.72, 0.1) if sel else Color(1, 1, 1, 0.28)
+			pane.border_color = BPNode.SELECT if sel else W.EDGE
 			pane.corner_radius_bottom_left = 4
 			pane.corner_radius_bottom_right = 4
 			var band := StyleBoxFlat.new()
-			band.bg_color = Color(1, 1, 1, 0.22)
+			band.bg_color = Color(W.CHROME, 0.95)
 			band.set_border_width_all(2 if sel else 1)
 			band.border_width_bottom = 0
 			band.border_color = pane.border_color
@@ -1248,7 +1204,7 @@ func add_pin_requested(nid: int, delta := 1) -> void:
 
 func pin_default_changed(nid: int, pin_id: String, literal: String) -> void:
 	var n := Model.find_node(graph, nid)
-	if n.is_empty() or String(n.d.get(pin_id, "\u0000")) == literal:
+	if n.is_empty() or (n.d.has(pin_id) and String(n.d[pin_id]) == literal):
 		return
 	var apply := func():
 		if literal == "":

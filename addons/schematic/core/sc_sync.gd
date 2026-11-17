@@ -137,6 +137,8 @@ var _re_enum_compact := RegEx.create_from_string("^enum [A-Za-z_]\\w* \\{ [A-Za-
 
 ## Splits a script into blocks in file order, every line in exactly one. See the top of the file.
 func split(code: String) -> Array:
+	var footer := Model.graph_block_at(code)
+	var graph_line := code.count("\n", 0, footer) + 2 if footer >= 0 else -1
 	var lines := code.split("\n")
 	var strs := {}
 	var ll := _logical(lines, strs)
@@ -167,7 +169,7 @@ func split(code: String) -> Array:
 				_flush(blocks, lines, strs, ll, pend, k - 1)
 				pend = -1
 				var label: String = x.head.trim_prefix("#region").strip_edges() if x.head.begins_with("#region") else ""
-				if x.head.begins_with(Model.GRAPH_BLOCK.strip_edges()) or x.head.begins_with(Model.OLD_GRAPH_BLOCK.strip_edges()):
+				if int(x.first) == graph_line:
 					var j := k
 					while j + 1 < n and not (ll[j].t == "comment" and j > k and String(ll[j].head).begins_with("#endregion")):
 						j += 1
@@ -3768,6 +3770,10 @@ func _load_error(code: String) -> Dictionary:
 	var ok := gs.reload() == OK
 	if logger != null:
 		OS.call("remove_logger", logger)
+	# Replacing the temporary bytecode releases inner classes and static script references on Godot 4.6.
+	# The probe has no instances and the reload verdict and diagnostics above belong to the original source.
+	gs.source_code = "extends RefCounted\n"
+	gs.reload()
 	if ok:
 		return {}
 	if logger != null and not logger.items.is_empty():

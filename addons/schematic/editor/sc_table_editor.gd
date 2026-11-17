@@ -271,7 +271,7 @@ func _show_row(row_name: StringName) -> void:
 func _on_inspector_edit(_property: String) -> void:
 	if table == null or _inspected == null:
 		return
-	_save()
+	_save(table)
 	refresh.call_deferred()
 
 
@@ -280,23 +280,26 @@ func _on_inspector_edit(_property: String) -> void:
 func _commit(title: String, do: Callable, undo: Callable) -> void:
 	var ur := plugin.get_undo_redo() if plugin else null
 	if ur == null:
-		_run(do)
+		_run(table, do)
 		return
 	ur.create_action("Data Table: " + title, UndoRedo.MERGE_DISABLE, table)
-	ur.add_do_method(self, "_run", do)
-	ur.add_undo_method(self, "_run", undo)
+	ur.add_do_method(self, "_run", table, do)
+	ur.add_undo_method(self, "_run", table, undo)
 	ur.commit_action()
 
 
-func _run(change: Callable) -> void:
+func _run(target: Resource, change: Callable) -> void:
 	change.call()
-	_save()
-	refresh()
+	_save(target)
+	if target == table:
+		refresh()
 
 
-func _save() -> void:
-	if table and table.resource_path != "":
-		ResourceSaver.save(table, table.resource_path)
+func _save(target: Resource) -> void:
+	if target and target.resource_path != "":
+		var err := ResourceSaver.save(target, target.resource_path)
+		if err != OK:
+			push_error("Could not save %s (%s)" % [target.resource_path, error_string(err)])
 
 
 func add_row(row_name: StringName = &"") -> StringName:

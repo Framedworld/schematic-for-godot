@@ -185,7 +185,12 @@ static func same_code(a: String, b: String) -> bool:
 	var lb := b.split("\n")
 	if la.size() != lb.size():
 		return false
-	var rx := RegEx.create_from_string("[A-Za-z_][A-Za-z0-9_]*")
+	# Strings and comments are whole tokens, so their contents must match byte for byte.
+	var rx := RegEx.create_from_string("\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|#.*|[A-Za-z_][A-Za-z0-9_]*")
+	var decl := RegEx.create_from_string("^\\t+for ((?:i|key|item)_[0-9]+)(?:: [^ ]+)? in ")
+	var scope := []
+	var in_a := T.lines_in_string(a)
+	var in_b := T.lines_in_string(b)
 	# everything outside function bodies has to be the same text; its names are not to be touched anywhere
 	var fixed := {}
 	for i in la.size():
@@ -199,7 +204,18 @@ static func same_code(a: String, b: String) -> bool:
 	var back := {}
 	var same := {}
 	for i in la.size() + 1:
+		if i < la.size() and (in_a[i] or in_b[i] or (i + 1 < la.size() and (in_a[i + 1] or in_b[i + 1]))):
+			if la[i] != lb[i]:
+				return false
+			for token in rx.search_all(la[i]):
+				same[token.get_string()] = true
+			continue
+		if i < la.size() and la[i].strip_edges().is_empty():
+			if la[i] != lb[i]:
+				return false
+			continue
 		if i == la.size() or not la[i].begins_with("\t"):
+			scope.clear()
 			# a function ends here: the names that changed in it must be new to it
 			for ta in fwd:
 				if same.has(ta) or same.has(fwd[ta]) or fwd.has(fwd[ta]) or fixed.has(ta) or fixed.has(fwd[ta]):
@@ -208,6 +224,11 @@ static func same_code(a: String, b: String) -> bool:
 			back = {}
 			same = {}
 			continue
+		var indent := la[i].length() - la[i].lstrip("\t").length()
+		while not scope.is_empty() and int(scope.back().indent) >= indent:
+			scope.pop_back()
+		var loop_a := decl.search(la[i])
+		var loop_b := decl.search(lb[i])
 		if la[i] == lb[i]:
 			for m in rx.search_all(la[i]):
 				same[m.get_string()] = true
@@ -228,16 +249,27 @@ static func same_code(a: String, b: String) -> bool:
 			if ta == tb:
 				same[ta] = true
 				continue
-			var ua := ta.rfind("_")
-			var ub := tb.rfind("_")
-			if ua <= 0 or ub <= 0 or ta.substr(0, ua) != tb.substr(0, ub):
+			var declaration := loop_a != null and loop_b != null and ma[k].get_start() == loop_a.get_start(1) and mb[k].get_start() == loop_b.get_start(1)
+			if declaration:
+				if ta.get_slice("_", 0) != tb.get_slice("_", 0):
+					return false
+			elif not scope.any(func(binding): return binding.old == ta and binding.new_name == tb):
 				return false
-			if not ta.substr(ua + 1).is_valid_int() or not tb.substr(ub + 1).is_valid_int():
-				return false
+			else:
+				var left := la[i].left(ma[k].get_start())
+				var prefix := left.rstrip(" \t")
+				var suffix := la[i].substr(pa).lstrip(" \t")
+				if prefix.ends_with(".") or prefix.contains("$") or left.ends_with("%"):
+					return false
+				# Unquoted dictionary keys in {name = value} are string literals.
+				if suffix.begins_with("=") and (prefix.ends_with("{") or prefix.ends_with(",")):
+					return false
 			if String(fwd.get(ta, tb)) != tb or String(back.get(tb, ta)) != ta:
 				return false
 			fwd[ta] = tb
 			back[tb] = ta
+		if loop_a != null and loop_b != null and loop_a.get_string(1) != loop_b.get_string(1):
+			scope.append({"indent": indent, "old": loop_a.get_string(1), "new_name": loop_b.get_string(1)})
 		if la[i].substr(pa) != lb[i].substr(pb):
 			return false
 	return true

@@ -173,8 +173,8 @@ other projects and are not in the repository.
 |---|---|
 | Right-click graph / Tab | Action menu (search, categories, Context Sensitive toggle) |
 | Drag off a pin | Context-filtered action menu; new node is auto-wired |
-| My Schematic | Graphs, Functions (+ Override), Variables, Event Dispatchers, Local Variables |
-| Components | Scene nodes under the schematic's node: drag in for a reference, right-click for signal events |
+| My Blueprint | **Members** lists graphs, Functions (+ Override), Variables, Event Dispatchers, Local Variables |
+| Components | **Scene nodes** lists the nodes under the schematic's node: drag in for a reference, right-click for signal events |
 | Details | Variable / function / node / class settings |
 | Compile | Compile button, F7, or Ctrl+S (also runs before Play). Errors appear on nodes and in Compiler Results |
 | B / S / D / F / G / O / N / P + click | Branch / Sequence / Delay / ForEach / Gate / DoOnce / IsValid / Print |
@@ -266,7 +266,7 @@ that line.
 - Libraries: set Class Settings > Schematic Type to **Function Library** (every function becomes static and shows up in
   every schematic under Function Libraries; needs a Class Name) or **Macro Library** (its macros show up in every
   schematic under Macros). Both are also offered as starters by New Schematic.
-- Macros (My Schematic > MACROS) are expanded into each graph that uses them: several exec inputs/outputs,
+- Macros (Members > MACROS) are expanded into each graph that uses them: several exec inputs/outputs,
   latent nodes allowed, and every use keeps its own Do Once / Flip Flop / Delay state.
 - Timelines (action menu > Add Timeline...) have float / Vector2 / Vector3 / Color tracks edited in Details,
   with Play, Play from Start, Stop, Reverse, Reverse from End and Set New Time inputs, Update and Finished outputs,
@@ -288,7 +288,7 @@ godot --path . --editor -- --sc-selftest=res://tests/shot.gd        # also shot_
 godot --headless --path . --script res://tests/test_data.gd
 godot --headless --path . --script res://tests/test_import.gd
 godot --headless --path . --script res://tests/test_convert.gd     # the converter's torture test: tests/convert/*.gd run as written and converted
-godot --headless --path . --script res://tests/test_fixed_point.gd # converting the generated code again must give the same text back
+godot --headless --path . --script res://tests/test_fixed_point.gd # converting the generated code again must reproduce both the text and the graph
 godot --headless --path . --script res://tests/test_code_link.gd   # every generated line to its nodes, and back
 godot --headless --path . --script res://tests/test_kit_missing.gd # a node whose addon is missing keeps its wires
 godot --headless --path . --script res://tests/test_public_kit.gd  # nodes shipped by another addon (tests/fake_kit)
@@ -329,10 +329,10 @@ Feature-by-feature status against Unreal is in PARITY.md; what would need engine
 A Schematic Interface is a list of functions that different schematics agree to have, so one schematic can
 talk to another without knowing its class (a player that calls Interact on whatever it is looking at).
 
-1. New Schematic Class > Schematic Interface. Add functions in My Schematic and give each its inputs and outputs
+1. New Schematic Class > Schematic Interface. Add functions in Members and give each its inputs and outputs
    in the Details panel. An interface has no code.
 2. In a schematic that should answer, Class Settings > Interfaces > Add Interface. The interface's functions
-   are added to My Schematic to fill in. One you delete is written as an empty function that returns default
+   are added to Members to fill in. One you delete is written as an empty function that returns default
    values; one whose inputs or outputs differ from the interface is a compile error. A custom event with the
    function's name also counts.
 3. To call, use the nodes under Interface Messages in the action menu. A Message node calls the function if the

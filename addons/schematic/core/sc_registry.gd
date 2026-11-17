@@ -565,7 +565,7 @@ static func describe_raw(node: Dictionary, bp: Dictionary, graph: Dictionary = {
 			d.sub = (String(d.sub) + "  -  runs in place").trim_prefix("  -  ")
 	elif node.kind in ["sequence", "for", "for_each", "for_each_dict", "while"] and bool(p.get("wait", false)):
 		d.sub = "waits for each step"
-	if node.kind in ["set_prop", "var_set", "local_set"] and String(p.get("op", "")) != "":
+	if node.kind in ["set_prop", "var_set", "local_set", "dyn_set"] and String(p.get("op", "")) != "":
 		# changes what is there by an amount (`x += ...`, `scale *= ...`) instead of replacing it
 		for pin in d.ins:
 			if pin.id == "value":

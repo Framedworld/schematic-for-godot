@@ -8,8 +8,8 @@ const T := preload("res://addons/schematic/core/sc_types.gd")
 const Importer := preload("res://addons/schematic/core/sc_importer.gd")
 const Reuse := preload("res://addons/schematic/core/sc_reuse.gd")
 
-const DIR := "res://tests/tmp/reuse"
-const LIB := "res://tests/tmp/reuse/shared_macros.gd"
+var scratch_dir := "res://tests/reuse_%d_%d" % [OS.get_process_id(), Time.get_ticks_usec()]
+var library_path := scratch_dir + "/shared_macros.gd"
 
 var fails := 0
 
@@ -509,7 +509,7 @@ func loop_case(label: String, source: String, mutate := Callable()) -> Dictionar
 		mutate.call(bp)
 	var before := compiled(bp)
 	var r := Reuse.new()
-	var rep := r.run([{"path": DIR + "/loops.gd", "bp": bp}], "")
+	var rep := r.run([{"path": scratch_dir + "/loops.gd", "bp": bp}], "")
 	var after := compiled(bp)
 	var ok: bool = not before.begins_with("ERROR") and not after.begins_with("ERROR") and Reuse.same_code(before, after) and rep.undone.is_empty()
 	var ran_before: String = await state_of(before)
@@ -522,9 +522,9 @@ func loop_case(label: String, source: String, mutate := Callable()) -> Dictionar
 func _init() -> void:
 	T.refresh_globals()
 	R.ensure_api()
-	DirAccess.make_dir_recursive_absolute(DIR)
-	if FileAccess.file_exists(LIB):
-		DirAccess.remove_absolute(LIB)
+	DirAccess.make_dir_recursive_absolute(scratch_dir)
+	if FileAccess.file_exists(library_path):
+		DirAccess.remove_absolute(library_path)
 
 	# ---------------------------------------------------------------- the check itself
 	var a := "var x := 1\n\nfunc f():\n\tfor item_3 in list:\n\t\tprint(item_3)\n\tvar other := 2\n"
@@ -535,6 +535,11 @@ func _init() -> void:
 	check("a changed number is not the same code", not Reuse.same_code(a, a.replace(":= 2", ":= 3")))
 	check("a changed line outside functions is not the same code", not Reuse.same_code(a, a.replace("var x := 1", "var x := 2")))
 	check("a missing line is not the same code", not Reuse.same_code(a, a.replace("\tvar other := 2\n", "")))
+	for literal in ["\"item_3\"", "'item_3'", "\"\"\"\\nitem_3\\n\"\"\"".replace("\\n", "\n"), "owner.item_3", "{item_3 = 7}", "7 # item_3"]:
+		var original := a.replace("print(item_3)", "print(" + literal + ")")
+		check("preserve literal, comment or member " + literal, not Reuse.same_code(original, original.replace("item_3", "item_41")))
+	var outside := a + "\tprint(item_3)\n"
+	check("a loop binding ends on dedent", not Reuse.same_code(outside, outside.replace("item_3", "item_41")))
 	var b := "func f():\n\tfor item_3 in list:\n\t\tfor item_5 in item_3:\n\t\t\tprint(item_3, item_5)\n"
 	check("two loop variables may both be renumbered", Reuse.same_code(b, b.replace("item_3", "item_8").replace("item_5", "item_9")))
 	check("... but not onto each other", not Reuse.same_code(b, b.replace("item_5", "item_3")))
@@ -548,15 +553,24 @@ func _init() -> void:
 	# ---------------------------------------------------------------- inside one Schematic
 	var bp := converted(ONE)
 	var before := compiled(bp)
+	var edited_path := scratch_dir + "/hand_edited.gd"
+	var original := Model.build_source(before, bp)
+	var edited := original.replace("20", "999").get_slice(Model.GRAPH_BLOCK, 0) + original.substr(Model.graph_block_at(original))
+	var handle := FileAccess.open(edited_path, FileAccess.WRITE)
+	handle.store_string(edited)
+	handle.close()
+	var skipped := preload("res://addons/schematic/tools/reuse_project.gd").reuse([{"path": edited_path, "bp": bp}], "", false, true)
+	check("CLI macro reuse preserves hand-edited code", skipped.skipped == [edited_path] and skipped.changed.is_empty() and FileAccess.get_file_as_bytes(edited_path) == edited.to_utf8_buffer())
+	DirAccess.remove_absolute(edited_path)
 	var nodes_before := count(bp)
 	var r := Reuse.new()
-	var rep := r.run([{"path": DIR + "/one.gd", "bp": bp}], "")
+	var rep := r.run([{"path": scratch_dir + "/one.gd", "bp": bp}], "")
 	var after := compiled(bp)
 	check("one file: macros were made", int(rep.macros) >= 2 and int(rep.uses) >= 6, "%d macros, %d uses: %s" % [int(rep.macros), int(rep.uses), "; ".join(r.notes)])
 	check("one file: fewer nodes", count(bp) < nodes_before and int(rep.before) == nodes_before and int(rep.after) == count(bp), "%d -> %d" % [nodes_before, count(bp)])
 	check("one file: it still compiles", not after.begins_with("ERROR"), after.left(120))
 	check("one file: the generated script is the same", Reuse.same_code(before, after))
-	check("one file: reported as changed, nothing put back", rep.changed == [DIR + "/one.gd"] and rep.undone.is_empty())
+	check("one file: reported as changed, nothing put back", rep.changed == [scratch_dir + "/one.gd"] and rep.undone.is_empty())
 	var ran_before: String = await state_of(before)
 	var ran_after: String = await state_of(after)
 	check("one file: it runs to the same state", ran_before == ran_after and ran_before.contains("down by burn"), ran_after.left(200))
@@ -584,25 +598,25 @@ func _init() -> void:
 	# again: nothing more to do, nothing changes
 	var again := bp.duplicate(true)
 	var r2 := Reuse.new()
-	var rep2 := r2.run([{"path": DIR + "/one.gd", "bp": again}], "")
+	var rep2 := r2.run([{"path": scratch_dir + "/one.gd", "bp": again}], "")
 	check("one file: a second run changes nothing", rep2.changed.is_empty() and compiled(again) == after and count(again) == count(bp), "; ".join(r2.notes))
 
 	# ---------------------------------------------------------------- between Schematics
-	var fa := {"path": DIR + "/two_a.gd", "bp": converted(TWO_A)}
-	var fb := {"path": DIR + "/two_b.gd", "bp": converted(TWO_B)}
+	var fa := {"path": scratch_dir + "/two_a.gd", "bp": converted(TWO_A)}
+	var fb := {"path": scratch_dir + "/two_b.gd", "bp": converted(TWO_B)}
 	var code_a := compiled(fa.bp)
 	var code_b := compiled(fb.bp)
 	var total := count(fa.bp) + count(fb.bp)
 	var r3 := Reuse.new()
-	var rep3 := r3.run([fa, fb], LIB)
-	check("two files: a shared macro was made", int(rep3.library) >= 1 and FileAccess.file_exists(LIB), "; ".join(r3.notes))
-	var lib := Model.load_file(LIB)
+	var rep3 := r3.run([fa, fb], library_path)
+	check("two files: a shared macro was made", int(rep3.library) >= 1 and FileAccess.file_exists(library_path), "; ".join(r3.notes))
+	var lib := Model.load_file(library_path)
 	check("two files: the library is a macro library made by reuse", String(lib.get("library", "")) == "macro" and bool(lib.get("reuse", false)))
 	var uses := macro_uses(fa.bp) + macro_uses(fb.bp)
-	check("two files: all four places use it", uses.size() == 4 and uses.all(func(n): return String(n.p.get("lib", "")) == LIB), str(uses.size()))
+	check("two files: all four places use it", uses.size() == 4 and uses.all(func(n): return String(n.p.get("lib", "")) == library_path), str(uses.size()))
 	check("two files: fewer nodes, library counted", int(rep3.after) < total and int(rep3.after) == count(fa.bp) + count(fb.bp) + count(lib), "%d -> %d" % [total, int(rep3.after)])
 	check("two files: both generated scripts are the same", compiled(fa.bp) == code_a and compiled(fb.bp) == code_b)
-	check("two files: the library file loads as a script", load_source(FileAccess.get_file_as_string(LIB)) != null)
+	check("two files: the library file loads as a script", load_source(FileAccess.get_file_as_string(library_path)) != null)
 	var own := true
 	for g in lib.graphs:
 		for n in g.nodes:
@@ -615,17 +629,17 @@ func _init() -> void:
 	# a second run keeps the library and what uses it
 	var names_before: Array = lib.graphs.map(func(g): return String(g.name))
 	var r4 := Reuse.new()
-	var rep4 := r4.run([fa, fb], LIB)
-	var lib2 := Model.load_file(LIB)
+	var rep4 := r4.run([fa, fb], library_path)
+	var lib2 := Model.load_file(library_path)
 	check("two files: a second run keeps the library", rep4.changed.is_empty() and lib2.graphs.map(func(g): return String(g.name)) == names_before
 		and compiled(fa.bp) == code_a and compiled(fb.bp) == code_b, "; ".join(r4.notes))
 
 	# converted again from the scripts: the old macros go, unless something else uses them
-	var fa2 := {"path": DIR + "/two_a.gd", "bp": converted(TWO_A)}
-	var fb2 := {"path": DIR + "/two_b.gd", "bp": converted(TWO_B)}
+	var fa2 := {"path": scratch_dir + "/two_a.gd", "bp": converted(TWO_A)}
+	var fb2 := {"path": scratch_dir + "/two_b.gd", "bp": converted(TWO_B)}
 	var r5 := Reuse.new()
-	var rep5 := r5.run([fa2, fb2], LIB, {"KeptForSomeoneElse": true})
-	var lib3 := Model.load_file(LIB)
+	var rep5 := r5.run([fa2, fb2], library_path, {"KeptForSomeoneElse": true})
+	var lib3 := Model.load_file(library_path)
 	check("converted again: the library holds what is used, once", int(rep5.library) == int(rep3.library) and lib3.graphs.size() == lib.graphs.size()
 		and compiled(fa2.bp) == code_a and compiled(fb2.bp) == code_b, "%d macros" % int(rep5.library))
 	var r6 := Reuse.new()
@@ -633,23 +647,48 @@ func _init() -> void:
 	for g in lib3.graphs:
 		if g.kind == "macro":
 			first_macro = String(g.name)
-	r6.run([{"path": DIR + "/two_a.gd", "bp": converted(TWO_A)}, {"path": DIR + "/two_b.gd", "bp": converted(TWO_B)}], LIB, {first_macro: true})
-	var lib4 := Model.load_file(LIB)
+	r6.run([{"path": scratch_dir + "/two_a.gd", "bp": converted(TWO_A)}, {"path": scratch_dir + "/two_b.gd", "bp": converted(TWO_B)}], library_path, {first_macro: true})
+	var lib4 := Model.load_file(library_path)
 	check("converted again: a macro another Schematic uses stays", not Model.graph_named(lib4, first_macro).is_empty() and lib4.graphs.size() == lib3.graphs.size() + 1, str(lib4.graphs.size()))
+
+	# A skipped, drifted file can be the last on-disk user of an existing shared macro.
+	var candidates := []
+	for name in ["plain_a", "plain_b"]:
+		var path := scratch_dir.path_join(name + ".gd")
+		var simple := Model.new_schematic("Node")
+		var simple_file := FileAccess.open(path, FileAccess.WRITE)
+		simple_file.store_string(Model.build_source(compiled(simple), simple))
+		simple_file.close()
+		candidates.append({"path": path, "bp": simple})
+	var drift_bp: Dictionary = fa.bp.duplicate(true)
+	for usage in macro_uses(drift_bp):
+		usage.p.name = first_macro
+	var drift_text := Model.build_source(compiled(drift_bp), drift_bp).replace("extends Node", "extends Node # hand edit")
+	var drift_path := scratch_dir + "/last_user.gd"
+	var drift_file := FileAccess.open(drift_path, FileAccess.WRITE)
+	drift_file.store_string(drift_text)
+	drift_file.close()
+	candidates.append({"path": drift_path, "bp": drift_bp})
+	var cli := preload("res://addons/schematic/tools/reuse_project.gd")
+	var guarded := cli.reuse(candidates, library_path, false, true)
+	var macro_name := String(macro_uses(drift_bp)[0].p.name)
+	check("library retains the skipped document's macro", guarded.skipped == [drift_path] and not Model.graph_named(Model.load_file(library_path), macro_name).is_empty() and FileAccess.get_file_as_string(drift_path) == drift_text)
+	for candidate in candidates:
+		DirAccess.remove_absolute(candidate.path)
 
 	# a file that reuse did not make is never written over
 	var mine := "extends Node\n# my own script\n"
-	var f := FileAccess.open(LIB, FileAccess.WRITE)
+	var f := FileAccess.open(library_path, FileAccess.WRITE)
 	f.store_string(mine)
 	f.close()
 	R.invalidate_libraries()
-	var fa3 := {"path": DIR + "/two_a.gd", "bp": converted(TWO_A)}
-	var fb3 := {"path": DIR + "/two_b.gd", "bp": converted(TWO_B)}
+	var fa3 := {"path": scratch_dir + "/two_a.gd", "bp": converted(TWO_A)}
+	var fb3 := {"path": scratch_dir + "/two_b.gd", "bp": converted(TWO_B)}
 	var r7 := Reuse.new()
-	var rep7 := r7.run([fa3, fb3], LIB)
-	check("a file at the library's place that reuse did not make is left alone", FileAccess.get_file_as_string(LIB) == mine and int(rep7.library) == 0
+	var rep7 := r7.run([fa3, fb3], library_path)
+	check("a file at the library's place that reuse did not make is left alone", FileAccess.get_file_as_string(library_path) == mine and int(rep7.library) == 0
 		and compiled(fa3.bp) == code_a and macro_uses(fa3.bp).all(func(n): return not n.p.has("lib")))
-	DirAccess.remove_absolute(LIB)
+	DirAccess.remove_absolute(library_path)
 	R.invalidate_libraries()
 
 	# ---------------------------------------------------------------- loop variable names
@@ -787,12 +826,12 @@ func _init() -> void:
 	var nested_before := compiled(nested)
 	var n1 := Reuse.new()
 	n1.max_len = 3
-	var rn1 := n1.run([{"path": DIR + "/nested.gd", "bp": nested}], "")
+	var rn1 := n1.run([{"path": scratch_dir + "/nested.gd", "bp": nested}], "")
 	var inner_uses := macro_uses(nested).size()
 	var n2 := Reuse.new()
 	n2.min_body = 2
 	n2.min_save = -100
-	var rn2 := n2.run([{"path": DIR + "/nested.gd", "bp": nested}], "")
+	var rn2 := n2.run([{"path": scratch_dir + "/nested.gd", "bp": nested}], "")
 	var nested_after := compiled(nested)
 	var made_inside := false
 	for g in nested.graphs:
@@ -846,7 +885,7 @@ func _init() -> void:
 	# no notes anywhere: what reuse made before comments existed is compiled as before
 	var hand := converted(commented([]))
 	var hand_before := compiled(hand)
-	Reuse.new().run([{"path": DIR + "/hand.gd", "bp": hand}], "")
+	Reuse.new().run([{"path": scratch_dir + "/hand.gd", "bp": hand}], "")
 	var no_notes := true
 	for n in macro_uses(hand):
 		no_notes = no_notes and not n.p.has("notes")
@@ -863,5 +902,6 @@ func _init() -> void:
 	var hand_after := compiled(hand)
 	check("a macro with a comment of its own: every use shows it", not authored or hand_after.count("# written by hand in the macro") == 4, hand_after.left(200))
 
+	DirAccess.remove_absolute(scratch_dir)
 	print("\n%s (%d failed)" % ["ALL PASS" if fails == 0 else "FAILURES", fails])
 	quit(1 if fails else 0)

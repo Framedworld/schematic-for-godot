@@ -70,7 +70,7 @@ func _init() -> void:
 	test_multi_line_strings()
 	test_speed()
 	print("CODE LINK FAILS: ", fails)
-	quit()
+	quit(1 if fails else 0)
 
 
 ## 1. A Set fed by a math node fed by two getters.

@@ -3,6 +3,7 @@ extends VBoxContainer
 ## The Schematic main screen: open documents, graph canvas, My Schematic, Components, Details, compiler.
 
 const T := preload("res://addons/schematic/core/sc_types.gd")
+const ProjectFiles := preload("res://addons/schematic/core/sc_project_files.gd")
 const Model := preload("res://addons/schematic/core/sc_model.gd")
 const R := preload("res://addons/schematic/core/sc_registry.gd")
 const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
@@ -113,10 +114,12 @@ func build_ui() -> void:
 	_parent_btn.pressed.connect(func(): _select({"kind": "class"}))
 	tab_row.add_child(_parent_btn)
 
-	# --- toolbar: flat icon buttons on a dark strip, in Unreal's order
+	# --- workspace toolbar
 	var strip := PanelContainer.new()
 	var strip_bg := StyleBoxFlat.new()
-	strip_bg.bg_color = Color(0.082, 0.082, 0.086)
+	strip_bg.bg_color = W.CHROME
+	strip_bg.border_width_bottom = 1
+	strip_bg.border_color = W.EDGE
 	strip_bg.content_margin_left = 6
 	strip_bg.content_margin_right = 6
 	strip_bg.content_margin_top = 3
@@ -223,7 +226,7 @@ func build_ui() -> void:
 	var comp_box := VBoxContainer.new()
 	comp_box.custom_minimum_size.y = 150
 	left.add_child(comp_box)
-	comp_box.add_child(_header("Components"))
+	comp_box.add_child(_header("Scene nodes"))
 	_components = Tree.new()
 	_components.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_components.hide_root = false
@@ -234,7 +237,7 @@ func build_ui() -> void:
 	comp_box.add_child(_components)
 	var mem_box := VBoxContainer.new()
 	left.add_child(mem_box)
-	mem_box.add_child(_header("My Schematic"))
+	mem_box.add_child(_header("Members"))
 	var mem_top := HBoxContainer.new()
 	mem_box.add_child(mem_top)
 	var mem_add := _tool_menu("Add", ["Variable", "Function", "Macro", "Custom Event", "Event Dispatcher", "Enumeration"], func(i: int):
@@ -277,7 +280,7 @@ func build_ui() -> void:
 	grow.add_child(_graph_tabs)
 	var nav := PanelContainer.new()
 	var nav_bg := StyleBoxFlat.new()
-	nav_bg.bg_color = Color(0.1, 0.1, 0.105)
+	nav_bg.bg_color = W.INSET
 	nav_bg.content_margin_left = 6
 	nav_bg.content_margin_right = 6
 	nav_bg.content_margin_top = 2
@@ -298,11 +301,13 @@ func build_ui() -> void:
 	var crumb_icon := TextureRect.new()
 	crumb_icon.texture = W.icon("GraphEdit")
 	crumb_icon.stretch_mode = TextureRect.STRETCH_KEEP_CENTERED
-	crumb_icon.modulate = Color(1, 1, 1, 0.7)
+	crumb_icon.modulate = W.ACCENT
 	nav_row.add_child(crumb_icon)
 	_crumb = Label.new()
-	_crumb.add_theme_font_size_override("font_size", 18)
-	_crumb.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
+	_crumb.add_theme_font_size_override("font_size", 14)
+	_crumb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_crumb.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_crumb.add_theme_color_override("font_color", W.TEXT)
 	nav_row.add_child(_crumb)
 	_build_drift_bar(gbox)
 	_view = GraphView.new()
@@ -391,8 +396,7 @@ func build_ui() -> void:
 	_refresh_all()
 
 
-## Panel caption, styled like the dark title band on Unreal's Components / My Blueprint / Details panels.
-## A flat toolbar button: icon and optional label, lit on hover, blue while toggled on.
+## A toolbar command with a distinct persistent state for toggles.
 func _tool(text: String, icon_name: String, tip: String, on_press: Callable) -> Button:
 	var b := Button.new()
 	b.text = text
@@ -411,7 +415,7 @@ func _tool(text: String, icon_name: String, tip: String, on_press: Callable) -> 
 		match state:
 			"normal", "disabled": sb.bg_color = Color(0, 0, 0, 0)
 			"hover": sb.bg_color = Color(1, 1, 1, 0.1)
-			_: sb.bg_color = Color(0.05, 0.42, 0.87)
+			_: sb.bg_color = W.ACTIVE
 		b.add_theme_stylebox_override(state, sb)
 	b.pressed.connect(on_press)
 	return b
@@ -452,7 +456,9 @@ func _header(text: String) -> Label:
 	if bold:
 		l.add_theme_font_override("font", bold)
 	var band := StyleBoxFlat.new()
-	band.bg_color = Color(0, 0, 0, 0.28)
+	band.bg_color = W.CHROME
+	band.border_width_left = 3
+	band.border_color = W.ACCENT
 	band.set_corner_radius_all(3)
 	band.content_margin_left = 8
 	band.content_margin_right = 8
@@ -522,8 +528,12 @@ func _load_into(d: Dictionary, bp: Dictionary, text: String) -> void:
 	_disk_remember(d, text)
 	# Code edited while the file was closed: its code is not the code its graph data says was generated. (A file
 	# whose code is what this version generates is fine whatever the fingerprint says.)
-	if Model.code_edited(text) and Model.code_part(text) != Model.normalize_code(String(d.preview)):
-		d["disk_code"] = Model.stored_code_hash(text)
+	if Model.code_edited(text) and Model.code_part(text) != Model.normalize_code(Model.file_code(String(d.preview), bp)):
+		var expected := Model.stored_code_hash(text)
+		if expected == d.disk_code:
+			# A legacy hash can match after literal spaces were deleted.
+			expected = Model.code_hash(Model.file_code(String(d.preview), bp))
+		d["disk_code"] = expected
 		d["drift_at_open"] = true
 		_drift_check(d, true)
 
@@ -547,6 +557,8 @@ func _close_doc(i: int) -> void:
 			_ask_close(d)
 			return
 		compile_doc(d, true, true)
+		if d.dirty:
+			return
 	_remove_doc(d)
 
 
@@ -578,6 +590,8 @@ func _ask_close(d: Dictionary) -> void:
 		if action == &"overwrite":
 			drift_keep(d)
 			compile_doc(d, true, true)
+			if d.dirty:
+				return
 		_remove_doc(d))
 	dlg.visibility_changed.connect(func():
 		if not dlg.visible:
@@ -597,15 +611,11 @@ func _open_dialog() -> void:
 
 
 func _scan(dir_path: String, out: Array) -> void:
-	var dir := DirAccess.open(dir_path)
-	if dir == null:
-		return
-	for f in dir.get_files():
-		if f.get_extension() == "gd" and Model.is_schematic_file(dir_path.path_join(f)):
-			out.append({"label": dir_path.path_join(f).trim_prefix("res://"), "value": dir_path.path_join(f), "icon": W.icon("GDScript")})
-	for sub in dir.get_directories():
-		if not sub.begins_with(".") and not (dir_path == "res://" and sub == "addons"):
-			_scan(dir_path.path_join(sub), out)
+	var files := []
+	ProjectFiles.find(dir_path, ["gd"], files)
+	for path: String in files:
+		if Model.is_schematic_file(path):
+			out.append({"label": path.trim_prefix("res://"), "value": path, "icon": W.icon("GDScript")})
 
 
 ## Converts a hand-written GDScript to a Schematic. Returns {ok, source, text, report, errors} without
@@ -2199,7 +2209,7 @@ func _refresh_graph_tabs() -> void:
 		_graph_tabs.current_tab = cur
 	_suppress_tabs = false
 	var g := cur_graph()
-	_crumb.text = "%s  >  %s" % [doc.path.get_file().get_basename(), g.get("name", "")]
+	_crumb.text = "%s   /   %s" % [doc.path.get_file().get_basename(), g.get("name", "")]
 	# graph history for the back / forward arrows
 	if not doc.has("nav"):
 		doc["nav"] = []
@@ -2798,7 +2808,7 @@ func _find_in_schematic() -> void:
 func open_palette(screen_pos: Vector2, ctx: Dictionary, on_pick: Callable) -> void:
 	var bp: Dictionary = doc.bp
 	var g := cur_graph()
-	var title := "All Actions for this Schematic"
+	var title := "Add node"
 	if not ctx.is_empty():
 		var tn := "Exec" if ctx.type == "exec" else ("Wildcard" if ctx.type == "any" else String(ctx.type))
 		title = ("Actions taking a %s" if ctx.out else "Actions providing a %s") % tn
@@ -3252,7 +3262,7 @@ func _recompile_users(lib_path: String, seen := {}) -> int:
 	var count := 0
 	for it in files:
 		var path := String(it.value)
-		if path == lib_path:
+		if seen.has(path):
 			continue
 		var open_doc := _find_doc(path)
 		var ubp: Dictionary = open_doc.bp if not open_doc.is_empty() else Model.load_file(path)
@@ -3269,8 +3279,11 @@ func _recompile_users(lib_path: String, seen := {}) -> int:
 				recompile_skipped.append(path)
 				_check(open_doc)
 				continue
-			count += 1
-			compile_doc(open_doc, not open_doc.dirty)
+			var save := not bool(open_doc.dirty)
+			if compile_doc(open_doc, save):
+				count += 1
+				if save and String(ubp.get("library", "")) == "macro":
+					count += _recompile_users(path, seen)
 			continue
 		# not open: the fingerprint in the file says whether its code was edited since a Schematic writer wrote it
 		var text := FileAccess.get_file_as_string(path)
@@ -3283,7 +3296,8 @@ func _recompile_users(lib_path: String, seen := {}) -> int:
 		if c.errors.any(func(e): return not e.w):
 			toast("%s uses %s and no longer compiles: open it to see why." % [path.get_file(), lib_path.get_file()])
 			continue
-		_write_schematic(path, Model.build_source(code, ubp))
+		if not _write_schematic(path, Model.build_source(code, ubp)):
+			continue
 		if String(ubp.get("library", "")) == "macro":
 			R.invalidate_libraries()
 			count += _recompile_users(path, seen)
@@ -3448,7 +3462,7 @@ func _section(text: String) -> void:
 	head.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
 	for state in ["normal", "hover", "pressed", "focus"]:
 		var band := StyleBoxFlat.new()
-		band.bg_color = Color(0.17, 0.17, 0.175) if state != "hover" else Color(0.22, 0.22, 0.225)
+		band.bg_color = W.CHROME if state != "hover" else W.EDGE
 		band.border_width_bottom = 1
 		band.border_width_top = 1
 		band.border_color = Color(0, 0, 0, 0.55)
@@ -3771,7 +3785,7 @@ func _fill_details() -> void:
 		"defaults":
 			_details_title.text = "Class Defaults"
 			if bp.variables.is_empty():
-				_note("This schematic has no variables yet. Add one in My Schematic; its default value shows up here.")
+				_note("This schematic has no variables yet. Add one in Members to edit its default here.")
 			var by_cat := {}
 			var order := []
 			for dv in bp.variables:
@@ -3958,7 +3972,7 @@ func _interface_rows(bp: Dictionary) -> void:
 		if not mine.has(iname):
 			choices.append(String(iname))
 	var add := _tool_menu("Add Interface", choices, func(i: int): implement_interface(String(choices[i])),
-		"Make this schematic implement a Schematic Interface: its functions are added to My Schematic for you to fill in.", "Add")
+		"Make this schematic implement a Schematic Interface: its functions are added to Members for you to fill in.", "Add")
 	add.disabled = choices.is_empty()
 	_row("Interfaces", add, "Schematic Interfaces are made with New Schematic Class > Schematic Interface." if not choices.is_empty() or not mine.is_empty() else "There is no Schematic Interface in this project yet. Make one with New Schematic Class > Schematic Interface.")
 

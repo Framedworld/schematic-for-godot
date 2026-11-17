@@ -1,7 +1,9 @@
 extends RefCounted
 ## Editor self-test for the look of the graph: saves full-resolution crops of the canvas, the action menu and
-## the side panels so the styling can be compared with Unreal's.
+## the side panels, including category colours and selection states.
 ## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_look.gd
+
+const W := preload("res://addons/schematic/editor/sc_widgets.gd")
 
 var plugin: EditorPlugin
 var tree: SceneTree
@@ -42,6 +44,36 @@ func run(p: EditorPlugin) -> void:
 	await tree.create_timer(1.0).timeout
 	EditorInterface.set_main_screen_editor("Schematic")
 	var view: GraphEdit = ed._view
+	var edits := []
+	var num: LineEdit = W.make_value_editor("float", "", "0.123456789", func(v): edits.append(v))
+	ed.add_child(num)
+	num.grab_focus()
+	num.release_focus()
+	note("%s  leaving an untouched numeric pin keeps its precision" % ("PASS" if edits.is_empty() else "FAIL"))
+	num.queue_free()
+	var whole: LineEdit = W.make_value_editor("int", "", "0", func(v): edits.append(v))
+	ed.add_child(whole)
+	whole.grab_focus()
+	whole.text = "9007199254740993"
+	whole.text_submitted.emit(whole.text)
+	note("%s  submitting a 64-bit integer commits the exact value once" % ("PASS" if edits == ["9007199254740993"] else "FAIL"))
+	whole.queue_free()
+	var headers := 0
+	var colours_match := true
+	for node in view.get_children():
+		if node is GraphNode and not node._headless:
+			headers += 1
+			for state in ["titlebar", "titlebar_selected"]:
+				var header: StyleBoxFlat = node.get_theme_stylebox(state)
+				colours_match = colours_match and header.bg_color.is_equal_approx(Color(node.desc.color, 1.0))
+	note("%s  all %d node headers keep their category colours when selected" % ["PASS" if headers > 0 and colours_match else "FAIL", headers])
+	var first: GraphNode = view.get_node("n1")
+	first.selected = true
+	var demo_zoom := view.zoom
+	ed.open_schematic("res://demo/game/SC_Player.gd")
+	note("%s  switching documents clears the old selection and restores the new graph zoom" % ["PASS" if view.selected_ids().is_empty() and is_equal_approx(view.zoom, float(ed.cur_graph().get("zoom", 1.0))) else "FAIL"])
+	ed.open_schematic("res://demo/SC_Demo.gd")
+	view.zoom = demo_zoom
 	await crop("look_1_graph", view)
 	# live values, as the running game would report them
 	for wn in ed.cur_graph().nodes:
@@ -110,7 +142,8 @@ func run(p: EditorPlugin) -> void:
 	await tree.create_timer(0.4).timeout
 	ed._palette.get_texture().get_image().save_png("res://tests/out/look_6_menu_search.png")
 	ed._palette.hide()
-	view._on_connection_to_empty("n8", 0, Vector2(700, 500))
+	await tree.create_timer(0.3).timeout
+	view._on_connection_to_empty("n%d" % first_print, 0, Vector2(500, 200))
 	await tree.create_timer(0.5).timeout
 	ed._palette.get_texture().get_image().save_png("res://tests/out/look_7_menu_context.png")
 	ed._palette.hide()

@@ -307,6 +307,35 @@ func names_tests() -> void:
 const WRITTEN_SOURCE := "extends Node\n\nvar seen := 0\n\nfunc _ready() -> void:\n\tself.add_to_group(&\"x\")\n\tadd_to_group(&\"y\")\n\tself.helper()\n\thelper()\n\tbreakpoint\n\tvar n: Node = get_parent() as Node\n\tvar m: Node = (get_parent() as Node)\n\tif n != null:\n\t\tseen += 1\n\tif (m != null):\n\t\tseen += 2\n\tseen = seen + 1\n\tseen = (seen * 2)\n\nfunc helper() -> void:\n\tseen += 10\n\nfunc twice(v: int) -> int:\n\treturn v * 2\n"
 
 
+## A graph editor can leave a typed function with an unconnected branch or without a wildcard arm.
+func fallthrough_tests() -> void:
+	var source := """extends RefCounted
+func partial_if(x: int) -> int:
+	if x == 1:
+		return 7
+func partial_match(x: int) -> int:
+	match x:
+		1:
+			return 7
+func complete(x: int) -> int:
+	if x == 1:
+		return 7
+	else:
+		return 8
+"""
+	var code := Compiler.new().compile(Importer.new().convert(source, {}).bp)
+	v7_check("only the two partial functions get a fallback", code.count("return 0") == 2, code)
+	var script := GDScript.new()
+	script.source_code = code
+	var valid := script.reload() == OK
+	v7_check("partial branches compile with typed returns", valid, code)
+	if valid:
+		var instance = script.new()
+		var values := [instance.partial_if(1), instance.partial_if(2), instance.partial_match(1),
+			instance.partial_match(2), instance.complete(1), instance.complete(2)]
+		v7_check("partial branches use the default only when they fall through", values == [7, 0, 7, 0, 7, 8], str(values))
+
+
 func written_tests() -> void:
 	var out: Dictionary = Importer.new().convert(WRITTEN_SOURCE, {})
 	var code := Compiler.new().compile(out.bp)
@@ -1141,6 +1170,7 @@ func _init() -> void:
 	lambda_tests()
 	names_tests()
 	written_tests()
+	fallthrough_tests()
 	comment_tests()
 	print("FAILS: ", fails)
 	quit(1 if fails else 0)

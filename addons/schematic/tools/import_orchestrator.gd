@@ -9,6 +9,7 @@ extends Node
 ## Node kinds it knows: events, member function calls, variable gets, scene nodes and operators. A graph
 ## that uses anything else is reported and left alone.
 
+const ProjectFiles := preload("res://addons/schematic/core/sc_project_files.gd")
 const Model := preload("res://addons/schematic/core/sc_model.gd")
 const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
 const R := preload("res://addons/schematic/core/sc_registry.gd")
@@ -16,15 +17,7 @@ const T := preload("res://addons/schematic/core/sc_types.gd")
 
 
 func _find(dir_path: String, exts: Array, out: Array) -> void:
-	var dir := DirAccess.open(dir_path)
-	if dir == null:
-		return
-	for f in dir.get_files():
-		if f.get_extension() in exts:
-			out.append(dir_path.path_join(f))
-	for sub in dir.get_directories():
-		if not sub.begins_with(".") and not (dir_path == "res://" and sub == "addons"):
-			_find(dir_path.path_join(sub), exts, out)
+	ProjectFiles.find(dir_path, exts, out)
 
 
 func _type_name(info: Dictionary) -> String:
@@ -241,10 +234,22 @@ func _ready() -> void:
 	var dry := OS.get_cmdline_user_args().has("--dry")
 	T.refresh_globals()
 	R.ensure_api()
+	import_folder("res://", dry)
+	get_tree().quit()
+
+
+func import_folder(root: String, dry: bool) -> void:
 	var graphs := []
-	_find("res://", ["torch", "os"], graphs)
+	_find(root, ["torch", "os"], graphs)
 	var renamed := {}
-	for path in graphs:
+	var owners := {}
+	for path: String in graphs:
+		var key := path.get_basename().to_lower()
+		owners[key] = int(owners.get(key, 0)) + 1
+	for path: String in graphs:
+		if owners[path.get_basename().to_lower()] > 1:
+			print("SKIP  %s  multiple graphs share this script destination" % path)
+			continue
 		var res := parse_torch(path)
 		if res.is_empty() or res.nodes.is_empty():
 			print("FAIL  %s  could not be read as an Orchestrator text file" % path)
@@ -261,6 +266,16 @@ func _ready() -> void:
 			probe.source_code = code
 			if probe.reload() != OK:
 				problems.append("GDScript rejected the generated code")
+		var target := path.get_basename() + ".gd"
+		var source := Model.build_source(code, out.bp)
+		var dir := DirAccess.open(target.get_base_dir())
+		if dir.is_link(target.get_file()):
+			print("SKIP  %s  destination is a link" % path)
+			continue
+		var exists := FileAccess.file_exists(target)
+		if exists and FileAccess.get_file_as_bytes(target) != source.to_utf8_buffer():
+			print("SKIP  %s  %s already contains different content" % [path, target])
+			continue
 		var count := 0
 		for gr in out.bp.graphs:
 			count += gr.nodes.size()
@@ -268,15 +283,17 @@ func _ready() -> void:
 			"" if problems.is_empty() else "  -> left alone: " + "; ".join(problems)])
 		if not problems.is_empty() or dry:
 			continue
-		var target: String = path.get_basename() + ".gd"
-		var f := FileAccess.open(target, FileAccess.WRITE)
-		f.store_string(Model.build_source(code, out.bp))
-		f.close()
+		if not exists:
+			var f := FileAccess.open(target, FileAccess.WRITE)
+			if f == null or not f.store_string(source):
+				push_error("Could not write " + target)
+				continue
+			f.close()
 		renamed[path] = target
 	# point everything that named the old file at the new one
 	if not dry and not renamed.is_empty():
 		var texts := []
-		_find("res://", ["tscn", "tres", "gd"], texts)
+		_find(root, ["tscn", "tres", "gd"], texts)
 		var touched := 0
 		for file in texts:
 			var text := FileAccess.get_file_as_string(file)
@@ -285,8 +302,9 @@ func _ready() -> void:
 				text = text.replace(old, renamed[old])
 			if text != before:
 				var f := FileAccess.open(file, FileAccess.WRITE)
-				f.store_string(text)
+				if f == null or not f.store_string(text):
+					push_error("Could not update references in " + String(file))
+					continue
 				f.close()
 				touched += 1
 		print("converted %d graph(s); updated %d file(s) that referred to them" % [renamed.size(), touched])
-	get_tree().quit()

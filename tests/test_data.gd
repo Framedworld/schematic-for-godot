@@ -84,6 +84,8 @@ func _init() -> void:
 		and loaded.get_row(&"gem").tint.is_equal_approx(Color(0.9, 0.1, 0.2)) and str(loaded.get_row_names()) == str(table.get_row_names()))
 
 	# CSV out and back
+	gem.rarity = 9007199254740993
+	potion.rarity = -9223372036854775807
 	var csv: String = table.to_csv()
 	check("CSV has a header and quotes what needs it", csv.begins_with("Name,display_name,icon,value,weight,stackable,rarity,tint\n") and csv.contains("\"Potion, small\"") and csv.contains("\"Gem \"\"Ruby\"\"\""), csv.get_slice("\n", 1))
 	var copy: Resource = Table.new()

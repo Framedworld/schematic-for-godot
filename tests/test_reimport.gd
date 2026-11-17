@@ -85,7 +85,7 @@ func _init() -> void:
 		test_gentle_speed(inputs)
 	print("informational: %s" % str(info))
 	print("REIMPORT FAILS: ", fails)
-	quit()
+	quit(1 if fails else 0)
 
 
 # ================================================================ helpers

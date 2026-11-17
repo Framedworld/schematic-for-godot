@@ -480,7 +480,9 @@ func _assemble() -> String:
 		# type takes any value (another script may give it one this script never does), one written with ":="
 		# has whatever type GDScript infers. The type in the variable list is what the pins show.
 		var as_written := String(v.get("written", ""))
-		if as_written == "untyped":
+		if as_written == "bare" and h != "" and String(v.get("default", "")) == "":
+			decl = "%svar %s: %s" % ["static " if _lib else "", vn, h]
+		elif as_written == "untyped":
 			decl = "%svar %s" % ["static " if _lib else "", vn] + ((" = " + String(v.default)) if String(v.get("default", "")) != "" else "")
 		elif as_written == "infer" and String(v.get("default", "")) != "":
 			decl = "%svar %s := %s" % ["static " if _lib else "", vn, String(v.default)]
@@ -1679,20 +1681,50 @@ func _function_body(g: Dictionary, entry: Dictionary, lines: Array) -> Array:
 	# as GDScript does: no last `return null` is written for it (the script did not have one).
 	var falls_off := String(g.get("ret_hint", "")) == "-" and outs.size() == 1 and String(g.get("ret_default", "")) == "" \
 		and T.default_literal(String(outs[0][1])) == "null"
-	if not outs.is_empty() and not falls_off:
-		var last_is_return := false
-		for l in b.lines:
-			# (a fifth item `true` marks the rest of a statement an inline lambda broke up)
-			if l[0] == 1 and not (l.size() > 4 and typeof(l[4]) == TYPE_BOOL and bool(l[4])):
-				last_is_return = String(l[1]).begins_with("return")
-		if not last_is_return:
-			var defs := PackedStringArray()
-			for o in outs:
-				defs.append(T.default_literal(String(o[1])))
-			if String(g.get("ret_default", "")) != "" and defs.size() == 1:
-				defs[0] = String(g.ret_default)   # an imported function that returns one of its script's enums
-			b.lines.append([1, "return " + (defs[0] if defs.size() == 1 else "[" + ", ".join(defs) + "]"), _gid, int(entry.id)])
+	if not outs.is_empty() and not falls_off and not _ends_in_return(b.lines, 0, b.lines.size(), 1):
+		var defs := PackedStringArray()
+		for o in outs:
+			defs.append(T.default_literal(String(o[1])))
+		if String(g.get("ret_default", "")) != "" and defs.size() == 1:
+			defs[0] = String(g.ret_default)   # an imported function that returns one of its script's enums
+		b.lines.append([1, "return " + (defs[0] if defs.size() == 1 else "[" + ", ".join(defs) + "]"), _gid, int(entry.id)])
 	return b.lines
+
+
+## A complete if/else or match also returns when each arm returns. Loops and partial branches may fall through.
+func _ends_in_return(lines: Array, first: int, end: int, indent: int) -> bool:
+	var statements := []
+	for i in range(first, end):
+		var row: Array = lines[i]
+		if int(row[0]) == indent and not (row.size() > 4 and row[4] is bool and row[4]):
+			var text := String(row[1]).strip_edges()
+			if not text.is_empty() and not text.begins_with("#"):
+				statements.append(i)
+	if statements.is_empty():
+		return false
+	var last := int(statements.back())
+	var tail := String(lines[last][1])
+	if tail == "return" or tail.begins_with("return "):
+		return true
+	if tail == "else:" and statements.size() >= 2:
+		var branch := int(statements[-2])
+		return String(lines[branch][1]).begins_with("if ") and _ends_in_return(lines, branch + 1, last, indent + 1) \
+			and _ends_in_return(lines, last + 1, end, indent + 1)
+	if tail.begins_with("match "):
+		var arm_end := end
+		var has_default := false
+		for i in range(end - 1, last, -1):
+			if int(lines[i][0]) != indent + 1:
+				continue
+			var pattern := String(lines[i][1]).strip_edges()
+			if pattern.is_empty() or pattern.begins_with("#"):
+				continue
+			if not pattern.ends_with(":") or not _ends_in_return(lines, i + 1, arm_end, indent + 2):
+				return false
+			has_default = has_default or pattern == "_:"
+			arm_end = i
+		return has_default
+	return false
 
 
 # ---------------------------------------------------------------- exec flow
@@ -1985,7 +2017,7 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 				_line(ind, e, id)
 			return _follow(id, "then")
 		"dyn_set":
-			_line(ind, "%s.%s = %s" % [_in(n, "target", scope), T.ident(String(p.name)), _in(n, "value", scope)], id)
+			_line(ind, "%s.%s %s= %s" % [_in(n, "target", scope), T.ident(String(p.name)), String(p.get("op", "")), _in(n, "value", scope)], id)
 			return _follow(id, "then")
 		"await_value":
 			if _wired_out(id, "ret") and _feeds_next_store(n, d):
@@ -2258,7 +2290,7 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 			_line(ind, "if %s:" % flag, id)
 			_line(ind + 1, "return", id)
 			_line(ind, "%s = true" % flag, id)
-			_line(ind, "await %s.create_timer(%s).timeout" % [_tree(), _in(n, "duration", scope)], id)
+			_await_timeout(n, ind, scope)
 			_line(ind, "%s = false" % flag, id)
 			return _follow(id, "then")
 		"retriggerable_delay":
@@ -2267,7 +2299,7 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 			_member("var %s: int = 0" % ctr, id)
 			_line(ind, "%s += 1" % ctr, id)
 			_decl(tok, "int", ctr, ind, id, scope)
-			_line(ind, "await %s.create_timer(%s).timeout" % [_tree(), _in(n, "duration", scope)], id)
+			_await_timeout(n, ind, scope)
 			_line(ind, "if %s != %s:" % [tok, ctr], id)
 			_line(ind + 1, "return", id)
 			return _follow(id, "then")
@@ -2432,6 +2464,15 @@ func _data_outs(d: Dictionary) -> Array:
 
 
 # ---------------------------------------------------------------- expressions
+
+## Keep only the signal across the suspension. In 4.6 a temporary SceneTreeTimer in the await expression
+## can outlive the waiting node when that node is freed before timeout.
+## Await the signal on its own so freeing the owner during a delay releases the temporary SceneTreeTimer on 4.6.
+func _await_timeout(n: Dictionary, ind: int, scope: Dictionary) -> void:
+	var signal_name := "__delay_timeout_%d_%d" % [_gid, int(n.id)]
+	_decl(signal_name, "Signal", "%s.create_timer(%s).timeout" % [_tree(), _in(n, "duration", scope)], ind, int(n.id), scope)
+	_line(ind, "await " + signal_name, int(n.id))
+
 
 ## Expression for the value arriving at an input pin (wire or inline default).
 func _in(n: Dictionary, pid: String, scope: Dictionary) -> String:

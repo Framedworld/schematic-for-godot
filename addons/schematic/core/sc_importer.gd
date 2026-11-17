@@ -662,6 +662,8 @@ func _fill_variables(ast: Dictionary) -> void:
 		# declared as the script declared it (see the compiler): the type above is only what the pins show
 		if String(v.type) == "":
 			entry["written"] = "infer" if bool(v.get("infer", false)) else "untyped"
+		elif v.init == null and not _raw.has(nm):
+			entry["written"] = "bare"
 		if bool(v.export) and not _raw.has(nm) and (T.hint(String(entry.type)) == "" or String(entry.type) in ["Callable", "Signal", "RID"]):
 			# `@export var hp = 2` exports by its value; the variable list would need a type to export it
 			_raw[nm] = String(v.text)
@@ -2551,6 +2553,14 @@ func _store_part(holder: Dictionary, part: String, val: Dictionary, op := "") ->
 			if obj.is_empty():
 				return -1
 			var n := _exec("set_prop", {"cls": ot, "prop": String(h.name), "part": part}.merged(extra))
+			return 1 if (_wire(obj, n, "target") and _wire(val, n, "value")) else -1
+		# A nested struct member is an assignable expression (frame.origin.x or body.transform.origin.z).
+		# Keep the holder as an lvalue instead of rebuilding it from several independent reads.
+		if _simple(h) and not R.break_members(ot).is_empty():
+			var obj := _holder(h, 1)
+			if obj.is_empty():
+				return -1
+			var n := _exec("dyn_set", {"name": part}.merged(extra))
 			return 1 if (_wire(obj, n, "target") and _wire(val, n, "value")) else -1
 	return 0
 

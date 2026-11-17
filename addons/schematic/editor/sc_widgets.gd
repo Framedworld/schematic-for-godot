@@ -5,6 +5,16 @@ extends RefCounted
 const T := preload("res://addons/schematic/core/sc_types.gd")
 const R := preload("res://addons/schematic/core/sc_registry.gd")
 
+# Shared surfaces and interaction colours for the Schematic workspace.
+const CANVAS := Color("#151d24")
+const CHROME := Color("#202c35")
+const INSET := Color("#18222a")
+const EDGE := Color("#3a505b")
+const ACCENT := Color("#81d8c3")
+const ACTIVE := Color("#24554e")
+const TEXT := Color("#deecec")
+const MUTED := Color("#a2b7bf")
+
 static var _swatches: Dictionary = {}
 static var _exec_icon: Texture2D
 static var _exec_icon_hollow: Texture2D
@@ -91,12 +101,13 @@ static func _small_line(text: String, width: float) -> LineEdit:
 	le.add_theme_font_size_override("font_size", 12)
 	le.select_all_on_focus = true
 	le.context_menu_enabled = false
-	# Unreal's inline pin value box: near-black with a thin light outline.
+	# Keep the focused pin field visible against both the card and its category tint.
 	for state in ["normal", "focus", "read_only"]:
 		var box := StyleBoxFlat.new()
-		box.bg_color = Color(0.02, 0.02, 0.022, 0.6)
+		box.bg_color = CANVAS
 		box.set_border_width_all(1)
-		box.border_color = Color(0.78, 0.78, 0.78, 0.85) if state != "focus" else Color(0.3, 0.6, 1.0)
+		box.border_color = EDGE if state != "focus" else ACCENT
+		box.border_width_top = 2 if state != "focus" else 1
 		box.set_corner_radius_all(4)
 		box.content_margin_left = 6
 		box.content_margin_right = 6
@@ -107,12 +118,16 @@ static func _small_line(text: String, width: float) -> LineEdit:
 
 
 static func _commit_line(le: LineEdit, fn: Callable) -> void:
-	le.text_submitted.connect(func(_t): fn.call(); le.release_focus())
-	le.focus_exited.connect(fn)
+	var original := [le.text]
+	le.focus_entered.connect(func(): original[0] = le.text)
+	le.text_submitted.connect(func(_t): le.release_focus())
+	le.focus_exited.connect(func():
+		if le.text != original[0]:
+			fn.call())
 
 
 static func _fmt(v: float) -> String:
-	return String.num(v, 4) if not is_equal_approx(v, roundf(v)) else str(int(roundf(v)))
+	return T.to_literal(v).trim_suffix(".0")
 
 
 ## Builds an editor for a literal of the given pin type, or null when the type has no inline editor.
@@ -140,7 +155,7 @@ static func make_value_editor(type: String, enum_name: String, literal: String, 
 		"int":
 			var le := _small_line(literal if literal != "" else "0", 44)
 			_commit_line(le, func():
-				var v := int(le.text.to_float()) if le.text.is_valid_float() else 0
+				var v := le.text.to_int() if le.text.is_valid_int() else int(le.text.to_float())
 				le.text = str(v)
 				on_change.call(str(v)))
 			return le
@@ -153,7 +168,8 @@ static func make_value_editor(type: String, enum_name: String, literal: String, 
 			return le
 		"String", "StringName", "NodePath":
 			var le := _small_line(str(T.parse_literal(literal, "")), 70 if compact else 140)
-			le.expand_to_text_length = compact
+			if compact:
+				le.custom_minimum_size.x = clampf(le.get_theme_font("font").get_string_size(le.text, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x + 18, 70, 148)
 			var prefix := "" if type == "String" else ("&" if type == "StringName" else "^")
 			_commit_line(le, func(): on_change.call(prefix + var_to_str(le.text)))
 			return le

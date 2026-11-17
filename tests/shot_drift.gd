@@ -5,11 +5,11 @@ extends RefCounted
 ## library's save that recompiles the schematics using it. Files it just wrote itself, line-ending and trailing
 ## whitespace differences, files from before the code fingerprint and the game running with Show Flow and Values
 ## on are not reported.
-## Scratch files go to res://tests/tmp/drift/ (not scanned by the editor) and, for the file system signal, to
-## res://tests/drift_scan/ (scanned; removed at the end). The running-game case uses res://demo/SC_Demo.gd and
-## puts its bytes back (run `git checkout -q -- demo/SC_Demo.gd` after it anyway).
+## Each run owns a scratch directory under tests/tmp and a scanned directory under tests for filesystem signals.
+## The running-game case edits a private copy of the demo scene and graph.
 ## Run: godot --path . --editor -- --sc-selftest=res://tests/shot_drift.gd
 
+const Scan := preload("res://tests/editor_scan.gd")
 const Model := preload("res://addons/schematic/core/sc_model.gd")
 const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
 const Starters := preload("res://addons/schematic/core/sc_starters.gd")
@@ -17,22 +17,24 @@ const W := preload("res://addons/schematic/editor/sc_widgets.gd")
 
 const LOG := "res://tests/out/shot_drift_checks.log"
 const SHOT := "res://tests/out/shot_drift.png"
-const DIR := "res://tests/tmp/drift"
-const PATH := DIR + "/SC_Drift.gd"
-const LIB := DIR + "/SC_DriftMacros.gd"
-const USER1 := DIR + "/SC_DriftUser1.gd"
-const USER2 := DIR + "/SC_DriftUser2.gd"
-const OLD := DIR + "/SC_DriftOld.gd"
-const CLOSED := DIR + "/SC_DriftClosed.gd"
-const SCAN_DIR := "res://tests/drift_scan"
-const SCAN := SCAN_DIR + "/SC_DriftScan.gd"
-const DEMO := "res://demo/SC_Demo.gd"
+var run_id := ResourceUID.id_to_text(ResourceUID.create_id()).trim_prefix("uid://")
+var DIR := "res://tests/tmp/drift_" + run_id
+var PATH := DIR + "/SC_Drift.gd"
+var SCAN_DIR := "res://tests/drift_scan_" + run_id
+var LIB := SCAN_DIR + "/SC_DriftMacros.gd"
+var USER1 := SCAN_DIR + "/SC_DriftUser1.gd"
+var USER2 := SCAN_DIR + "/SC_DriftUser2.gd"
+var OLD := DIR + "/SC_DriftOld.gd"
+var CLOSED := DIR + "/SC_DriftClosed.gd"
+var SCAN := SCAN_DIR + "/SC_DriftScan.gd"
+const DEMO_SOURCE := "res://demo/SC_Demo.gd"
+var demo_path := SCAN_DIR + "/SC_Demo.gd"
+var scene_path := SCAN_DIR + "/demo.tscn"
 
 var plugin: EditorPlugin
 var ed
 var tree: SceneTree
 var fails := 0
-var demo_bytes := PackedByteArray()
 
 
 func note(msg: String) -> void:
@@ -143,7 +145,7 @@ func cleanup() -> void:
 	if ed != null:
 		for i in range(ed.docs.size() - 1, -1, -1):
 			var p := String(ed.docs[i].path)
-			if p.begins_with(DIR) or p.begins_with(SCAN_DIR) or p == DEMO:
+			if p.begins_with(DIR) or p.begins_with(SCAN_DIR):
 				ed.docs[i].dirty = false
 				ed._close_doc(i)
 		if ed._close_dialog and is_instance_valid(ed._close_dialog):
@@ -155,29 +157,25 @@ func cleanup() -> void:
 	var all: Dictionary = EditorInterface.get_editor_settings().get_project_metadata("schematics", "breakpoints", {})
 	all.erase(PATH)
 	EditorInterface.get_editor_settings().set_project_metadata("schematics", "breakpoints", all)
-	if not demo_bytes.is_empty():
-		var f := FileAccess.open(DEMO, FileAccess.WRITE)
-		f.store_buffer(demo_bytes)
-		f.close()
+	await Scan.idle(tree)
 	remove_dir(DIR)
 	remove_dir(SCAN_DIR)
-	EditorInterface.get_resource_filesystem().scan()
+	await Scan.rescan(tree)
 
 
 func run(p: EditorPlugin) -> void:
 	plugin = p
 	tree = p.get_tree()
 	ed = p.editor
+	tree.create_timer(420.0).timeout.connect(func():
+		note("FAIL  watchdog quit")
+		tree.quit(1))
+	await Scan.idle(tree)
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://tests/out"))
-	remove_dir(DIR)
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(DIR))
 	if FileAccess.file_exists(LOG):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(LOG))
 	note("--- start")
-	tree.create_timer(420.0).timeout.connect(func():
-		note("FAIL  watchdog quit")
-		cleanup()
-		tree.quit())
 	await tree.create_timer(2.5).timeout
 	EditorInterface.set_main_screen_editor("Schematic")
 	await frames(4)
@@ -186,18 +184,19 @@ func run(p: EditorPlugin) -> void:
 	await case_code_edit()
 	await case_keep_graph()
 	await case_close_both()
+	await case_failed_close()
 	await case_replaced()
 	await case_deleted()
 	await case_no_false_alarms()
 	await case_library()
+	await case_nested_library()
 	await case_old_file()
 	await case_scan_signal()
 	await case_game()
 
-	cleanup()
-	await tree.create_timer(1.5).timeout
+	await cleanup()
 	note("%s  verdict: %d check%s failed" % ["PASS" if fails == 0 else "FAIL", fails, "" if fails == 1 else "s"])
-	tree.quit()
+	tree.quit(1 if fails else 0)
 
 
 # 1. open, save untouched, reopen: in sync throughout, no banner, file byte-identical
@@ -318,6 +317,19 @@ func case_close_both() -> void:
 		"button=%s open=%s vars=%s edited=%s toast=%s" % [offered, not doc_of(PATH).is_empty(), Model.load_file(PATH).variables, FileAccess.get_file_as_string(PATH).contains("edited by hand"), ed._toast.text])
 
 
+# A missing parent directory makes the save fail on every supported platform.
+func case_failed_close() -> void:
+	write_file(PATH, source_of(probe_bp()))
+	await open(PATH)
+	touch_graph()
+	var original: Dictionary = ed.doc
+	original.path = PATH.path_join("unwritable.gd")
+	ed._close_doc(ed.docs.find(original))
+	check(ed.docs.has(original) and original.dirty, "closing after a failed write keeps the unsaved graph open")
+	original.path = PATH
+	close_clean(PATH)
+
+
 # 5. the whole file replaced by another Schematic: Keep Mine then save writes the old graph; Reload loads the new
 func case_replaced() -> void:
 	note("--- 5. file replaced")
@@ -388,6 +400,7 @@ func case_no_false_alarms() -> void:
 # 8. a macro library used by two schematics, one hand-edited and not open: saving the library skips that one
 func case_library() -> void:
 	note("--- 8. macro library users")
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(SCAN_DIR))
 	var lib := Starters.build("macro_library", "")
 	write_file(LIB, source_of(lib))
 	for path in [USER1, USER2]:
@@ -435,6 +448,45 @@ func case_library() -> void:
 	close_clean(LIB)
 
 
+# Saving the innermost library propagates through the intermediate library with either tab state.
+func case_nested_library() -> void:
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(SCAN_DIR))
+	var inner_path := SCAN_DIR + "/Inner.gd"
+	var middle := SCAN_DIR + "/Middle.gd"
+	var consumer := SCAN_DIR + "/Consumer.gd"
+	var inner := Starters.build("macro_library", "")
+	write_file(inner_path, source_of(inner))
+	var lib := Model.new_schematic("RefCounted")
+	lib["library"] = "macro"
+	var outer := Model.new_graph(lib, "Wrapped", "macro")
+	var rep := Model.add_node(outer, "macro", Vector2.ZERO, {"name": "Repeat", "lib": inner_path})
+	rep.d["i_Times"] = "4"
+	outer.wires = [[outer.nodes[0].id, "i_In", rep.id, "i_In"], [rep.id, "o_Body", outer.nodes[1].id, "o_Out"]]
+	write_file(middle, source_of(lib))
+	preload("res://addons/schematic/core/sc_registry.gd").invalidate_libraries()
+	var bp := probe_bp()
+	var g: Dictionary = bp.graphs[0]
+	var call_macro := Model.add_node(g, "macro", Vector2.ZERO, {"name": "Wrapped", "lib": middle})
+	g.wires = [[g.nodes[0].id, "then", call_macro.id, "i_In"], [call_macro.id, "o_Out", g.nodes[2].id, "exec"]]
+	var c := Compiler.new()
+	var code := c.compile(bp)
+	check(c.errors.filter(func(e): return not e.w).is_empty() and code.contains("in range(4):"), "consumer compiles through both macro libraries", code)
+	write_file(consumer, Model.build_source(code, bp))
+	for n in [2, 3]:
+		if n == 3:
+			check(await open(middle), "the intermediate library opens cleanly")
+		check(await open(inner_path), "the inner library opens")
+		ed.open_member_graph("Repeat")
+		ed.mutate("Change Repeat", func():
+			for node in ed.cur_graph().nodes:
+				if node.kind == "math":
+					node.d["a1"] = str(n))
+		check(ed.compile_doc(ed.doc, true), "the inner library saves")
+		check(Model.code_part(FileAccess.get_file_as_string(consumer)).contains("- %d" % n), "consumer gets the new expansion with the intermediate library %s" % ("open" if n == 3 else "closed"))
+	close_clean(middle)
+	close_clean(inner_path)
+
+
 # 9. a file saved before the fingerprint: opens with no bar; a later outside edit is still caught
 func case_old_file() -> void:
 	note("--- 9. file from before the fingerprint")
@@ -469,8 +521,7 @@ func case_scan_signal() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(SCAN_DIR))
 	write_file(SCAN, source_of(probe_bp()))
 	var efs := EditorInterface.get_resource_filesystem()
-	efs.scan()
-	await wait_scan()
+	await Scan.rescan(tree)
 	check(await open(SCAN), "a schematic in a scanned folder opens")
 	check(ed.doc.drift == "", "in sync", str(ed.doc.drift))
 	await tree.create_timer(2.5).timeout   # older than DRIFT_RECENT, so only a changed time makes it look
@@ -478,8 +529,7 @@ func case_scan_signal() -> void:
 	var heard := [0]
 	var count := func(): heard[0] += 1
 	efs.filesystem_changed.connect(count)
-	efs.scan()
-	await wait_scan()
+	await Scan.rescan(tree)
 	var waited := 0.0
 	while heard[0] == 0 and waited < 10.0:
 		await tree.create_timer(0.25).timeout
@@ -488,67 +538,63 @@ func case_scan_signal() -> void:
 	efs.filesystem_changed.disconnect(count)
 	check(heard[0] > 0 and doc_of(SCAN).get("drift", "") == "code", "after the rescan's filesystem_changed the edit is noticed with nothing else asking", "signals=%d drift=%s" % [heard[0], doc_of(SCAN).get("drift", "")])
 	close_clean(SCAN)
+	await Scan.idle(tree)
 	remove_dir(SCAN_DIR)
-	efs.scan()
-	await wait_scan()
+	await Scan.rescan(tree)
 	check(not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(SCAN_DIR)), "the scanned folder is removed again")
-
-
-func wait_scan() -> void:
-	var efs := EditorInterface.get_resource_filesystem()
-	var waited := 0.0
-	await tree.create_timer(0.3).timeout
-	while efs.is_scanning() and waited < 20.0:
-		await tree.create_timer(0.25).timeout
-		waited += 0.25
 
 
 # 10. the game running with Show Flow and Values: no drift for the editor's own writes; an edit made meanwhile is
 # reported after the game stops and is not overwritten
 func case_game() -> void:
 	note("--- 10. running game with Show Flow and Values")
-	demo_bytes = bytes(DEMO)
-	EditorInterface.get_editor_settings().set_project_metadata("schematics", "breakpoints", {})
-	check(await open(DEMO), "the demo opens")
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(SCAN_DIR))
+	var graph := Model.load_file(DEMO_SOURCE)
+	graph["class_name"] = ""
+	write_file(demo_path, source_of(graph))
+	var scene := FileAccess.get_file_as_string("res://demo/demo.tscn")
+	write_file(scene_path, scene.replace(DEMO_SOURCE, demo_path))
+	await Scan.rescan(tree)
+	check(await open(demo_path), "the demo opens")
 	check(ed.doc.drift == "", "in sync", str(ed.doc.drift))
 	ed.mutate("Toggle Execution Flow", func(): ed.doc.bp["trace"] = true)
 	check(ed.compile_doc(ed.doc, true), "Show Flow and Values on, saved")
-	var traced := bytes(DEMO)
-	check(FileAccess.get_file_as_string(DEMO).contains("__sc_trace("), "the file on disk has the trace calls")
+	var traced := bytes(demo_path)
+	check(FileAccess.get_file_as_string(demo_path).contains("__sc_trace("), "the file on disk has the trace calls")
 	var states := []
 	ed.flow_hits = 0
-	EditorInterface.play_custom_scene("res://demo/demo.tscn")
+	EditorInterface.play_custom_scene(scene_path)
 	var waited := 0.0
 	while ed.flow_hits == 0 and waited < 20.0:
 		await tree.create_timer(0.25).timeout
 		waited += 0.25
 		ed.check_drift_all()
-		states.append(String(doc_of(DEMO).drift))
+		states.append(String(doc_of(demo_path).drift))
 	ed.save_all()
-	states.append(ed._drift_check(doc_of(DEMO), true))
+	states.append(ed._drift_check(doc_of(demo_path), true))
 	check(ed.flow_hits > 0, "the game ran and reported flow (%d hits)" % ed.flow_hits)
 	check(states.all(func(s): return s == ""), "while it ran, no drift was reported (%d looks)" % states.size(), str(states))
 	EditorInterface.stop_playing_scene()
 	await tree.create_timer(1.0).timeout
 	ed.check_drift_all()
-	check(bytes(DEMO) == traced and doc_of(DEMO).drift == "", "after stopping, the file is as before and in sync")
+	check(bytes(demo_path) == traced and doc_of(demo_path).drift == "", "after stopping, the file is as before and in sync")
 	# run again, and edit the file by hand while it runs
 	ed.flow_hits = 0
-	EditorInterface.play_custom_scene("res://demo/demo.tscn")
+	EditorInterface.play_custom_scene(scene_path)
 	waited = 0.0
 	while ed.flow_hits == 0 and waited < 20.0:
 		await tree.create_timer(0.25).timeout
 		waited += 0.25
-	var edit := hand_edit(DEMO)
-	var edited := bytes(DEMO)
+	var edit := hand_edit(demo_path)
+	var edited := bytes(demo_path)
 	check(edit[0] != "", "the demo's code was edited by hand while the game ran")
 	EditorInterface.stop_playing_scene()
 	await tree.create_timer(1.0).timeout
 	ed.check_drift_all()
 	await frames(2)
-	check(doc_of(DEMO).drift == "code" and bar_shown(), "after it stops, the edit is reported", str(doc_of(DEMO).drift))
-	check(bytes(DEMO) == edited, "and the file still holds the edit")
+	check(doc_of(demo_path).drift == "code" and bar_shown(), "after it stops, the edit is reported", str(doc_of(demo_path).drift))
+	check(bytes(demo_path) == edited, "and the file still holds the edit")
 	ed.mutate("Toggle Execution Flow", func(): ed.doc.bp["trace"] = false)
 	ed.save_all()
-	check(bytes(DEMO) == edited, "turning Show Flow and Values off and saving all does not overwrite it")
-	close_clean(DEMO)
+	check(bytes(demo_path) == edited, "turning Show Flow and Values off and saving all does not overwrite it")
+	close_clean(demo_path)

@@ -8,7 +8,7 @@ extends SceneTree
 ## Per input: code1 and code2 load; code2 == code1 (text); canonical(graph2) == canonical(graph1) (graph);
 ## code3 == code2 (the round settles); code2 offers what code1 offers (interface); the second conversion keeps
 ## no more lines as code nodes than the first. A failing text or graph check prints what differs and why
-## (a CATEGORY). The test MEASURES: it is expected to fail today, always exits 0, and is not a standing check.
+## (a CATEGORY). Any failed check, skipped input or empty selection returns a failing exit code.
 ##
 ## Inputs: every sample in tests/convert/ (as written and with Windows line endings) and the code of the
 ## repository's own demo schematics (the code the compiler gives for the graph stored in each file).
@@ -45,6 +45,7 @@ var func_name := RegEx.create_from_string("(?m)^\\s*(?:static\\s+)?func\\s+(\\w+
 var counted_name := RegEx.create_from_string("^(.*?)_(\\d+)$")
 
 var fails := 0
+var skipped := 0
 var n_inputs := 0
 var n_text := 0
 var n_graph := 0
@@ -805,6 +806,7 @@ func _init() -> void:
 		var path: String = DIR + name + ".gd"
 		var source := FileAccess.get_file_as_string(path).replace("\r\n", "\n")
 		if checks.load_text(source)[0] == null:
+			skipped += 1
 			print("\n== %s\n  SKIP  the sample itself does not load" % name)
 			continue
 		judge(name, source, path)
@@ -820,11 +822,13 @@ func _init() -> void:
 				continue
 			var bp := Model.load_file(dir + f)
 			if bp.is_empty() or bp.graphs.is_empty():
+				skipped += 1
 				print("\n== %s\n  SKIP  no stored graph" % name)
 				continue
 			var source: String = Compiler.new().compile(bp)
 			var loaded: Array = checks.load_text(source)
 			if loaded[0] == null:
+				skipped += 1
 				print("\n== %s\n  SKIP  its own generated code does not load: %s" % [name, str(loaded[1].keys())])
 				continue
 			judge(name, source, dir + f)
@@ -837,4 +841,5 @@ func _init() -> void:
 		print("%-26s %8d %8d %8d" % [cat, table[cat].inputs, table[cat].lines, table[cat].nodes])
 	print("(%.1f seconds)" % ((Time.get_ticks_msec() - started) / 1000.0))
 	print("FIXED POINT: %d of %d text, %d of %d graph, %d of %d settle" % [n_text, n_inputs, n_graph, n_inputs, n_settled, n_inputs])
-	quit(0)
+	var failed := fails > 0 or skipped > 0 or n_inputs == 0
+	quit(1 if failed else 0)

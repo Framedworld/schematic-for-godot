@@ -9,6 +9,7 @@ extends Node
 ## A Schematic is only changed when the script generated from it stays the same (see core/sc_reuse.gd), so
 ## this is safe to run on a working project, and to run again. convert_project.tscn runs it after converting.
 
+const ProjectFiles := preload("res://addons/schematic/core/sc_project_files.gd")
 const Model := preload("res://addons/schematic/core/sc_model.gd")
 const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
 const R := preload("res://addons/schematic/core/sc_registry.gd")
@@ -17,31 +18,59 @@ const Reuse := preload("res://addons/schematic/core/sc_reuse.gd")
 
 
 static func find(dir_path: String, out: Array) -> void:
-	var dir := DirAccess.open(dir_path)
-	if dir == null:
-		return
-	for f in dir.get_files():
-		if f.get_extension() == "gd":
-			out.append(dir_path.path_join(f))
-	for sub in dir.get_directories():
-		if not sub.begins_with(".") and not (dir_path == "res://" and sub == "addons"):
-			find(dir_path.path_join(sub), out)
+	ProjectFiles.find(dir_path, ["gd"], out)
+
+
+## Older documents lack a fingerprint. Compare their embedded graph with the actual script before writing.
+static func matches_disk(text: String, bp: Dictionary) -> bool:
+	if not Model.is_schematic_source(text) or bp.is_empty():
+		return false
+	if Model.stored_code_hash(text) != "":
+		return not Model.code_edited(text)
+	var c := Compiler.new()
+	var code := c.compile(bp.duplicate(true))
+	return not c.errors.any(func(e): return not e.w) and Model.code_part(text) == Model.normalize_code(Model.file_code(code, bp))
 
 
 ## Runs reuse over `files` ([{path, bp}]) and writes the ones that changed. Returns the report.
-static func reuse(files: Array, library: String, dry: bool, quiet: bool) -> Dictionary:
+static func reuse(candidates: Array, library: String, dry: bool, quiet: bool) -> Dictionary:
 	var started := Time.get_ticks_msec()
 	var r := Reuse.new()
+	var files := []
+	var snapshots := {}
+	var skipped := []
+	for f in candidates:
+		var text := FileAccess.get_file_as_string(f.path)
+		var bp: Dictionary = f.bp if dry else Model.parse_source(text)
+		if (dry and not Model.is_schematic_source(text)) or matches_disk(text, bp):
+			files.append({"path": f.path, "bp": bp})
+			snapshots[f.path] = text.md5_text()
+		else:
+			skipped.append(f.path)
+			print("SKIP  %s  on-disk code differs from its graph" % f.path)
+	if library != "":
+		var dir := DirAccess.open(library.get_base_dir())
+		if not ProjectFiles.includes_folder(library.get_base_dir()) or (dir != null and dir.is_link(library.get_file())):
+			print("SKIP  %s  outside the project scan" % library)
+			library = ""
+		elif FileAccess.file_exists(library):
+			var text := FileAccess.get_file_as_string(library)
+			if not matches_disk(text, Model.parse_source(text)):
+				print("SKIP  %s  shared library is not safe to rewrite" % library)
+				library = ""
 	# library macros that Schematics outside this run use have to stay
 	var elsewhere := {}
 	if library != "" and not dry and FileAccess.file_exists(library):
-		var mine := {}
-		for f in files:
-			mine[String(f.path)] = true
-		var all := []
-		find("res://", all)
+		# Keep every dependency still present on disk. If a write is skipped or fails, its old macros still work.
+		var all := {}
+		var paths := []
+		find("res://", paths)
+		for path in paths:
+			all[path] = true
+		for f in candidates:
+			all[f.path] = true
 		for path in all:
-			if mine.has(path) or path == library or not FileAccess.get_file_as_string(path).contains(library):
+			if path == library or not FileAccess.get_file_as_string(path).contains(library):
 				continue
 			var other := Model.load_file(path)
 			for g in other.get("graphs", []):
@@ -49,6 +78,7 @@ static func reuse(files: Array, library: String, dry: bool, quiet: bool) -> Dict
 					if n.kind == "macro" and String(n.p.get("lib", "")) == library:
 						elsewhere[String(n.p.name)] = true
 	var rep := r.run(files, "" if dry else library, elsewhere)
+	rep["skipped"] = skipped
 	if not quiet:
 		for note in r.notes:
 			print("      ", note)
@@ -58,8 +88,17 @@ static func reuse(files: Array, library: String, dry: bool, quiet: bool) -> Dict
 				continue
 			var c := Compiler.new()
 			var code: String = c.compile(f.bp)
+			if FileAccess.get_file_as_string(f.path).md5_text() != snapshots[f.path]:
+				print("SKIP  %s  changed during reuse" % f.path)
+				skipped.append(f.path)
+				rep.changed.erase(f.path)
+				continue
 			var out := FileAccess.open(f.path, FileAccess.WRITE)
-			out.store_string(Model.build_source(code, f.bp))
+			if out == null or not out.store_string(Model.build_source(code, f.bp)):
+				rep.changed.erase(f.path)
+				skipped.append(f.path)
+				push_error("Could not write " + String(f.path))
+				continue
 			out.close()
 	print("reuse%s: %d macros in %d files, %d shared macros%s; %d uses; %d nodes before, %d after (%.1f%% fewer); %d files put back; %.1f s" % [
 		" (dry run: macros shared between files are not looked for)" if dry else "",

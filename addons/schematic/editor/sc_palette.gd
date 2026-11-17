@@ -31,10 +31,11 @@ func _init() -> void:
 	vb.custom_minimum_size = Vector2(440, 470)
 	add_child(vb)
 	var frame := StyleBoxFlat.new()
-	frame.bg_color = Color(0.09, 0.09, 0.095)
+	vb.add_theme_constant_override("separation", 6)
+	frame.bg_color = W.CHROME
 	frame.set_border_width_all(1)
-	frame.border_color = Color(0.3, 0.3, 0.3)
-	frame.set_corner_radius_all(5)
+	frame.border_color = W.EDGE
+	frame.set_corner_radius_all(9)
 	frame.set_content_margin_all(8)
 	frame.shadow_color = Color(0, 0, 0, 0.4)
 	frame.shadow_size = 8
@@ -45,7 +46,7 @@ func _init() -> void:
 	_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_title.clip_text = true
 	_title.add_theme_font_size_override("font_size", 13)
-	_title.add_theme_color_override("font_color", Color(1, 1, 1, 0.75))
+	_title.add_theme_color_override("font_color", W.ACCENT)
 	top.add_child(_title)
 	_context = CheckBox.new()
 	_context.text = "Context Sensitive"
@@ -56,7 +57,7 @@ func _init() -> void:
 		_search.grab_focus())
 	top.add_child(_context)
 	_search = LineEdit.new()
-	_search.placeholder_text = "Search"
+	_search.placeholder_text = "Search nodes"
 	_search.clear_button_enabled = true
 	_search.text_changed.connect(func(_t): _fill())
 	_search.text_submitted.connect(func(_t): _activate())
@@ -190,6 +191,7 @@ func _leaf(parent: TreeItem, act: Dictionary, show_cat: bool) -> void:
 	var it := _tree.create_item(parent)
 	it.set_text(0, act.l)
 	it.set_metadata(0, act)
+	it.set_tooltip_text(0, String(act.get("tip", "")))
 	if act.has("via"):
 		it.set_suffix(0, "   Unreal: %s" % act.via)
 		it.set_tooltip_text(0, "%s
@@ -198,7 +200,6 @@ Known in Unreal as: %s" % [String(act.get("tip", "")), ", ".join(PackedStringArr
 	if look[0]:
 		it.set_icon(0, look[0])
 		it.set_icon_modulate(0, look[1])
-	it.set_tooltip_text(0, String(act.get("tip", "")))
 	if show_cat:
 		it.set_text(1, String(act.c).get_slice("|", String(act.c).get_slice_count("|") - 1))
 		it.set_custom_color(1, Color(1, 1, 1, 0.4))
