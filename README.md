@@ -35,7 +35,7 @@ with the reason and the line, and nothing changes. Comments written by hand are 
 
 ## Find any node by typing
 
-![The action menu filtered by the word rotate](docs/images/action_menu.png)
+![The action menu filtered by the word print](docs/images/action_menu.png)
 
 Right-click, or drag off a pin, and type. The menu lists every function of every Godot class, your own
 functions, variables, macros and libraries, filtered to what fits the pin you dragged from. Unreal names work

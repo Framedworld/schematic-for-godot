@@ -82,7 +82,7 @@ const PIN_X := 16          # how far inside the node edge a pin sits
 const ROW_H := 24
 
 # Each header uses the registry or kit's category colour. Its lighter accent marks the lower edge.
-const CARD := Color("#28333cf7")
+const CARD := Color("#1e1c1af7")
 const CARD_EDGE := W.EDGE
 const PIN_HOLE := Color(0.06, 0.065, 0.08, 0.9)
 const EXEC_COLOR := Color(1, 1, 1)
@@ -780,7 +780,7 @@ func _style(d: Dictionary, has_error: bool) -> void:
 		# Compact nodes (a variable, a constant): a small card carrying a tint of the node colour, outlined in it.
 		body.set_corner_radius_all(RADIUS)
 		body.set_border_width_all(1)
-		body.bg_color = c.lerp(CARD, 0.30)
+		body.bg_color = Color.from_hsv(c.h, c.s * 0.78, 0.19, CARD.a)
 		body.border_color = Color(_accent.r, _accent.g, _accent.b, 0.5) if not has_error else edge
 		if kind == "op" or kind == "math":
 			body.bg_color = CARD

@@ -43,9 +43,9 @@ func _init() -> void:
 	snapping_distance = 16
 	show_menu = false
 	show_grid = true
-	grid_pattern = GraphEdit.GRID_PATTERN_DOTS
-	add_theme_color_override("grid_minor", Color("#2b3841"))
-	add_theme_color_override("grid_major", Color("#40545e"))
+	grid_pattern = GraphEdit.GRID_PATTERN_LINES
+	add_theme_color_override("grid_minor", Color("#3c3835"))
+	add_theme_color_override("grid_major", Color("#413d39"))
 	var bg := StyleBoxFlat.new()
 	bg.bg_color = W.CANVAS
 	add_theme_stylebox_override("panel", bg)
