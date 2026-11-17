@@ -126,9 +126,7 @@ The pictures on this page are taken from the running editor by `tests/shot_readm
 
 ## Licence
 
-Free to use, including in commercial games. What you make with it is yours: the scripts it generates carry no
-restrictions. You may change the plugin for your own use and ship it inside your game, but you may not
-distribute modified versions of the plugin or sell the plugin itself. The full terms are in `LICENSE.md`.
+Schematic is licensed under the [Apache License 2.0](LICENSE.md). You may use, modify and redistribute the plugin, including in commercial projects, under that licence. You retain ownership of your own game logic and generated scripts. The bundled Godot API reference data carries its [upstream notice](addons/schematic/NOTICE.txt).
 
 ## Installing it in your own project
 
