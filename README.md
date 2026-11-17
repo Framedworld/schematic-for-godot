@@ -7,7 +7,7 @@
 *One schematic runs this whole machine: it is `demo/machine`. [Watch the video at full quality](docs/video/schematic_machine.mp4),
 or [the one-minute tour of everything](docs/video/schematic_tour.mp4).*
 
-![The Schematic editor with an event graph open](docs/images/editor.png)
+[![The new Schematic editor with color-coded nodes on a warm grid](docs/images/store/gallery/00_new_editor_ui.webp)](docs/images/store/gallery/01_editor.webp)
 
 Schematic is an editor plugin for building game logic as graphs of nodes and wires. There is no custom engine build, no runtime library and no new file
 type: a Schematic is an ordinary `.gd` script, so it attaches to nodes, exports variables to the Inspector,
@@ -18,7 +18,7 @@ not been tried, and on 4.3 the plugin does not load.
 
 ## A Schematic is a GDScript file
 
-![A graph beside the GDScript it compiles to](docs/images/graph_to_code.png)
+![A graph beside the GDScript it compiles to](docs/images/store/gallery/02_graph_to_code.webp)
 
 The graph compiles to plain, readable GDScript, and the graph itself is kept in the same file as a comment
 block. What runs in your game is the code on the right: no interpreter and no per-node cost. Turn the plugin
@@ -35,7 +35,7 @@ with the reason and the line, and nothing changes. Comments written by hand are 
 
 ## Find any node by typing
 
-![The action menu filtered by the word print](docs/images/action_menu.png)
+![The action menu filtered by the word print](docs/images/store/gallery/05_action_menu.webp)
 
 Right-click, or drag off a pin, and type. The menu lists every function of every Godot class, your own
 functions, variables, macros and libraries, filtered to what fits the pin you dragged from. Unreal names work
@@ -43,7 +43,7 @@ too: typing `BeginPlay` finds Event Ready.
 
 ## Start from something that works
 
-![The New Schematic dialog listing the starters](docs/images/starters.png)
+![The New Schematic dialog listing the starters](docs/images/store/gallery/06_starters.webp)
 
 New Schematic offers ready-wired starters beside Empty: 2D and 3D characters, pickups, trigger volumes,
 projectiles, spawners, a health component, a game state and a score HUD, plus function libraries, macro
@@ -53,13 +53,13 @@ libraries, data assets and interfaces. `demo/arcade` is a small game made from f
 
 ## Debug on the graph
 
-![The game stopped at a node, with values on the pins and a watch list](docs/images/debug_values.png)
+![The game stopped at a node, with values on the pins and a watch list](docs/images/store/gallery/03_debug_values.webp)
 
 Put a breakpoint on a node with F9. When the game stops there, every wired pin of that function shows its
 value, and Step Into, Step Over and Step Out move one node at a time. Watch any variable or expression, or
 right-click a node and watch one of its pins.
 
-![Stepped into a function, with the call stack showing both functions](docs/images/debug_call_stack.png)
+![Stepped into a function, with the call stack showing both functions](docs/images/store/gallery/04_debug_call_stack.webp)
 
 The Call Stack lists the functions that are running and the node each is at. Click one to see its graph and its
 values.
@@ -74,7 +74,7 @@ code; with it off, nothing is added.
 
 ## Interfaces
 
-![Message nodes calling an interface, beside the code they compile to](docs/images/interface_message.png)
+![Message nodes calling an interface, beside the code they compile to](docs/images/store/gallery/07_interface_message.webp)
 
 A Schematic Interface is a list of functions that different Schematics agree to have. A Message node calls one
 on any object and does nothing if the object does not have it, so a player can Interact with whatever it is
@@ -86,7 +86,7 @@ looking at without knowing its class. It compiles to the `has_method` check you 
 
 *Kenney's platformer kit, as written and after conversion. [Watch the video at full quality](docs/video/schematic_convert.mp4).*
 
-![A hand-written script converted to a graph](docs/images/converted_script.png)
+![A hand-written script converted to a graph](docs/images/store/gallery/08_converted_script.webp)
 
 Right-click a `.gd` file and pick Convert to Schematic, or convert a whole project from the command line. The
 original is kept beside it, and the converted script is declared the way the source was: what was untyped stays
@@ -100,7 +100,7 @@ loads, the converted script loads too and offers the same functions, variables, 
 
 ## Timelines and data tables
 
-![A timeline node with its curve editor](docs/images/timeline.png)
+![A timeline node with its curve editor](docs/images/store/gallery/09_timeline.webp)
 
 Timelines animate values over time with a curve editor in the Details panel. Data Assets are structures of
 fields, and Data Tables are rows of them, with CSV import and export.
