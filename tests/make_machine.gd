@@ -16,21 +16,23 @@ const SOLID := 1
 const BLOCK := 2
 const MOVER := 4
 
-const TRACK := Color(0.74, 0.73, 0.7)
-const TEAL := Color(0.16, 0.74, 0.7)
-const BLUE := Color(0.28, 0.52, 1.0)
-const GREEN := Color(0.42, 0.84, 0.36)
-const RED := Color(0.95, 0.24, 0.2)
-const ORANGE := Color(1.0, 0.6, 0.12)
-const DARK := Color(0.17, 0.19, 0.23)
-const SKY := Color(0.075, 0.085, 0.105)
+const TRACK := Color("#b7b2a7")
+const TEAL := Color("#27716b")
+const SEA := Color("#3f7976")
+const BRASS := Color("#c09756")
+const RED := Color("#db5c39")
+const ORANGE := Color("#e7a32f")
+const DARK := Color("#384746")
+const SKY := Color("#20292a")
 # The camera looks at CAM_AIM from CAM_FAR metres away, turned CAM_YAW to the right and raised CAM_PITCH.
-const CAM_AIM := Vector3(5.9, 2.95, 0.0)
-const CAM_FAR := 47.0
+const CAM_AIM := Vector3(3.8, 2.55, 0.0)
+const CAM_FAR := 43.0
 const CAM_YAW := 16.0
-const CAM_PITCH := 9.0
-const CAM_FOV := 30.0
-const PASTELS := [Color(1.0, 0.56, 0.52), Color(1.0, 0.8, 0.45), Color(0.56, 0.86, 0.6), Color(0.5, 0.76, 1.0), Color(0.78, 0.62, 1.0)]
+const CAM_PITCH := 13.0
+const CAM_FOV := 28.0
+const BLOCK_MODELS := ["block-jade", "block-ivory", "block-coral"]
+## Every model the scene shows. They are made by tools/make_machine_models.py and have to be imported before this runs.
+const MODELS := ["display-table", "cannon", "domino-coral", "domino-jade", "block-jade", "block-ivory", "block-coral"]
 
 var top: Node3D
 var mats := {}
@@ -139,10 +141,17 @@ func ball_mesh(parent: Node, radius: float, material: Material) -> void:
 	add(parent, cs, "Shape")
 
 
+## The model a part is shown as. `_init` has checked that every model loads.
+func display_model(parent: Node3D, model: String) -> void:
+	var scene := load(DIR + "models/" + model + ".glb") as PackedScene
+	add(parent, scene.instantiate(), "DisplayModel")
+
+
 func own(node: Node, owner: Node) -> void:
 	for c in node.get_children():
 		c.owner = owner
-		own(c, owner)
+		if c.scene_file_path.is_empty():
+			own(c, owner)
 
 
 func save_scene(node: Node, file: String) -> bool:
@@ -163,7 +172,7 @@ func build_cannonball() -> bool:
 	ball.collision_layer = SOLID
 	ball.collision_mask = SOLID | BLOCK | MOVER
 	flat(ball)
-	ball_mesh(ball, 0.28, mat(Color(0.1, 0.11, 0.13), 0.0, 0.3, 0.8))
+	ball_mesh(ball, 0.28, mat(Color("#bb753d"), 0.0, 0.22, 0.78))
 	var ok := save_scene(ball, "cannonball.tscn")
 	ball.free()
 	return ok
@@ -272,42 +281,40 @@ func build_scene(script: Script) -> bool:
 	top.name = "Machine"
 	grip = PhysicsMaterial.new()
 	grip.friction = 0.9
-	var track := mat(TRACK)
+	var track := mat(TRACK, 0.0, 0.31, 0.46)
 
 	# light and air
 	var env := Environment.new()
 	env.background_mode = Environment.BG_COLOR
 	env.background_color = SKY
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.62, 0.7, 0.85)
-	env.ambient_light_energy = 0.5
-	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
-	env.glow_enabled = true
-	env.glow_intensity = 0.5
-	env.glow_bloom = 0.0
-	env.glow_hdr_threshold = 1.15
+	var studio := ShaderMaterial.new()
+	studio.shader = preload("res://demo/machine/studio_sky.gdshader")
+	env.sky = Sky.new()
+	env.sky.sky_material = studio
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
+	env.ambient_light_energy = 0.78
+	env.tonemap_mode = Environment.TONE_MAPPER_ACES
+	env.tonemap_white = 5.0
 	env.ssao_enabled = true
-	env.fog_enabled = true                      # the ground fades into the background instead of ending at a line
-	env.fog_mode = Environment.FOG_MODE_DEPTH
-	env.fog_light_color = SKY
-	env.fog_light_energy = 1.0
-	env.fog_sun_scatter = 0.0
-	env.fog_depth_begin = 46.0
-	env.fog_depth_end = 80.0
+	env.ssao_radius = 0.55
+	env.ssao_intensity = 1.25
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add(top, we, "WorldEnvironment")
 	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-42, -28, 0)
-	sun.light_energy = 1.0
+	sun.rotation_degrees = Vector3(-52, -36, 0)
+	sun.light_color = Color("#ffead1")
+	sun.light_energy = 1.18
 	sun.shadow_enabled = true
-	sun.shadow_blur = 1.6
+	sun.shadow_blur = 1.4
+	sun.light_angular_distance = 1.15
 	sun.directional_shadow_max_distance = 90.0
 	add(top, sun, "Sun")
 	var fill := DirectionalLight3D.new()
-	fill.rotation_degrees = Vector3(-18, 40, 0)
-	fill.light_color = Color(0.6, 0.72, 1.0)
-	fill.light_energy = 0.3
+	fill.rotation_degrees = Vector3(-28, 137, 0)
+	fill.light_color = Color("#b8e1e5")
+	fill.light_energy = 0.75
 	add(top, fill, "Fill")
 	var cam := Camera3D.new()
 	cam.keep_aspect = Camera3D.KEEP_WIDTH
@@ -318,8 +325,15 @@ func build_scene(script: Script) -> bool:
 	cam.look_at_from_position(CAM_AIM + CAM_FAR * Vector3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch)), CAM_AIM)
 
 	# the ground and the wall behind
-	var ground := fixed(top, "Ground", Vector3(5, -0.25, -40), Vector3(300, 0.5, 160), mat(Color(0.12, 0.14, 0.17), 0.0, 0.85))
+	var backdrop := ShaderMaterial.new()
+	backdrop.shader = preload("res://demo/machine/studio_backdrop.gdshader")
+	var ground := fixed(top, "Ground", Vector3(5, -0.25, -40), Vector3(300, 0.5, 160), backdrop)
 	ground.collision_layer = SOLID
+	# The table top is the ground the parts land on (y = 0); the studio floor is drawn below it, under the table.
+	(ground.get_node("Mesh") as MeshInstance3D).position.y -= 0.72
+	var wall := mesh_box(top, Vector3(160, 48, 0.12), Vector3(0, 22, -8.5), backdrop, "StudioSweep")
+	wall.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	display_model(top, "display-table")
 
 	var parts := Node3D.new()
 	add(top, parts, "Track")
@@ -332,21 +346,21 @@ func build_scene(script: Script) -> bool:
 	var gate := AnimatableBody3D.new()
 	gate.position = Vector3(-4.2, 5.5, 0)
 	add(top, gate, "Gate")
-	solid(gate, Vector3(0.12, 1.0, DEPTH), mat(TEAL, 0.25))
+	solid(gate, Vector3(0.12, 1.0, DEPTH), mat(TEAL, 0.0, 0.28, 0.38))
 
 	# 2. the trapdoor, hinged at its left end, and the wall that stops the marble over it
 	var door := AnimatableBody3D.new()
 	door.position = Vector3(-3.0, 4.7, 0)
 	door.physics_material_override = grip
 	add(top, door, "Trapdoor")
-	solid(door, Vector3(1.0, 0.12, DEPTH), mat(BLUE, 0.25), Vector3(0.5, -0.06, 0))
+	solid(door, Vector3(1.0, 0.12, DEPTH), mat(SEA, 0.0, 0.25, 0.45), Vector3(0.5, -0.06, 0))
 	fixed(parts, "TrapWall", Vector3(-1.9, 4.6, 0), Vector3(0.2, 1.8, DEPTH), track)
 	sensor("TrapSensor", Vector2(-2.45, 5.0), Vector2(0.5, 0.5))
 
 	# 3. the second ramp and the launcher at its end
 	plank(parts, "Ramp2", Vector2(-2.95, 3.0), Vector2(-0.6, 2.4), track)
 	fixed(parts, "Stop2", Vector3(-3.05, 3.2, 0), Vector3(0.2, 0.7, DEPTH), track)
-	plank(parts, "Pad", Vector2(-0.6, 2.4), Vector2(0.3, 2.4), mat(GREEN, 0.35))
+	plank(parts, "Pad", Vector2(-0.6, 2.4), Vector2(0.3, 2.4), mat(BRASS, 0.0, 0.25, 0.55))
 	post(parts, Vector2(-2.8, 2.8))
 	post(parts, Vector2(-0.1, 2.25))
 	sensor("Launcher", Vector2(-0.1, 2.75), Vector2(0.3, 0.5))
@@ -355,7 +369,7 @@ func build_scene(script: Script) -> bool:
 	ring.inner_radius = 0.58
 	ring.outer_radius = 0.7
 	hoop.mesh = ring
-	hoop.material_override = mat(ORANGE, 1.6)
+	hoop.material_override = mat(ORANGE, 0.05, 0.2, 0.68)
 	hoop.position = Vector3(0.87, 4.3, 0)
 	hoop.rotation.z = PI / 2.0
 	add(top, hoop, "Hoop")
@@ -376,7 +390,8 @@ func build_scene(script: Script) -> bool:
 		dom.collision_mask = SOLID | BLOCK | MOVER
 		flat(dom)
 		add(dominoes, dom, "Domino%d" % (i + 1))
-		solid(dom, Vector3(0.12, 0.9, 0.7), mat(Color(1.0, 0.45, 0.62).lerp(Color(0.6, 0.45, 1.0), i / 5.0), 0.15))
+		shape_box(dom, Vector3(0.12, 0.9, 0.7))
+		display_model(dom, "domino-coral" if i == 0 or i == 5 else "domino-jade")
 
 	# 5. the button and the cannon
 	sensor("Button", Vector2(7.5, 1.35), Vector2(0.4, 0.3))
@@ -392,27 +407,8 @@ func build_scene(script: Script) -> bool:
 	var cannon := StaticBody3D.new()
 	cannon.position = Vector3(8.45, 1.4, 0)
 	add(top, cannon, "Cannon")
-	solid(cannon, Vector3(0.7, 0.4, 0.8), mat(DARK, 0.0, 0.5, 0.3))
-	var barrel := MeshInstance3D.new()
-	var tube := CylinderMesh.new()
-	tube.top_radius = 0.3
-	tube.bottom_radius = 0.36
-	tube.height = 1.1
-	barrel.mesh = tube
-	barrel.material_override = mat(DARK, 0.0, 0.35, 0.6)
-	barrel.position = Vector3(0.2, 0.45, 0)
-	barrel.rotation.z = -PI / 2.0 + 0.09
-	add(cannon, barrel, "Barrel")
-	var band := MeshInstance3D.new()
-	var hoop2 := CylinderMesh.new()
-	hoop2.top_radius = 0.33
-	hoop2.bottom_radius = 0.33
-	hoop2.height = 0.12
-	band.mesh = hoop2
-	band.material_override = mat(ORANGE, 0.9)
-	band.position = Vector3(0.7, 0.495, 0)
-	band.rotation.z = -PI / 2.0 + 0.09
-	add(cannon, band, "Band")
+	shape_box(cannon, Vector3(0.7, 0.4, 0.8))
+	display_model(cannon, "cannon")
 	var muzzle := Marker3D.new()
 	muzzle.position = Vector3(0.75, 0.45, 0)
 	add(cannon, muzzle, "Muzzle")
@@ -432,7 +428,8 @@ func build_scene(script: Script) -> bool:
 				block.collision_layer = SOLID | BLOCK
 				block.collision_mask = SOLID | BLOCK | MOVER
 				add(tower, block, "Block%d" % number)
-				solid(block, Vector3.ONE * 0.5, mat(PASTELS[(level + col + row) % PASTELS.size()], 0.12))
+				shape_box(block, Vector3.ONE * 0.5)
+				display_model(block, BLOCK_MODELS[(level + col + row) % BLOCK_MODELS.size()])
 	sensor("Floor", Vector2(13.0, 0.15), Vector2(12.0, 0.3), 14.0, BLOCK)
 
 	# the marble
@@ -446,23 +443,23 @@ func build_scene(script: Script) -> bool:
 	marble.physics_material_override = grip
 	flat(marble)
 	add(top, marble, "Marble")
-	ball_mesh(marble, MARBLE, mat(ORANGE, 0.75, 0.25))
+	ball_mesh(marble, MARBLE, mat(ORANGE, 0.0, 0.18, 0.73))
 	var glow := OmniLight3D.new()
 	glow.light_color = ORANGE
-	glow.light_energy = 1.2
+	glow.light_energy = 0.30
 	glow.omni_range = 3.0
 	add(marble, glow, "Glow")
 	var trail := CPUParticles3D.new()
-	trail.amount = 36
-	trail.lifetime = 0.45
+	trail.amount = 16
+	trail.lifetime = 0.23
 	trail.local_coords = false
 	trail.gravity = Vector3.ZERO
 	trail.spread = 0.0
 	trail.initial_velocity_min = 0.0
 	trail.initial_velocity_max = 0.0
 	var dot := SphereMesh.new()
-	dot.radius = 0.16
-	dot.height = 0.32
+	dot.radius = 0.07
+	dot.height = 0.14
 	dot.radial_segments = 12
 	dot.rings = 6
 	var dot_mat := StandardMaterial3D.new()
@@ -518,6 +515,13 @@ func _init() -> void:
 	T.refresh_globals()
 	R.ensure_api()
 	var fails := 0
+	# Without its models the scene would be saved with nothing to see, so nothing is written unless all of them load.
+	for model in MODELS:
+		if not ResourceLoader.exists(DIR + "models/" + model + ".glb") or not load(DIR + "models/" + model + ".glb") is PackedScene:
+			print("FAIL models/%s.glb did not load. Import the project once, then run this again: godot --headless --path . --import" % model)
+			print("MACHINE FAILS: 1")
+			quit(1)
+			return
 	if not build_cannonball():
 		fails += 1
 		print("FAIL cannonball.tscn was not saved")

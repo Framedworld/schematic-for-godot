@@ -1,0 +1,169 @@
+[gd_scene load_steps=17 format=3]
+
+[ext_resource type="Script" path="res://demo/arcade/SC_ArcadePlayer.gd" id="1"]
+[ext_resource type="Script" path="res://demo/arcade/SC_ArcadeState.gd" id="2"]
+[ext_resource type="Script" path="res://demo/arcade/SC_ArcadeHUD.gd" id="3"]
+[ext_resource type="Script" path="res://demo/arcade/SC_ArcadeSpawner.gd" id="4"]
+[ext_resource type="PackedScene" path="res://demo/arcade/coin.tscn" id="6"]
+[ext_resource type="Texture2D" path="res://demo/arcade/art/salvage_deck.webp" id="deck"]
+[ext_resource type="Shader" path="res://demo/arcade/art/orbit.gdshader" id="sky"]
+[ext_resource type="Script" path="res://demo/arcade/art/SC_ArcadeDock.gd" id="dock"]
+[ext_resource type="Script" path="res://demo/arcade/art/SC_ArcadeShip.gd" id="ship"]
+[ext_resource type="Script" path="res://demo/arcade/art/SC_ArcadeCamera.gd" id="camera"]
+[ext_resource type="Script" path="res://demo/arcade/art/SC_ArcadeScoreDisplay.gd" id="display"]
+
+[sub_resource type="CircleShape2D" id="shape"]
+radius = 18.0
+
+[sub_resource type="ShaderMaterial" id="space"]
+shader = ExtResource("sky")
+
+[sub_resource type="StyleBoxFlat" id="panel"]
+bg_color = Color(0.045, 0.09, 0.12, 0.94)
+border_width_left = 3
+border_color = Color(0.93, 0.64, 0.34, 1)
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+shadow_color = Color(0, 0.02, 0.04, 0.38)
+shadow_size = 4
+
+[sub_resource type="LabelSettings" id="score"]
+font_size = 24
+font_color = Color(1, 0.97, 0.88, 1)
+
+[sub_resource type="LabelSettings" id="mode"]
+font_size = 10
+font_color = Color(0.91, 0.72, 0.47, 1)
+
+[node name="Arcade" type="Node2D"]
+
+[node name="Orbit" type="CanvasLayer" parent="."]
+layer = -1
+
+[node name="Stars" type="ColorRect" parent="Orbit"]
+material = SubResource("space")
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 2
+
+[node name="SalvageDeck" type="Sprite2D" parent="."]
+z_index = -10
+scale = Vector2(0.98, 0.98)
+texture = ExtResource("deck")
+
+[node name="GameState" type="Node" parent="."]
+script = ExtResource("2")
+
+[node name="Spawner0" type="Node2D" parent="."]
+position = Vector2(-250, -210)
+script = ExtResource("4")
+scene = ExtResource("6")
+interval = 2.3
+
+[node name="Dock" type="Node2D" parent="Spawner0"]
+z_index = -2
+script = ExtResource("dock")
+
+[node name="Spawner1" type="Node2D" parent="."]
+position = Vector2(250, -210)
+script = ExtResource("4")
+scene = ExtResource("6")
+interval = 3.1
+
+[node name="Dock" type="Node2D" parent="Spawner1"]
+z_index = -2
+script = ExtResource("dock")
+
+[node name="Spawner2" type="Node2D" parent="."]
+position = Vector2(-250, 210)
+script = ExtResource("4")
+scene = ExtResource("6")
+interval = 2.7
+
+[node name="Dock" type="Node2D" parent="Spawner2"]
+z_index = -2
+script = ExtResource("dock")
+
+[node name="Spawner3" type="Node2D" parent="."]
+position = Vector2(250, 210)
+script = ExtResource("4")
+scene = ExtResource("6")
+interval = 3.7
+
+[node name="Dock" type="Node2D" parent="Spawner3"]
+z_index = -2
+script = ExtResource("dock")
+
+[node name="Spawner4" type="Node2D" parent="."]
+position = Vector2(0, -300)
+script = ExtResource("4")
+scene = ExtResource("6")
+interval = 4.3
+
+[node name="Dock" type="Node2D" parent="Spawner4"]
+z_index = -2
+script = ExtResource("dock")
+
+[node name="Spawner5" type="Node2D" parent="."]
+position = Vector2(0, 290)
+script = ExtResource("4")
+scene = ExtResource("6")
+interval = 2.9
+
+[node name="Dock" type="Node2D" parent="Spawner5"]
+z_index = -2
+script = ExtResource("dock")
+
+[node name="Spawner6" type="Node2D" parent="."]
+position = Vector2(-310, 0)
+script = ExtResource("4")
+scene = ExtResource("6")
+interval = 3.4
+
+[node name="Dock" type="Node2D" parent="Spawner6"]
+z_index = -2
+script = ExtResource("dock")
+
+[node name="Spawner7" type="Node2D" parent="."]
+position = Vector2(310, 0)
+script = ExtResource("4")
+scene = ExtResource("6")
+interval = 4.9
+
+[node name="Dock" type="Node2D" parent="Spawner7"]
+z_index = -2
+script = ExtResource("dock")
+
+[node name="Player" type="CharacterBody2D" parent="."]
+motion_mode = 1
+script = ExtResource("1")
+speed = 300.0
+
+[node name="Shape" type="CollisionShape2D" parent="Player"]
+shape = SubResource("shape")
+
+[node name="Interceptor" type="Node2D" parent="Player"]
+z_index = 2
+script = ExtResource("ship")
+
+[node name="Camera2D" type="Camera2D" parent="."]
+script = ExtResource("camera")
+
+[node name="UI" type="CanvasLayer" parent="."]
+script = ExtResource("display")
+
+[node name="Readout" type="Panel" parent="UI"]
+offset_right = 170.0
+offset_bottom = 60.0
+mouse_filter = 2
+theme_override_styles/panel = SubResource("panel")
+
+[node name="Mode" type="Label" parent="UI"]
+text = "SALVAGE RUN"
+label_settings = SubResource("mode")
+
+[node name="HUD" type="Label" parent="UI"]
+text = "Score: 0"
+label_settings = SubResource("score")
+script = ExtResource("3")

@@ -10,7 +10,7 @@ const Importer := preload("res://addons/schematic/core/sc_importer.gd")
 const Sync := preload("res://addons/schematic/core/sc_sync.gd")
 const Reuse := preload("res://addons/schematic/core/sc_reuse.gd")
 
-const DEMO_DIRS := ["res://demo/", "res://demo/game/", "res://demo/arcade/", "res://demo/machine/", "res://demo/data/"]
+const DEMO_DIRS := ["res://demo/", "res://demo/game/", "res://demo/arcade/", "res://demo/arcade/art/", "res://demo/machine/", "res://demo/data/"]
 const SAMPLES := "res://tests/convert/"
 const SCRATCH := "res://tests/tmp/reimport/"
 ## Refusals that are the rule working (not findings): their reasons start with these words.

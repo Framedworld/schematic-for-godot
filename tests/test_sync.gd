@@ -9,7 +9,7 @@ const Importer := preload("res://addons/schematic/core/sc_importer.gd")
 const Parser := preload("res://addons/schematic/core/sc_gd_parser.gd")
 const Sync := preload("res://addons/schematic/core/sc_sync.gd")
 
-const DEMO_DIRS := ["res://demo/", "res://demo/game/", "res://demo/arcade/", "res://demo/machine/", "res://demo/data/"]
+const DEMO_DIRS := ["res://demo/", "res://demo/game/", "res://demo/arcade/", "res://demo/arcade/art/", "res://demo/machine/", "res://demo/data/"]
 const SAMPLES := "res://tests/convert/"
 const SCRATCH := "res://tests/tmp/sync/"
 const ENTRY_KINDS := ["event", "custom_event", "signal_event", "input_action", "key_event", "fn_entry"]

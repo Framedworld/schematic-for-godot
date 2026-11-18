@@ -40,3 +40,7 @@ jump={
 "script": null
 )]
 }
+
+[rendering]
+
+anti_aliasing/quality/use_taa=true

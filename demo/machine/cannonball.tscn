@@ -1,9 +1,9 @@
 [gd_scene format=3]
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_85uh6"]
-albedo_color = Color(0.1, 0.11, 0.13, 1)
-metallic = 0.8
-roughness = 0.3
+albedo_color = Color(0.73333335, 0.45882353, 0.23921569, 1)
+metallic = 0.78
+roughness = 0.22
 
 [sub_resource type="SphereMesh" id="SphereMesh_0lvk7"]
 radius = 0.28
@@ -12,7 +12,7 @@ height = 0.56
 [sub_resource type="SphereShape3D" id="SphereShape3D_gkogd"]
 radius = 0.28
 
-[node name="Cannonball" type="RigidBody3D" unique_id=678031606]
+[node name="Cannonball" type="RigidBody3D" unique_id=994237406]
 collision_mask = 7
 axis_lock_linear_z = true
 axis_lock_angular_x = true
@@ -20,9 +20,9 @@ axis_lock_angular_y = true
 mass = 20.0
 continuous_cd = true
 
-[node name="Mesh" type="MeshInstance3D" parent="." unique_id=70263735]
+[node name="Mesh" type="MeshInstance3D" parent="." unique_id=1746161960]
 material_override = SubResource("StandardMaterial3D_85uh6")
 mesh = SubResource("SphereMesh_0lvk7")
 
-[node name="Shape" type="CollisionShape3D" parent="." unique_id=358821357]
+[node name="Shape" type="CollisionShape3D" parent="." unique_id=234142145]
 shape = SubResource("SphereShape3D_gkogd")

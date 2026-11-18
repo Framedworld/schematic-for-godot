@@ -31,7 +31,7 @@ const Importer := preload("res://addons/schematic/core/sc_importer.gd")
 const Checks := preload("res://tests/convert_checks.gd")
 
 const DIR := "res://tests/convert/"
-const DEMO_DIRS := ["res://demo/", "res://demo/game/", "res://demo/arcade/", "res://demo/machine/", "res://demo/data/"]
+const DEMO_DIRS := ["res://demo/", "res://demo/game/", "res://demo/arcade/", "res://demo/arcade/art/", "res://demo/machine/", "res://demo/data/"]
 const MAX_SHOWN := 12
 ## graph keys that are layout or bookkeeping, not part of what a graph is
 const GRAPH_SKIP := ["id", "next_id", "nodes", "wires", "zoom", "sx", "sy", "locals"]
