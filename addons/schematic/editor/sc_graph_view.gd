@@ -41,6 +41,15 @@ func _init() -> void:
 	connection_lines_thickness = EXEC_WIRE
 	connection_lines_curvature = 0.6
 	snapping_distance = 16
+	# The canvas follows the editor's display scale by its zoom: at 150% a graph "at 100%" is drawn at zoom 1.5, so
+	# nodes, text, wires and the distances between them all grow alike and nothing on the canvas needs sizes of its
+	# own for the scale. Zoom and scroll are stored as they would be at 100% (_store_view), so a file looks the
+	# same whatever the scale of the editor that last saved it.
+	zoom_min *= W.scale()
+	zoom_max *= W.scale()
+	var at_100 := W.canvas_theme()   # (what the editor's theme has already scaled is brought back, so it is not scaled twice)
+	if at_100 != null:
+		theme = at_100
 	show_menu = false
 	show_grid = true
 	grid_pattern = GraphEdit.GRID_PATTERN_LINES
@@ -55,8 +64,8 @@ func _init() -> void:
 	add_theme_color_override("selection_fill", Color(W.ACCENT, 0.10))
 	add_theme_color_override("selection_stroke", W.ACCENT)
 	add_theme_color_override("activity", Color(1.0, 0.75, 0.2))
-	add_theme_constant_override("port_hotzone_inner_extent", 18)
-	add_theme_constant_override("port_hotzone_outer_extent", 14)
+	add_theme_constant_override("port_hotzone_inner_extent", W.si(18))
+	add_theme_constant_override("port_hotzone_outer_extent", W.si(14))
 	connection_request.connect(_on_connection_request)
 	disconnection_request.connect(_on_disconnection_request)
 	connection_to_empty.connect(_on_connection_to_empty)
@@ -86,6 +95,18 @@ func _init() -> void:
 	_node_menu = PopupMenu.new()
 	_node_menu.id_pressed.connect(_on_node_menu)
 	add_child(_node_menu)
+	if theme != null:
+		tree_entered.connect(func(): get_tree().node_added.connect(_window_added))
+		tree_exiting.connect(func(): get_tree().node_added.disconnect(_window_added))
+
+
+## A window that opens from the canvas (a node's colour picker, a menu) is not on the canvas: it is not zoomed, so it
+## takes the editor's own sizes, not the ones the canvas theme brought back to 100%. (Only connected when the editor
+## is not at 100%.)
+func _window_added(node: Node) -> void:
+	var window := node as Window
+	if window != null and window.theme == null and is_ancestor_of(window):
+		window.theme = EditorInterface.get_editor_theme()
 
 
 # ---------------------------------------------------------------- look
@@ -98,11 +119,12 @@ func _draw() -> void:
 	if graph.is_empty():
 		return
 	var font := get_theme_default_font()
-	var label := "%d%%" % roundi(zoom * 100.0)
-	var label_width := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
-	draw_string(font, Vector2(size.x - label_width - 22, 23), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, W.MUTED)
+	var label := "%d%%" % roundi(zoom / W.scale() * 100.0)
+	var fs := W.si(13)
+	var label_width := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+	draw_string(font, Vector2(size.x - label_width - W.s(22), W.s(23)), label, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, W.MUTED)
 	if graph.get("wires", []).is_empty():
-		draw_string(font, Vector2(14, 23), "Right-click or press Tab to add a node", HORIZONTAL_ALIGNMENT_LEFT, maxf(size.x - label_width - 60, 0), 13, W.MUTED)
+		draw_string(font, Vector2(W.s(14), W.s(23)), "Right-click or press Tab to add a node", HORIZONTAL_ALIGNMENT_LEFT, maxf(size.x - label_width - W.s(60), 0), fs, W.MUTED)
 
 
 ## Unreal's wire shape: a Hermite spline whose horizontal tangent grows with the distance between the pins,
@@ -145,6 +167,12 @@ func _style_wires(layer: Control) -> void:
 # ---------------------------------------------------------------- build
 
 func show_graph(p_bp: Dictionary, p_graph: Dictionary, errors: Dictionary = {}, marks: Dictionary = {}) -> void:
+	W.logical += 1   # sizes of what is built for the canvas stay as written (see the note in _init)
+	_show_graph(p_bp, p_graph, errors, marks)
+	W.logical -= 1
+
+
+func _show_graph(p_bp: Dictionary, p_graph: Dictionary, errors: Dictionary, marks: Dictionary) -> void:
 	_loading = true
 	var path := String(editor.doc.get("path", "")) if editor else ""
 	var same := path == _document_path and not graph.is_empty() and not p_graph.is_empty() and int(graph.get("id", -1)) == int(p_graph.id)
@@ -218,8 +246,8 @@ func show_graph(p_bp: Dictionary, p_graph: Dictionary, errors: Dictionary = {}, 
 		if fp >= 0 and tp >= 0:
 			connect_node(a.name, fp, b.name, tp)
 	if not same:
-		zoom = float(graph.get("zoom", 1.0))
-		scroll_offset = Vector2(float(graph.get("sx", 0.0)), float(graph.get("sy", 0.0)))
+		zoom = float(graph.get("zoom", 1.0)) * W.scale()
+		scroll_offset = Vector2(float(graph.get("sx", 0.0)), float(graph.get("sy", 0.0))) * W.scale()
 	_loading = false
 	if had_focus and get_viewport().gui_get_focus_owner() == null:
 		grab_focus()
@@ -348,9 +376,9 @@ func selected_ids() -> Array:
 func _store_view() -> void:
 	if _loading or graph.is_empty():
 		return
-	graph["zoom"] = zoom
-	graph["sx"] = scroll_offset.x
-	graph["sy"] = scroll_offset.y
+	graph["zoom"] = zoom / W.scale()
+	graph["sx"] = scroll_offset.x / W.scale()
+	graph["sy"] = scroll_offset.y / W.scale()
 
 
 func to_graph_pos(local: Vector2) -> Vector2:

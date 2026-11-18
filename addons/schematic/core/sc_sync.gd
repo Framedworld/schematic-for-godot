@@ -74,7 +74,7 @@ const OWNERS := ["user", "carried", "compiler"]
 ## Functions whose prelude (input dispatch, signal wiring, timeline autoplay) the compiler merges in.
 const PRELUDE_FUNCS := ["_ready", "_init", "_unhandled_input"]
 ## What "Show Flow and Values" adds: present in one compile and absent in another is not an edit.
-const TRACE_MACHINERY := ["__sc_trace", "__sc_flush", "__sc_hits", "__sc_last", "__sc_vals", "__sc_edges", "__sc_wait"]
+const TRACE_MACHINERY := ["__sc_trace", "__sc_flush", "__sc_hits", "__sc_last", "__sc_vals", "__sc_edges", "__sc_wait", "__sc_state"]
 const IMPLEMENTED_BY := "static func implemented_by(target) -> bool:\n\tif not is_instance_valid(target):\n\t\treturn false\n\tfor fn in FUNCTIONS:\n\t\tif not target.has_method(fn):\n\t\t\treturn false\n\treturn true"
 ## Similarity (0..1, by lines) at or above which an unmatched pair of blocks of one kind is taken for a rename.
 const RENAME_AT := 0.6

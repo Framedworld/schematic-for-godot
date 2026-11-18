@@ -284,11 +284,10 @@ func import_folder(root: String, dry: bool) -> void:
 		if not problems.is_empty() or dry:
 			continue
 		if not exists:
-			var f := FileAccess.open(target, FileAccess.WRITE)
-			if f == null or not f.store_string(source):
-				push_error("Could not write " + target)
+			var problem := Model.write_text(target, source)
+			if problem != "":
+				push_error("Schematic: " + problem)
 				continue
-			f.close()
 		renamed[path] = target
 	# point everything that named the old file at the new one
 	if not dry and not renamed.is_empty():
@@ -301,10 +300,9 @@ func import_folder(root: String, dry: bool) -> void:
 			for old in renamed:
 				text = text.replace(old, renamed[old])
 			if text != before:
-				var f := FileAccess.open(file, FileAccess.WRITE)
-				if f == null or not f.store_string(text):
-					push_error("Could not update references in " + String(file))
+				var problem := Model.write_text(String(file), text)
+				if problem != "":
+					push_error("Could not update references: " + problem)
 					continue
-				f.close()
 				touched += 1
 		print("converted %d graph(s); updated %d file(s) that referred to them" % [renamed.size(), touched])

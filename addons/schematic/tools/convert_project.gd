@@ -156,17 +156,15 @@ func _ready() -> void:
 			if FileAccess.get_file_as_string(path) != current:
 				print("SKIP  %s  changed during conversion" % path)
 				continue
-			if not FileAccess.file_exists(orig):
-				var keep := FileAccess.open(orig, FileAccess.WRITE)
-				if keep == null or not keep.store_string(source):
-					push_error("Could not back up " + String(path))
-					continue
-				keep.close()
-			var f := FileAccess.open(path, FileAccess.WRITE)
-			if f == null or not f.store_string(Model.build_source(code, out.bp)):
-				push_error("Could not write " + String(path))
+			# (an .orig that is already there is the source this run converted from, so there is nothing to keep again)
+			var problem := "" if FileAccess.file_exists(orig) else Model.write_text(orig, source)
+			if problem == "":
+				problem = Model.write_text(path, Model.build_source(code, out.bp))
+			if problem != "":
+				push_error("Not converted: " + problem)
+				print("FAIL  %s  %s" % [path, problem])
+				failed.append(path)
 				continue
-			f.close()
 		lines += int(rep.lines)
 		as_code += int(rep.as_code)
 		done += 1

@@ -13,7 +13,7 @@ const TableScript := preload("res://addons/schematic/runtime/data_table.gd")
 signal close_requested
 
 var plugin: EditorPlugin
-var table: Resource            # the DataTable being edited
+var table: Resource            # the Data Table being edited
 var columns: Array = []        # property info of each field column
 var problems: PackedStringArray = []
 
@@ -34,7 +34,7 @@ func build_ui() -> void:
 	var bar := HBoxContainer.new()
 	add_child(bar)
 	_title = Label.new()
-	_title.add_theme_font_size_override("font_size", 16)
+	_title.add_theme_font_size_override("font_size", W.si(16))
 	bar.add_child(_title)
 	bar.add_child(VSeparator.new())
 	_struct_btn = Button.new()
@@ -58,7 +58,7 @@ func build_ui() -> void:
 	_search.placeholder_text = "Search rows"
 	_search.right_icon = W.icon("Search")
 	_search.clear_button_enabled = true
-	_search.custom_minimum_size = Vector2(220, 0)
+	_search.custom_minimum_size = W.sv(Vector2(220, 0))
 	_search.text_changed.connect(func(_t): refresh())
 	bar.add_child(_search)
 	bar.add_child(_button("Close", "Close", "Back to the Schematic editor", func(): close_requested.emit()))
@@ -81,7 +81,7 @@ func build_ui() -> void:
 	_tree.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	split.add_child(_tree)
 	var side := VBoxContainer.new()
-	side.custom_minimum_size = Vector2(340, 0)
+	side.custom_minimum_size = W.sv(Vector2(340, 0))
 	split.add_child(side)
 	_row_title = Label.new()
 	_row_title.text = "Row Editor"

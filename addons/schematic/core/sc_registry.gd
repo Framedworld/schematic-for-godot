@@ -205,6 +205,13 @@ static func ensure_api() -> void:
 			api = parsed
 	if api.is_empty():
 		api = {"utils": [], "types": {}, "enums": {}, "docs": {}}
+	# The utility functions and built-in type methods offered as nodes come from this file, made from one Godot
+	# version (tools/gen_api.py, from the oldest version supported). On an older engine some of them do not exist.
+	var made_for: Array = api.get("engine", [])
+	var running := Engine.get_version_info()
+	if made_for.size() == 2 and (int(running.major) < int(made_for[0]) or (int(running.major) == int(made_for[0]) and int(running.minor) < int(made_for[1]))):
+		push_warning("Schematic: its list of built-in functions was made for Godot %d.%d and this is Godot %d.%d. A node for a function this version does not have gives code that does not load." % [
+			int(made_for[0]), int(made_for[1]), int(running.major), int(running.minor)])
 	_builtin_templates()
 	Kits.register(load("res://addons/schematic/core/sc_registry.gd"))
 
@@ -848,7 +855,7 @@ static func _describe_kind(node: Dictionary, bp: Dictionary, graph: Dictionary =
 		"table_row":
 			d.title = "Get Data Table Row"
 			d.sub = String(p.get("table", "")).get_file() if String(p.get("table", "")) != "" else "no table set"
-			d.ins = [_exec_in(), _pin("table", "Data Table", "DataTable"), _pin("row", "Row Name", "StringName", {"def": "&\"\""})]
+			d.ins = [_exec_in(), _pin("table", "Data Table", Model.TABLE_CLASS), _pin("row", "Row Name", "StringName", {"def": "&\"\""})]
 			d.outs = [_exec_out("found", "Row Found"), _exec_out("not_found", "Row Not Found"), _pin("row_out", "Out Row", String(p.get("cls", "Resource")))]
 			d.tip = "Finds a row of a Data Table by name. Out Row has the table's row structure when the table is set on the node."
 		"math":
@@ -1459,7 +1466,7 @@ static func _describe_call(d: Dictionary, p: Dictionary, bp: Dictionary) -> void
 	var rt := T.from_info(m.get("return", {}), true)
 	var is_static := bool(flags & METHOD_FLAG_STATIC) or is_singleton(p.cls)
 	d.pure = bool(flags & METHOD_FLAG_CONST) and rt != ""
-	if String(p.cls) == "DataTable" and rt != "" and String(p.method) in TABLE_GETTERS:
+	if String(p.cls) == Model.TABLE_CLASS and rt != "" and String(p.method) in TABLE_GETTERS:
 		d.pure = true   # reading a table changes nothing, so these have no exec pins
 	var lib_fn := library_function(String(p.cls), String(p.method))
 	if not lib_fn.is_empty():
@@ -1514,11 +1521,11 @@ static func _describe_call_self(d: Dictionary, p: Dictionary, bp: Dictionary) ->
 # ---------------------------------------------------------------- data assets and tables
 # A data class is any global script class that extends Resource and has exported variables (a Schematic of
 # type Data Asset, or a hand-written Resource). It works like an Unreal struct: Make / Break nodes, typed
-# pins, and rows of a DataTable.
+# pins, and rows of a Data Table.
 
 ## The exported fields of a data class: [[name, type, default literal]]; [] when `cls` is not one.
 static func data_fields(cls: String) -> Array:
-	if cls == "DataTable" or not T.globals().has(cls) or not T.is_a(cls, "Resource"):
+	if cls == Model.TABLE_CLASS or not T.globals().has(cls) or not T.is_a(cls, "Resource"):
 		return []
 	var chain := []
 	var c := cls
@@ -1578,10 +1585,10 @@ static func data_actions() -> Array:
 	for cls in data_classes():
 		a.append(_act("Make " + cls, "Data|" + cls, "make_data", {"cls": cls}, "A new %s with these field values." % cls, "struct construct data asset"))
 		a.append(_act("Break " + cls, "Data|" + cls, "break", {"type": cls}, "The fields of a %s." % cls, "struct split data asset"))
-	if T.globals().has("DataTable"):
+	if T.globals().has(Model.TABLE_CLASS):
 		a.append(_act("Get Data Table Row", "Data Table", "table_row", {"table": "", "cls": "Resource"},
 			"Looks a row up by name. Set the table in Details, or drag a Data Table file into the graph.", "datatable lookup row struct"))
-		a.append_array(class_actions("DataTable", "Data Table"))
+		a.append_array(class_actions(Model.TABLE_CLASS, "Data Table"))
 	return a
 
 

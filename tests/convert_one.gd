@@ -1,5 +1,7 @@
 extends Node
-## Debug helper: converts one script and prints the generated code around each GDScript error.
+## Debug helper (not part of the addon): converts one script, says whether GDScript loads the result, and writes
+## the generated code with line numbers to tests/out/probe_<name>.txt.
+##   godot --headless --path . res://tests/convert_one.tscn -- res://path/to/script.gd
 const Model := preload("res://addons/schematic/core/sc_model.gd")
 const Compiler := preload("res://addons/schematic/core/sc_compiler.gd")
 const R := preload("res://addons/schematic/core/sc_registry.gd")
@@ -25,9 +27,6 @@ func _ready() -> void:
 		for i in lines.size():
 			if lines[i].begins_with("class_name "):
 				lines[i] = "#"
-		var f := FileAccess.open("user://probe.gd", FileAccess.WRITE)
-		f.store_string("\n".join(lines))
-		f.close()
 		print("=== ", path)
 		var probe := GDScript.new()
 		probe.source_code = "\n".join(lines)
@@ -35,7 +34,7 @@ func _ready() -> void:
 		var numbered := PackedStringArray()
 		for i in lines.size():
 			numbered.append("%4d| %s" % [i + 1, lines[i]])
-		var dump := FileAccess.open("res://../jc_logs/probe_%s.txt" % path.get_file(), FileAccess.WRITE)
+		var dump := FileAccess.open("res://tests/out/probe_%s.txt" % path.get_file(), FileAccess.WRITE)
 		if dump:
 			dump.store_string("\n".join(numbered))
 			dump.close()

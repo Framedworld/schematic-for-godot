@@ -28,15 +28,15 @@ var _bold: Font
 
 func _init() -> void:
 	var vb := VBoxContainer.new()
-	vb.custom_minimum_size = Vector2(440, 470)
+	vb.custom_minimum_size = W.sv(Vector2(440, 470))
 	add_child(vb)
 	var frame := StyleBoxFlat.new()
-	vb.add_theme_constant_override("separation", 6)
+	vb.add_theme_constant_override("separation", W.si(6))
 	frame.bg_color = W.CHROME
-	frame.set_border_width_all(1)
+	frame.set_border_width_all(W.si(1))
 	frame.border_color = W.EDGE
-	frame.set_corner_radius_all(9)
-	frame.set_content_margin_all(8)
+	frame.set_corner_radius_all(W.si(9))
+	frame.set_content_margin_all(W.si(8))
 	frame.shadow_color = Color(0, 0, 0, 0.4)
 	frame.shadow_size = 8
 	add_theme_stylebox_override("panel", frame)
@@ -45,12 +45,12 @@ func _init() -> void:
 	_title = Label.new()
 	_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_title.clip_text = true
-	_title.add_theme_font_size_override("font_size", 13)
+	_title.add_theme_font_size_override("font_size", W.si(13))
 	_title.add_theme_color_override("font_color", W.ACCENT)
 	top.add_child(_title)
 	_context = CheckBox.new()
 	_context.text = "Context Sensitive"
-	_context.add_theme_font_size_override("font_size", 13)
+	_context.add_theme_font_size_override("font_size", W.si(13))
 	_context.button_pressed = true
 	_context.toggled.connect(func(_on):
 		_reload()
@@ -90,9 +90,9 @@ func open(screen_pos: Vector2, title: String, provider: Callable, on_pick: Calla
 	_reload()
 	var scr := DisplayServer.screen_get_usable_rect(DisplayServer.window_get_current_screen())
 	var pos := Vector2i(screen_pos)
-	pos.x = mini(pos.x, scr.end.x - 470)
-	pos.y = mini(pos.y, scr.end.y - 500)
-	popup(Rect2i(pos, Vector2i(456, 486)))
+	pos.x = mini(pos.x, scr.end.x - W.si(470))
+	pos.y = mini(pos.y, scr.end.y - W.si(500))
+	popup(Rect2i(pos, Vector2i(W.si(456), W.si(486))))
 	_search.grab_focus()
 
 
@@ -161,7 +161,7 @@ func _fill() -> void:
 			h.set_custom_color(0, Color(1, 1, 1, 0.6))
 			if _bold:
 				h.set_custom_font(0, _bold)
-			h.set_custom_font_size(0, 12)
+			h.set_custom_font_size(0, W.si(12))
 			heads[act.c] = h
 		_leaf(heads[act.c], act, false)
 	var first := first_leaf()

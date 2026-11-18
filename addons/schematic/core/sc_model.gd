@@ -40,6 +40,10 @@ const DATA_PREFIX := "#~ "
 ## "#~" but not "#~ ", so parse_source() of this and of older versions passes over it.
 const CODE_HASH_PREFIX := "#~code "
 const VERSION := 1
+## The Data Table class (runtime/data_table.gd). Up to 0.3.3 it was called DataTable, a name a project may well
+## use for a class of its own; graph data that names it the old way is read as naming it the present way.
+const TABLE_CLASS := "SchematicDataTable"
+const TABLE_CLASS_WAS := "DataTable"
 
 
 static func new_schematic(parent: String, cls_name := "") -> Dictionary:
@@ -207,26 +211,77 @@ static func is_schematic_file(path: String) -> bool:
 	return first.begins_with(MARKER) or first.begins_with(OLD_MARKER)
 
 
-## Returns the schematic dictionary embedded in a script's source, or {} if there is none.
+## Returns the schematic dictionary embedded in a script's source, or {} if there is none that this version can
+## read (unreadable_reason() says why).
 static func parse_source(src: String) -> Dictionary:
+	return _read(src)[0]
+
+
+## Why parse_source() returns {} for this text, as the end of a sentence about the file ("" when it reads fine).
+static func unreadable_reason(src: String) -> String:
+	return String(_read(src)[1])
+
+
+## [the schematic, ""] or [{}, why not].
+static func _read(src: String) -> Array:
 	if not is_schematic_source(src):
-		return {}
+		return [{}, "is not a Schematic script"]
 	src = src.replace("\r\n", "\n")
 	var json := PackedStringArray()
 	var at := graph_block_at(src)
 	if at < 0:
-		return {}
+		return [{}, "has no graph data: the block at the end of the file is missing or was edited"]
 	for line in src.substr(at).split("\n"):
 		if line.begins_with(DATA_PREFIX):
 			json.append(line.substr(DATA_PREFIX.length()))
 		elif line == "#~":
 			json.append("")
 	if json.is_empty():
-		return {}   # generated code without its graph
-	var parsed: Variant = JSON.parse_string("\n".join(json))
-	if typeof(parsed) != TYPE_DICTIONARY:
-		return {}
-	return normalize(parsed)
+		return [{}, "has no graph data"]   # generated code without its graph
+	var reader := JSON.new()
+	if reader.parse("\n".join(json)) != OK or typeof(reader.data) != TYPE_DICTIONARY:
+		return [{}, "has damaged graph data (it does not read as JSON)"]
+	var parsed: Dictionary = reader.data
+	# A file a newer version of the plugin wrote may hold things this one does not know and would drop on saving.
+	var written_by: Variant = parsed.get("version", VERSION)
+	if typeof(written_by) in [TYPE_INT, TYPE_FLOAT] and int(written_by) > VERSION:
+		return [{}, "was saved by a newer version of Schematic (file format %d, this plugin reads up to %d): update the plugin to open it" % [int(written_by), VERSION]]
+	var wrong := shape_problem(parsed)
+	if wrong != "":
+		return [{}, "has damaged graph data (%s)" % wrong]
+	return [normalize(parsed), ""]
+
+
+## What is wrong with the shape of stored graph data ("" when it is what every reader here relies on). A bad merge
+## or a hand edit can leave text that is still JSON but no longer a schematic; that must not reach normalize() or
+## the editor, which read these fields without asking.
+static func shape_problem(bp: Dictionary) -> String:
+	for key in ["variables", "dispatchers", "graphs", "enums"]:
+		if bp.has(key) and typeof(bp[key]) != TYPE_ARRAY:
+			return "'%s' is not a list" % key
+	for key in ["variables", "dispatchers", "enums"]:
+		for item in bp.get(key, []):
+			if typeof(item) != TYPE_DICTIONARY or typeof(item.get("name")) != TYPE_STRING:
+				return "an entry of '%s' has no name" % key
+	var number := [TYPE_INT, TYPE_FLOAT]
+	for g in bp.get("graphs", []):
+		if typeof(g) != TYPE_DICTIONARY:
+			return "a graph is not an object"
+		if not typeof(g.get("id")) in number or typeof(g.get("name")) != TYPE_STRING or typeof(g.get("kind")) != TYPE_STRING:
+			return "a graph has no id, name or kind"
+		for key in ["inputs", "outputs", "locals", "nodes", "wires"]:
+			if g.has(key) and typeof(g[key]) != TYPE_ARRAY:
+				return "'%s' of graph '%s' is not a list" % [key, g.name]
+		for n in g.get("nodes", []):
+			if typeof(n) != TYPE_DICTIONARY or not typeof(n.get("id")) in number or typeof(n.get("kind")) != TYPE_STRING:
+				return "a node of graph '%s' has no id or kind" % g.name
+			for key in ["p", "d"]:
+				if n.has(key) and typeof(n[key]) != TYPE_DICTIONARY:
+					return "node %d of graph '%s' has a damaged '%s'" % [int(n.id), g.name, key]
+		for w in g.get("wires", []):
+			if typeof(w) != TYPE_ARRAY or w.size() < 4 or not typeof(w[0]) in number or not typeof(w[2]) in number:
+				return "a wire of graph '%s' is not [node, pin, node, pin]" % g.name
+	return ""
 
 
 ## The code part of a Schematic's text (everything before its graph data, or all of it when it has none), in the
@@ -298,11 +353,76 @@ static func code_edited(text: String) -> bool:
 	return code != normalize_code(file_code(compiler.compile(bp), bp))
 
 
+## Writes a whole text file so that a failure never loses what was there. A Schematic's file is the only copy of its
+## graph, so the text first goes to a copy beside it (<file>.sc_tmp) and is read back; only then is the file itself
+## written and read back, and the copy removed. If the disk is full the file is not touched; if writing the file
+## itself fails, the copy stays and the message says where it is. Returns "" or what went wrong.
+static func write_text(path: String, text: String) -> String:
+	var copy := path + ".sc_tmp"
+	var wrote := _store(copy, text)
+	if wrote != "":
+		if FileAccess.file_exists(copy):
+			DirAccess.remove_absolute(copy)
+		return "%s was not written: %s" % [path.get_file(), wrote]
+	wrote = _store(path, text)
+	if wrote != "":
+		return "%s could not be written (%s). What should be in it is in %s" % [path.get_file(), wrote, copy.get_file()]
+	DirAccess.remove_absolute(copy)
+	return ""
+
+
+## Stores text and reads it back: "" when the file now holds exactly that text.
+static func _store(path: String, text: String) -> String:
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return "can't open %s for writing (%s)" % [path.get_file(), error_string(FileAccess.get_open_error())]
+	var stored := f.store_string(text)
+	f.close()
+	if not stored or FileAccess.get_file_as_string(path) != text:
+		return "the disk did not take all of it (is it full?)"
+	return ""
+
+
+## Keeps the hand-written script a conversion replaces, beside it as <name>.gd.orig. A different copy already there
+## (from converting an earlier version of the script) is moved to <name>.gd.orig.1, .2 ... first, so nothing written
+## by hand is ever overwritten. Returns "" or what went wrong.
+static func keep_original(path: String, source: String) -> String:
+	var keep := path + ".orig"
+	if FileAccess.file_exists(keep):
+		if FileAccess.get_file_as_string(keep) == source:
+			return ""
+		var n := 1
+		while FileAccess.file_exists("%s.%d" % [keep, n]):
+			n += 1
+		if DirAccess.rename_absolute(keep, "%s.%d" % [keep, n]) != OK:
+			return "the older %s could not be moved out of the way" % keep.get_file()
+	return write_text(keep, source)
+
+
 static func load_file(path: String) -> Dictionary:
 	var f := FileAccess.open(path, FileAccess.READ)
 	if f == null:
 		return {}
 	return parse_source(f.get_as_text())
+
+
+static var _table_was: RegEx
+
+
+## True when text names the Data Table class the old way (as a whole word).
+static func names_old_table_class(text: String) -> bool:
+	if not text.contains(TABLE_CLASS_WAS):
+		return false
+	if _table_was == null:
+		_table_was = RegEx.create_from_string("(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % TABLE_CLASS_WAS)
+	return _table_was.search(text) != null
+
+
+## A stored type or class name, with the Data Table class named the present way.
+static func _present_type(t: Variant) -> Variant:
+	if typeof(t) != TYPE_STRING or not names_old_table_class(String(t)):
+		return t
+	return _table_was.sub(String(t), TABLE_CLASS, true)
 
 
 ## JSON turns every number into a float; put ids back to ints and fill in missing fields.
@@ -313,6 +433,13 @@ static func normalize(bp: Dictionary) -> Dictionary:
 	bp["tool"] = bool(bp.get("tool", false))
 	bp["class_name"] = String(bp.get("class_name", ""))
 	bp["description"] = String(bp.get("description", ""))
+	for v in bp.variables:
+		if v.has("type"):
+			v["type"] = _present_type(v.type)
+	for sig in bp.dispatchers:
+		for prm in sig.get("params", []):
+			if typeof(prm) == TYPE_ARRAY and prm.size() > 1:
+				prm[1] = _present_type(prm[1])
 	for g in bp.graphs:
 		g.id = int(g.id)
 		g.next_id = int(g.get("next_id", 1))
@@ -320,10 +447,22 @@ static func normalize(bp: Dictionary) -> Dictionary:
 			if not g.has(key):
 				g[key] = []
 		g.pure = bool(g.get("pure", false))
+		for key in ["inputs", "outputs"]:
+			for io in g[key]:
+				if typeof(io) == TYPE_ARRAY and io.size() > 1:
+					io[1] = _present_type(io[1])
+		for local in g.locals:
+			if typeof(local) == TYPE_DICTIONARY and local.has("type"):
+				local["type"] = _present_type(local.type)
 		for n in g.nodes:
 			n.id = int(n.id)
 			if not n.has("p"): n["p"] = {}
 			if not n.has("d"): n["d"] = {}
+			if not n.has("x"): n["x"] = 0.0
+			for key in ["cls", "t", "type"]:
+				if n.p.has(key):
+					n.p[key] = _present_type(n.p[key])
+			if not n.has("y"): n["y"] = 0.0
 			g.next_id = maxi(g.next_id, n.id + 1)
 		for w in g.wires:
 			w[0] = int(w[0])

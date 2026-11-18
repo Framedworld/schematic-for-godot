@@ -10,7 +10,11 @@ def brief(s):
     m = re.match(r"(.{20,220}?\.)(\s|$)", s)
     return (m.group(1) if m else s[:220]).strip()
 def args(a): return [[x["name"], x["type"]] + ([x["default_value"]] if "default_value" in x else []) for x in a.get("arguments", [])]
-o = {"utils": [], "types": {}, "enums": {}, "docs": {}}
+# Made from the oldest Godot the plugin supports (`godot --headless --dump-extension-api-with-docs`), so every
+# utility function and built-in type method offered as a node exists on every supported version. The version is
+# kept in the file: the plugin says so when it runs on an older engine than the data was made from.
+h = d["header"]
+o = {"engine": [h["version_major"], h["version_minor"]], "engine_name": h["version_full_name"], "utils": [], "types": {}, "enums": {}, "docs": {}}
 for u in d["utility_functions"]:
     o["utils"].append({"n": u["name"], "r": u.get("return_type", ""), "a": args(u), "v": u["is_vararg"], "c": u["category"], "d": brief(u.get("description"))})
 for b in d["builtin_classes"]:

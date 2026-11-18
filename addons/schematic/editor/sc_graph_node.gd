@@ -132,8 +132,10 @@ func setup(view: Node, node: Dictionary, d: Dictionary, wired_in: Dictionary, wi
 			if String(pi.name) != "":
 				row.add_child(_label(pi.name, false))
 			if pi.type != "exec" and not wired_in.has(pi.id):
+				W.logical += 1   # (on the canvas sizes stay as written: its zoom carries the editor's display scale)
 				var ed := W.make_value_editor(String(pi.get("ed", pi.type)), pi.get("enum", ""), String(node.d.get(pi.id, pi.get("def", ""))),
 					func(lit): _view.pin_default_changed(node_id, pi.id, lit))
+				W.logical -= 1
 				if ed:
 					row.add_child(ed)
 				elif pi.get("self", false):
@@ -180,8 +182,10 @@ func setup(view: Node, node: Dictionary, d: Dictionary, wired_in: Dictionary, wi
 	for pc in consts:
 		var row := HBoxContainer.new()
 		row.add_child(_label(pc.name, false))
+		W.logical += 1
 		var ed := W.make_value_editor(pc.type, "", String(node.d.get(pc.id, pc.get("def", ""))),
 			func(lit): _view.pin_default_changed(node_id, pc.id, lit))
+		W.logical -= 1
 		if ed:
 			row.add_child(ed)
 		add_child(row)

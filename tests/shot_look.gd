@@ -71,7 +71,9 @@ func run(p: EditorPlugin) -> void:
 	first.selected = true
 	var demo_zoom := view.zoom
 	ed.open_schematic("res://demo/game/SC_Player.gd")
-	note("%s  switching documents clears the old selection and restores the new graph zoom" % ["PASS" if view.selected_ids().is_empty() and is_equal_approx(view.zoom, float(ed.cur_graph().get("zoom", 1.0))) else "FAIL"])
+	note("%s  switching documents clears the old selection and restores the new graph zoom" % ["PASS" if view.selected_ids().is_empty()
+		# (a graph's zoom is stored as it is at 100%; the canvas shows it times the editor's display scale)
+		and is_equal_approx(view.zoom / EditorInterface.get_editor_scale(), float(ed.cur_graph().get("zoom", 1.0))) else "FAIL"])
 	ed.open_schematic("res://demo/SC_Demo.gd")
 	view.zoom = demo_zoom
 	await crop("look_1_graph", view)

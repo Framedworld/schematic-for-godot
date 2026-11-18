@@ -93,13 +93,12 @@ static func reuse(candidates: Array, library: String, dry: bool, quiet: bool) ->
 				skipped.append(f.path)
 				rep.changed.erase(f.path)
 				continue
-			var out := FileAccess.open(f.path, FileAccess.WRITE)
-			if out == null or not out.store_string(Model.build_source(code, f.bp)):
+			var problem := Model.write_text(String(f.path), Model.build_source(code, f.bp))
+			if problem != "":
 				rep.changed.erase(f.path)
 				skipped.append(f.path)
-				push_error("Could not write " + String(f.path))
+				push_error("Schematic: " + problem)
 				continue
-			out.close()
 	print("reuse%s: %d macros in %d files, %d shared macros%s; %d uses; %d nodes before, %d after (%.1f%% fewer); %d files put back; %.1f s" % [
 		" (dry run: macros shared between files are not looked for)" if dry else "",
 		int(rep.macros), rep.changed.size(), int(rep.library), (" in " + library) if int(rep.library) > 0 else "", int(rep.uses),

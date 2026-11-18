@@ -75,6 +75,7 @@ var _lib := false              # function library: everything compiles as static
 var _data := false             # data asset: every variable is a field (exported)
 var _headers: Dictionary = {}  # "nid:pin" exec entry points that a wire loops back to
 var _active: Dictionary = {}   # loop headers currently being emitted -> lambda depth
+var _static_fn := false       # the function being written is static: it cannot call the trace helper, which is the object's own
 var _lam := 0
 
 # Lambdas written back as lambdas. The importer marks the function graph a lambda became with `lambda` (how
@@ -1328,7 +1329,10 @@ func _compile_function(g: Dictionary) -> void:
 	var header := "%sfunc %s(%s) -> %s:" % ["static " if (bool(g.get("static", false)) and not _lib) else "", fname, _param_list(g.inputs), ret]
 	if ret == "-":
 		header = header.replace(" -> -:", ":")   # an imported function written without a return type stays without one
-	if not _block(fname, header, entry, "then"):
+	_static_fn = bool(g.get("static", false))
+	var written := _block(fname, header, entry, "then")
+	_static_fn = false
+	if not written:
 		return
 	var b: Dictionary = _blocks[-1]
 	if not g.get("pre", []).is_empty():
@@ -1828,13 +1832,12 @@ func _chain(nid: int, pin: String, ind: int, scope: Dictionary) -> bool:
 			break
 		_path[key] = true
 		visited.append(key)
-		if bp.get("trace", false) and not _lib and not _d(_nodes[nid]).pure:
+		if bp.get("trace", false) and not _lib and not _static_fn and not _d(_nodes[nid]).pure:
 			# Opt-in debug aid: tells the editor which nodes are running so it can light them up.
 			_member("var __sc_hits: Dictionary = {}", 0)
-			_member("var __sc_last: int = 0", 0)
 			_member("var __sc_vals: Dictionary = {}", 0)
 			_member("var __sc_edges: Dictionary = {}", 0)
-			_member("var __sc_wait: bool = false", 0)
+			_member("var __sc_state: Dictionary = {\"last\": 0, \"wait\": false}", 0)
 			_helpers["__sc_trace"] = ["func __sc_trace(graph_id: int, node_id: int, values: Dictionary = {}, from: int = 0) -> void:", [
 				[1, "if not EngineDebugger.is_active():", 0, 0], [2, "return", 0, 0],
 				[1, "__sc_hits[graph_id * 100000 + node_id] = true", 0, 0],
@@ -1843,27 +1846,30 @@ func _chain(nid: int, pin: String, ind: int, scope: Dictionary) -> bool:
 				[1, "if not values.is_empty():", 0, 0],
 				[2, "__sc_vals[graph_id * 100000 + node_id] = values", 0, 0],
 				# at most ten messages a second: the first node is reported at once, the ones after it a moment later
-				[1, "if Time.get_ticks_msec() - __sc_last > 100:", 0, 0],
-				[2, "__sc_flush()", 0, 0],
-				[1, "elif not __sc_wait:", 0, 0],
+				[1, "var path := (get_script() as Script).resource_path", 0, 0],
+				[1, "if Time.get_ticks_msec() - int(__sc_state.last) > 100:", 0, 0],
+				[2, "__sc_flush(path, __sc_hits, __sc_vals, __sc_edges, __sc_state)", 0, 0],
+				[1, "elif not __sc_state.wait:", 0, 0],
 				[2, "var loop := Engine.get_main_loop() as SceneTree", 0, 0],
 				[2, "if loop != null:", 0, 0],
-				[3, "__sc_wait = true", 0, 0],
-				[3, "loop.create_timer(0.1).timeout.connect(__sc_flush)", 0, 0]]]
-			_helpers["__sc_flush"] = ["func __sc_flush() -> void:", [
-				[1, "__sc_wait = false", 0, 0],
-				[1, "if __sc_hits.is_empty():", 0, 0], [2, "return", 0, 0],
-				[1, "__sc_last = Time.get_ticks_msec()", 0, 0],
+				[3, "__sc_state.wait = true", 0, 0],
+				# The later report is a call on the script, not on this object, and is handed what to report: an object
+				# that frees itself (a pickup that is collected) is gone by then, and a call on it would never be made.
+				[3, "loop.create_timer(0.1).timeout.connect(Callable(get_script(), &\"__sc_flush\").bind(path, __sc_hits, __sc_vals, __sc_edges, __sc_state))", 0, 0]]]
+			_helpers["__sc_flush"] = ["static func __sc_flush(path: String, hits: Dictionary, vals: Dictionary, edges: Dictionary, state: Dictionary) -> void:", [
+				[1, "state.wait = false", 0, 0],
+				[1, "if hits.is_empty():", 0, 0], [2, "return", 0, 0],
+				[1, "state.last = Time.get_ticks_msec()", 0, 0],
 				[1, "var shown := {}", 0, 0],
-				[1, "for key in __sc_vals:", 0, 0],
+				[1, "for key in vals:", 0, 0],
 				[2, "var row := {}", 0, 0],
-				[2, "for pin in __sc_vals[key]:", 0, 0],
-				[3, "row[pin] = str(__sc_vals[key][pin]).left(60)", 0, 0],
+				[2, "for pin in vals[key]:", 0, 0],
+				[3, "row[pin] = str(vals[key][pin]).left(60)", 0, 0],
 				[2, "shown[key] = row", 0, 0],
-				[1, "EngineDebugger.send_message(\"schematic:exec\", [(get_script() as Script).resource_path, __sc_hits.keys(), shown, __sc_edges.keys()])", 0, 0],
-				[1, "__sc_hits.clear()", 0, 0],
-				[1, "__sc_edges.clear()", 0, 0],
-				[1, "__sc_vals.clear()", 0, 0]]]
+				[1, "EngineDebugger.send_message(\"schematic:exec\", [path, hits.keys(), shown, edges.keys()])", 0, 0],
+				[1, "hits.clear()", 0, 0],
+				[1, "edges.clear()", 0, 0],
+				[1, "vals.clear()", 0, 0]]]
 			# The values arriving on this node's wired input pins go along, so the editor can show them on the pins.
 			# (Not for nodes inside an expanded macro: their pins are not the ones on screen.)
 			var watch := ""
@@ -1872,7 +1878,9 @@ func _chain(nid: int, pin: String, ind: int, scope: Dictionary) -> bool:
 				for wpin in _d(_nodes[nid]).ins:
 					# (not a value written straight into this node's line, a call or await the step before left to it:
 					# shown here it would run twice)
-					if wpin.type != "exec" and _inw.has("%d:%s" % [nid, wpin.id]) and not _inline.has(int(_inw["%d:%s" % [nid, wpin.id]][0])):
+					# and only a value that can be read a second time without changing anything (see _repeat_safe)
+					var wkey := "%d:%s" % [nid, wpin.id]
+					if wpin.type != "exec" and _inw.has(wkey) and not _inline.has(int(_inw[wkey][0])) and _repeat_safe(nid, String(wpin.id), 0):
 						var shown_value := _in(_nodes[nid], String(wpin.id), scope)
 						if not shown_value.contains(LAM_OPEN):   # (a lambda being made is not shown: it would be made twice)
 							parts.append("\"%s\": %s" % [wpin.id, shown_value])
@@ -3046,6 +3054,51 @@ func _reads_place(brk: Dictionary, store: Dictionary) -> bool:
 				return false
 			return _same_value("%d:target" % int(getter.id), "%d:target" % int(store.id), getter, store, 0)
 	return false
+
+
+## True when what is wired to an input pin can be worked out a second time without changing anything. Show Flow and
+## Values reads a wired input once more to show it on the pin, so it only shows the ones this is true of: a random
+## number would come out different (and move the sequence on), `queue.pop_back()` would take a second item.
+## Safe: variables, the result of a step that already ran, operators, properties, and calls the engine marks as
+## changing nothing. Not safe: a call written to run in place (the converter's `f(g())`), an await, anything random,
+## and code carried over as text that makes a call.
+func _repeat_safe(nid: int, pin_id: String, depth: int) -> bool:
+	var key := "%d:%s" % [nid, pin_id]
+	if not _inw.has(key):
+		return true   # the pin's own value
+	if depth > 24:
+		return false
+	var src: Dictionary = _nodes[_inw[key][0]]
+	var sid := int(src.id)
+	if _inline.has(sid):
+		return false   # written straight into the line that uses it
+	if String(src.kind) == "reroute":
+		return _repeat_safe(sid, "i", depth + 1)
+	var d := _d(src)
+	if not d.pure:
+		return true   # a step that ran before this one: its result is in a variable
+	var p: Dictionary = src.get("p", {})
+	match String(src.kind):
+		"call", "bcall", "util", "call_parent", "dyn_call", "call_self":
+			if bool(p.get("inline", false)) or bool(p.get("await", false)):
+				return false
+			if src.kind == "util" and String(R.util(String(p.get("name", ""))).get("c", "")) == "random":
+				return false
+			if String(p.get("method", "")).contains("random"):
+				return false
+		"expr":
+			if String(p.get("code", "")).contains("("):
+				return false
+		"tpl":
+			for text in R.template_of(p).get("exprs", {}).values():
+				if String(text).contains("rand") or String(text).contains("await "):
+					return false
+		"await_value":
+			return false
+	for pin in d.ins:
+		if pin.type != "exec" and not _repeat_safe(sid, String(pin.id), depth + 1):
+			return false
+	return true
 
 
 ## Two input pins that are sure to carry the same value: both unwired with the same default, the same wire,

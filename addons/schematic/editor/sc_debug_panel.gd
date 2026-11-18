@@ -41,12 +41,12 @@ var _hint: Label
 
 
 func build_ui() -> void:
-	custom_minimum_size.y = 170
+	custom_minimum_size.y = W.s(170)
 	var v: Variant = EditorInterface.get_editor_settings().get_project_metadata("schematics", "watches", [])
 	if typeof(v) == TYPE_ARRAY:
 		watches = v.duplicate(true)
 	var left := VBoxContainer.new()
-	left.custom_minimum_size.x = 260
+	left.custom_minimum_size.x = W.s(260)
 	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	add_child(left)
 	left.add_child(editor._header("Call Stack"))
@@ -74,7 +74,7 @@ func build_ui() -> void:
 		_add.text = "")
 	top.add_child(_add)
 	_hint = Label.new()
-	_hint.add_theme_font_size_override("font_size", 12)
+	_hint.add_theme_font_size_override("font_size", W.si(12))
 	_hint.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
 	top.add_child(_hint)
 	_vars = Tree.new()

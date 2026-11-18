@@ -67,7 +67,8 @@ func _ready() -> void:
 		if __delay_1_5:
 			return
 		__delay_1_5 = true
-		await get_tree().create_timer(1.0).timeout
+		var __delay_timeout_1_5: Signal = get_tree().create_timer(1.0).timeout
+		await __delay_timeout_1_5
 		__delay_1_5 = false
 		print("...one second later")
 	).call()
@@ -111,6 +112,8 @@ func __sc_sample(keys: Array, t: float, smooth: bool) -> Variant:
 
 
 #region Schematic graph data (machine-written; edit this file in the Schematic editor)
+#~code d4d083fdc86428378793b4384494e7e8
+#~hash-v2
 #~ {"class_name":"SC_Demo","description":"Demo schematic: spins and bounces its node. Press Space (jump) to change speed.","dispatchers":[{"name":"speed_changed","params":[["new_speed","float"]]}],"enums":[],"parent":"Node3D","tool":false,"trace":false,"variables":[{"category":"Motion","default":"90.0","export":true,"name":"spin_speed","tooltip":"Degrees per second.","type":"float"},{"category":"Motion","default":"0.5","export":true,"name":"bounce_height","tooltip":"How high the node bounces.","type":"float"},{"category":"","default":"","export":false,"name":"time","tooltip":"","type":"float"}],"version":1.0,"graphs":[
 #~ {"id":1,"inputs":[],"kind":"event","locals":[],"name":"EventGraph","next_id":32,"outputs":[],"pure":false,"sx":0.0,"sy":-146.024047851562,"zoom":0.963931024074554,"nodes":[
 #~ {"d":{},"id":1,"kind":"event","p":{"name":"_ready"},"x":60.0,"y":60.0},

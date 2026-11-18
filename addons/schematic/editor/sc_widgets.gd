@@ -15,6 +15,41 @@ const ACTIVE := Color("#24554e")
 const TEXT := Color("#ebe7e2")
 const MUTED := Color("#bbb3ab")
 
+# ---------------------------------------------------------------- the editor's display scale
+# The plugin's own pixel sizes are written for an editor at 100%. In the panels they go through s() / si() / sv(),
+# so text and spacing follow the scale the rest of the editor is drawn at (Editor Settings > Display Scale). On the
+# graph canvas sizes stay as written: the canvas is zoomed by the scale instead (sc_graph_view.gd), which scales
+# nodes, wires and positions alike. At 100% every helper returns exactly what it is given.
+
+static var _scale := 0.0
+## Above 0 while a control that goes inside a graph node is being built: its sizes stay as written.
+static var logical := 0
+
+
+static func scale() -> float:
+	if _scale <= 0.0:
+		_scale = EditorInterface.get_editor_scale() if Engine.is_editor_hint() else 1.0
+		if _scale <= 0.0:
+			_scale = 1.0
+	return _scale
+
+
+static func s(v: float) -> float:
+	return v if (logical > 0 or scale() == 1.0) else v * scale()
+
+
+## A whole number of pixels; something that is there at 100% (a 1 pixel line) never rounds away to nothing.
+static func si(v: int) -> int:
+	if logical > 0 or scale() == 1.0 or v == 0:
+		return v
+	var scaled := roundi(v * scale())
+	return scaled if scaled != 0 else signi(v)
+
+
+static func sv(v: Vector2) -> Vector2:
+	return v if (logical > 0 or scale() == 1.0) else v * scale()
+
+
 static var _swatches: Dictionary = {}
 static var _exec_icon: Texture2D
 static var _exec_icon_hollow: Texture2D
@@ -22,7 +57,71 @@ static var _exec_icon_hollow: Texture2D
 
 static func icon(name: String) -> Texture2D:
 	var th := EditorInterface.get_editor_theme()
-	return th.get_icon(name, "EditorIcons") if th and th.has_icon(name, "EditorIcons") else null
+	var found: Texture2D = th.get_icon(name, "EditorIcons") if th and th.has_icon(name, "EditorIcons") else null
+	if found == null or logical <= 0 or scale() == 1.0:
+		return found
+	# for a graph node: the editor's icons are drawn for its display scale, and the canvas zoom applies that again
+	if not _canvas_icons.has(name):
+		_canvas_icons[name] = _at_100(found)
+	return _canvas_icons[name]
+
+
+static var _canvas_icons: Dictionary = {}
+
+
+## A picture the editor's theme made for its display scale, at the size it has at 100%.
+static func _at_100(tex: Texture2D) -> Texture2D:
+	var img := tex.get_image() if tex != null else null
+	if img == null or img.is_empty():
+		return tex
+	img = img.duplicate()
+	if img.is_compressed():
+		img.decompress()
+	img.resize(maxi(1, roundi(img.get_width() / scale())), maxi(1, roundi(img.get_height() / scale())), Image.INTERPOLATE_LANCZOS)
+	return ImageTexture.create_from_image(img)
+
+
+## The kinds of control found inside graph nodes and frames.
+const CANVAS_TYPES := ["Label", "LineEdit", "Button", "OptionButton", "CheckBox", "CheckButton", "MenuButton", "TextEdit", "CodeEdit", "RichTextLabel",
+	"ColorPickerButton", "SpinBox", "HBoxContainer", "VBoxContainer", "GraphNode", "GraphNodeTitleLabel", "GraphFrame", "GraphFrameTitleLabel"]
+
+
+## The theme of the graph canvas in an editor that is not at 100% (null at 100%): what the editor's theme gives the
+## kinds of control found inside nodes, at the sizes it would give them at 100%. The canvas zoom carries the display
+## scale, so anything the editor's theme has already scaled would be scaled twice (node titles came out half as
+## large again as the text under them). Menus that open from a node are windows of their own, not on the canvas,
+## and are not among these kinds: they keep the editor's sizes.
+static func canvas_theme() -> Theme:
+	var src := EditorInterface.get_editor_theme() if Engine.is_editor_hint() else null
+	if src == null or scale() == 1.0:
+		return null
+	var k := 1.0 / scale()
+	var out := Theme.new()
+	for type: String in CANVAS_TYPES:
+		out.set_font_size("font_size", type, maxi(1, roundi(src.get_font_size("font_size", type) * k)))
+		for item in src.get_font_size_list(type):
+			out.set_font_size(item, type, maxi(1, roundi(src.get_font_size(item, type) * k)))
+		for item in src.get_constant_list(type):
+			var value := src.get_constant(item, type)
+			out.set_constant(item, type, roundi(value * k) if absi(value) > 1 else value)   # (0 and 1 are often switches, not sizes)
+		for item in src.get_icon_list(type):
+			out.set_icon(item, type, _at_100(src.get_icon(item, type)))
+		for item in src.get_stylebox_list(type):
+			var box := src.get_stylebox(item, type).duplicate() as StyleBox
+			for side in [SIDE_LEFT, SIDE_TOP, SIDE_RIGHT, SIDE_BOTTOM]:
+				if box.get_content_margin(side) >= 0.0:
+					box.set_content_margin(side, box.get_content_margin(side) * k)
+			var flat := box as StyleBoxFlat
+			if flat != null:
+				for side in [SIDE_LEFT, SIDE_TOP, SIDE_RIGHT, SIDE_BOTTOM]:
+					var border := flat.get_border_width(side)
+					flat.set_border_width(side, maxi(1, roundi(border * k)) if border > 0 else 0)
+					flat.set_expand_margin(side, flat.get_expand_margin(side) * k)
+				for corner in [CORNER_TOP_LEFT, CORNER_TOP_RIGHT, CORNER_BOTTOM_LEFT, CORNER_BOTTOM_RIGHT]:
+					flat.set_corner_radius(corner, roundi(flat.get_corner_radius(corner) * k))
+				flat.shadow_size = roundi(flat.shadow_size * k)
+			out.set_stylebox(item, type, box)
+	return out
 
 
 static func class_icon(cls: String) -> Texture2D:
@@ -97,22 +196,22 @@ static func exec_icon(filled := true) -> Texture2D:
 static func _small_line(text: String, width: float) -> LineEdit:
 	var le := LineEdit.new()
 	le.text = text
-	le.custom_minimum_size.x = width
-	le.add_theme_font_size_override("font_size", 12)
+	le.custom_minimum_size.x = s(width)
+	le.add_theme_font_size_override("font_size", si(12))
 	le.select_all_on_focus = true
 	le.context_menu_enabled = false
 	# Keep the focused pin field visible against both the card and its category tint.
 	for state in ["normal", "focus", "read_only"]:
 		var box := StyleBoxFlat.new()
 		box.bg_color = Color("#1d1a18")
-		box.set_border_width_all(1)
+		box.set_border_width_all(si(1))
 		box.border_color = EDGE if state != "focus" else ACCENT
 		box.border_width_top = 2 if state != "focus" else 1
-		box.set_corner_radius_all(4)
-		box.content_margin_left = 6
-		box.content_margin_right = 6
-		box.content_margin_top = 1
-		box.content_margin_bottom = 1
+		box.set_corner_radius_all(si(4))
+		box.content_margin_left = si(6)
+		box.content_margin_right = si(6)
+		box.content_margin_top = si(1)
+		box.content_margin_bottom = si(1)
 		le.add_theme_stylebox_override(state, box)
 	return le
 
@@ -137,7 +236,7 @@ static func make_value_editor(type: String, enum_name: String, literal: String, 
 		var values := R.enum_values(enum_name)
 		if not values.is_empty():
 			var ob := OptionButton.new()
-			ob.add_theme_font_size_override("font_size", 12)
+			ob.add_theme_font_size_override("font_size", si(12))
 			ob.fit_to_longest_item = false
 			var cur := int(T.parse_literal(literal, values[0][1]))
 			for i in values.size():
@@ -169,7 +268,7 @@ static func make_value_editor(type: String, enum_name: String, literal: String, 
 		"String", "StringName", "NodePath":
 			var le := _small_line(str(T.parse_literal(literal, "")), 70 if compact else 140)
 			if compact:
-				le.custom_minimum_size.x = clampf(le.get_theme_font("font").get_string_size(le.text, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x + 18, 70, 148)
+				le.custom_minimum_size.x = clampf(le.get_theme_font("font").get_string_size(le.text, HORIZONTAL_ALIGNMENT_LEFT, -1, si(12)).x + s(18), s(70), s(148))
 			var prefix := "" if type == "String" else ("&" if type == "StringName" else "^")
 			_commit_line(le, func(): on_change.call(prefix + var_to_str(le.text)))
 			return le
@@ -181,7 +280,7 @@ static func make_value_editor(type: String, enum_name: String, literal: String, 
 				# a plain number beside a vector (`direction * 3.0`): edit it as the value it is
 				return make_value_editor("any", "", literal, on_change, compact)
 			var box := HBoxContainer.new()
-			box.add_theme_constant_override("separation", 2)
+			box.add_theme_constant_override("separation", si(2))
 			var edits: Array[LineEdit] = []
 			var commit := func():
 				var parts := PackedStringArray()
@@ -193,7 +292,7 @@ static func make_value_editor(type: String, enum_name: String, literal: String, 
 			for i in n:
 				var lab := Label.new()
 				lab.text = "XYZW"[i]
-				lab.add_theme_font_size_override("font_size", 10)
+				lab.add_theme_font_size_override("font_size", si(10))
 				lab.add_theme_color_override("font_color", [Color(0.9, 0.35, 0.35), Color(0.45, 0.85, 0.35), Color(0.4, 0.6, 1.0), Color(0.8, 0.8, 0.8)][i])
 				box.add_child(lab)
 				var le := _small_line(_fmt(float(cur[i])) if cur != null else ("1" if (type == "Quaternion" and i == 3) else "0"), 34)
@@ -203,7 +302,7 @@ static func make_value_editor(type: String, enum_name: String, literal: String, 
 			return box
 		"Color":
 			var cp := ColorPickerButton.new()
-			cp.custom_minimum_size = Vector2(48, 20)
+			cp.custom_minimum_size = sv(Vector2(48, 20))
 			var c: Variant = T.parse_literal(literal, Color.WHITE)
 			cp.color = c if typeof(c) == TYPE_COLOR else Color.WHITE
 			cp.popup_closed.connect(func(): on_change.call(var_to_str(cp.color)))
@@ -218,7 +317,7 @@ static func make_value_editor(type: String, enum_name: String, literal: String, 
 	if T.is_object(type) and T.is_a(type, "Resource") and ClassDB.class_exists(T.native_of(type)):
 		var picker := EditorResourcePicker.new()
 		picker.base_type = T.native_of(type)
-		picker.custom_minimum_size.x = 130
+		picker.custom_minimum_size.x = s(130)
 		if literal.begins_with("preload(\""):
 			var path := literal.trim_prefix("preload(\"").trim_suffix("\")")
 			if ResourceLoader.exists(path):
@@ -260,7 +359,7 @@ static func make_type_button(type: String, on_change: Callable, allow_array := t
 	var b := Button.new()
 	b.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	b.clip_text = true
-	b.custom_minimum_size.x = 110
+	b.custom_minimum_size.x = s(110)
 	var apply := func(t: String):
 		b.text = "Wildcard" if t == "any" else ("Exec" if t == "exec" else t)
 		b.icon = swatch(T.color(t))
@@ -288,7 +387,7 @@ static func make_type_button(type: String, on_change: Callable, allow_array := t
 static func popup_search(anchor: Control, items: Array, on_pick: Callable, title := "", wide := false) -> void:
 	var pop := PopupPanel.new()
 	var vb := VBoxContainer.new()
-	vb.custom_minimum_size = Vector2(440, 420) if wide else Vector2(280, 360)
+	vb.custom_minimum_size = sv(Vector2(440, 420) if wide else Vector2(280, 360))
 	pop.add_child(vb)
 	if title != "":
 		var tl := Label.new()
@@ -346,10 +445,10 @@ static func popup_search(anchor: Control, items: Array, on_pick: Callable, title
 	pop.popup_hide.connect(pop.queue_free)
 	anchor.add_child(pop)
 	if wide:
-		pop.popup(Rect2i(Vector2i(anchor.get_screen_position() + (anchor.size - Vector2(440, 440)) / 2.0), Vector2i(440, 440)))
+		pop.popup(Rect2i(Vector2i(anchor.get_screen_position() + (anchor.size - sv(Vector2(440, 440))) / 2.0), Vector2i(sv(Vector2(440, 440)))))
 	else:
 		var r := anchor.get_screen_position() + Vector2(0, anchor.size.y)
-		pop.popup(Rect2i(Vector2i(r), Vector2i(280, 380)))
+		pop.popup(Rect2i(Vector2i(r), Vector2i(sv(Vector2(280, 380)))))
 	search.grab_focus()
 
 

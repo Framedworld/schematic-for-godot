@@ -1,7 +1,9 @@
 @tool
-class_name DataTable
+class_name SchematicDataTable
 extends Resource
-## A table of named rows that all share one structure (Unreal's Data Table). The structure is any Resource
+## A table of named rows that all share one structure (Unreal's Data Table). The class was called DataTable up to
+## Schematic 0.3.3; it carries the plugin's name now so it cannot clash with a class of the project's own.
+## The structure is any Resource
 ## script with exported variables, usually a Schematic of type Data Asset; each row is one instance of it,
 ## stored inside the table's .tres file.
 ##

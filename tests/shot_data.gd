@@ -105,9 +105,9 @@ func run(p: EditorPlugin) -> void:
 		await tree.create_timer(0.5).timeout
 		waited += 0.5
 		T.refresh_globals()
-		if T.globals().has(ROW) and T.globals().has("DataTable") and not EditorInterface.get_resource_filesystem().is_scanning():
+		if T.globals().has(ROW) and T.globals().has(Model.TABLE_CLASS) and not EditorInterface.get_resource_filesystem().is_scanning():
 			break
-	check("the structure and DataTable are registered classes", T.globals().has(ROW) and T.globals().has("DataTable"), "after %.1fs" % waited)
+	check("the structure and the Data Table class are registered classes", T.globals().has(ROW) and T.globals().has(Model.TABLE_CLASS), "after %.1fs" % waited)
 
 	# 2. New Data Table offers the structure
 	p.new_table_dialog(DIR)

@@ -400,9 +400,9 @@ func _new_library() -> Dictionary:
 
 func _write(path: String, bp: Dictionary) -> void:
 	var c := Compiler.new()
-	var f := FileAccess.open(path, FileAccess.WRITE)
-	f.store_string(Model.build_source(c.compile(bp), bp))
-	f.close()
+	var problem := Model.write_text(path, Model.build_source(c.compile(bp), bp))
+	if problem != "":
+		push_error("Schematic: " + problem)
 	R.invalidate_libraries()
 
 

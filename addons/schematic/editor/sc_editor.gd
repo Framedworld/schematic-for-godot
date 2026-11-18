@@ -108,7 +108,7 @@ func build_ui() -> void:
 	_parent_btn = Button.new()
 	_parent_btn.flat = true
 	_parent_btn.focus_mode = Control.FOCUS_NONE
-	_parent_btn.add_theme_font_size_override("font_size", 13)
+	_parent_btn.add_theme_font_size_override("font_size", W.si(13))
 	_parent_btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
 	_parent_btn.tooltip_text = "The class this schematic extends. Click to open Class Settings."
 	_parent_btn.pressed.connect(func(): _select({"kind": "class"}))
@@ -118,16 +118,16 @@ func build_ui() -> void:
 	var strip := PanelContainer.new()
 	var strip_bg := StyleBoxFlat.new()
 	strip_bg.bg_color = W.CHROME
-	strip_bg.border_width_bottom = 1
+	strip_bg.border_width_bottom = W.si(1)
 	strip_bg.border_color = W.EDGE
-	strip_bg.content_margin_left = 6
-	strip_bg.content_margin_right = 6
-	strip_bg.content_margin_top = 3
-	strip_bg.content_margin_bottom = 3
+	strip_bg.content_margin_left = W.si(6)
+	strip_bg.content_margin_right = W.si(6)
+	strip_bg.content_margin_top = W.si(3)
+	strip_bg.content_margin_bottom = W.si(3)
 	strip.add_theme_stylebox_override("panel", strip_bg)
 	add_child(strip)
 	var bar := HBoxContainer.new()
-	bar.add_theme_constant_override("separation", 2)
+	bar.add_theme_constant_override("separation", W.si(2))
 	strip.add_child(bar)
 	_toolbar = bar
 	bar.add_child(_tool("", "Save", "Save this schematic (compiles it first). Ctrl+S", func(): compile_doc(doc, true)))
@@ -221,10 +221,10 @@ func build_ui() -> void:
 	add_child(split)
 
 	var left := VSplitContainer.new()
-	left.custom_minimum_size.x = 250
+	left.custom_minimum_size.x = W.s(250)
 	split.add_child(left)
 	var comp_box := VBoxContainer.new()
-	comp_box.custom_minimum_size.y = 150
+	comp_box.custom_minimum_size.y = W.s(150)
 	left.add_child(comp_box)
 	comp_box.add_child(_header("Scene nodes"))
 	_components = Tree.new()
@@ -281,10 +281,10 @@ func build_ui() -> void:
 	var nav := PanelContainer.new()
 	var nav_bg := StyleBoxFlat.new()
 	nav_bg.bg_color = W.INSET
-	nav_bg.content_margin_left = 6
-	nav_bg.content_margin_right = 6
-	nav_bg.content_margin_top = 2
-	nav_bg.content_margin_bottom = 2
+	nav_bg.content_margin_left = W.si(6)
+	nav_bg.content_margin_right = W.si(6)
+	nav_bg.content_margin_top = W.si(2)
+	nav_bg.content_margin_bottom = W.si(2)
 	nav.add_theme_stylebox_override("panel", nav_bg)
 	gbox.add_child(nav)
 	var nav_row := HBoxContainer.new()
@@ -304,7 +304,7 @@ func build_ui() -> void:
 	crumb_icon.modulate = W.ACCENT
 	nav_row.add_child(crumb_icon)
 	_crumb = Label.new()
-	_crumb.add_theme_font_size_override("font_size", 14)
+	_crumb.add_theme_font_size_override("font_size", W.si(14))
 	_crumb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_crumb.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_crumb.add_theme_color_override("font_color", W.TEXT)
@@ -320,7 +320,7 @@ func build_ui() -> void:
 	gbox.add_child(debug_panel)
 	debug_panel.build_ui()
 	var res_box := VBoxContainer.new()
-	res_box.custom_minimum_size.y = 90
+	res_box.custom_minimum_size.y = W.s(90)
 	center.add_child(res_box)
 	res_box.add_child(_header("Compiler Results"))
 	_results = ItemList.new()
@@ -331,7 +331,7 @@ func build_ui() -> void:
 	center.split_offset = 2000
 
 	_right_tabs = TabContainer.new()
-	_right_tabs.custom_minimum_size.x = 340
+	_right_tabs.custom_minimum_size.x = W.s(340)
 	right_split.add_child(_right_tabs)
 	right_split.split_offset = 2000
 	var dscroll := ScrollContainer.new()
@@ -357,14 +357,14 @@ func build_ui() -> void:
 	# The code view with a one-line label under it (what a clicked line is, when no node wrote it).
 	var code_box := VBoxContainer.new()
 	code_box.name = "Generated Code"
-	code_box.add_theme_constant_override("separation", 2)
+	code_box.add_theme_constant_override("separation", W.si(2))
 	_right_tabs.add_child(code_box)
 	# While the game runs code that is not the graph's current code: a one-line notice saying so (see _shown()).
 	_code_notice = Label.new()
 	_code_notice.name = "CodeRunNotice"
 	_code_notice.visible = false
 	_code_notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_code_notice.add_theme_font_size_override("font_size", 12)
+	_code_notice.add_theme_font_size_override("font_size", W.si(12))
 	var ed_theme := EditorInterface.get_editor_theme()
 	_code_notice.add_theme_color_override("font_color", ed_theme.get_color("warning_color", "Editor") if ed_theme and ed_theme.has_color("warning_color", "Editor") else Color(1, 0.8, 0.35))
 	code_box.add_child(_code_notice)
@@ -383,10 +383,10 @@ func build_ui() -> void:
 	code_box.add_child(_code)
 	_code_label = Label.new()
 	_code_label.name = "CodeLineLabel"
-	_code_label.custom_minimum_size.y = 20
+	_code_label.custom_minimum_size.y = W.s(20)
 	_code_label.clip_text = true
 	_code_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	_code_label.add_theme_font_size_override("font_size", 12)
+	_code_label.add_theme_font_size_override("font_size", W.si(12))
 	_code_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.55))
 	code_box.add_child(_code_label)
 	_right_tabs.tab_changed.connect(func(_i): _update_code(true))
@@ -403,15 +403,15 @@ func _tool(text: String, icon_name: String, tip: String, on_press: Callable) -> 
 	b.icon = W.icon(icon_name)
 	b.tooltip_text = tip
 	b.focus_mode = Control.FOCUS_NONE
-	b.add_theme_font_size_override("font_size", 13)
+	b.add_theme_font_size_override("font_size", W.si(13))
 	b.add_theme_color_override("font_color", Color(1, 1, 1, 0.82))
 	for state in ["normal", "hover", "pressed", "hover_pressed", "disabled"]:
 		var sb := StyleBoxFlat.new()
-		sb.set_corner_radius_all(4)
-		sb.content_margin_left = 7
-		sb.content_margin_right = 7
-		sb.content_margin_top = 4
-		sb.content_margin_bottom = 4
+		sb.set_corner_radius_all(W.si(4))
+		sb.content_margin_left = W.si(7)
+		sb.content_margin_right = W.si(7)
+		sb.content_margin_top = W.si(4)
+		sb.content_margin_bottom = W.si(4)
 		match state:
 			"normal", "disabled": sb.bg_color = Color(0, 0, 0, 0)
 			"hover": sb.bg_color = Color(1, 1, 1, 0.1)
@@ -427,7 +427,7 @@ func _tool_menu(text: String, items: Array, on_pick: Callable, tip := "", icon_n
 	mb.icon = W.icon(icon_name)
 	mb.flat = true
 	mb.tooltip_text = tip
-	mb.add_theme_font_size_override("font_size", 13)
+	mb.add_theme_font_size_override("font_size", W.si(13))
 	mb.add_theme_color_override("font_color", Color(1, 1, 1, 0.82))
 	for i in items.size():
 		mb.get_popup().add_item(items[i], i)
@@ -438,11 +438,11 @@ func _tool_menu(text: String, items: Array, on_pick: Callable, tip := "", icon_n
 func _tool_sep() -> Control:
 	var c := ColorRect.new()
 	c.color = Color(1, 1, 1, 0.12)
-	c.custom_minimum_size = Vector2(1, 18)
+	c.custom_minimum_size = W.sv(Vector2(1, 18))
 	c.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	var m := MarginContainer.new()
-	m.add_theme_constant_override("margin_left", 6)
-	m.add_theme_constant_override("margin_right", 6)
+	m.add_theme_constant_override("margin_left", W.si(6))
+	m.add_theme_constant_override("margin_right", W.si(6))
 	m.add_child(c)
 	return m
 
@@ -450,20 +450,20 @@ func _tool_sep() -> Control:
 func _header(text: String) -> Label:
 	var l := Label.new()
 	l.text = text
-	l.add_theme_font_size_override("font_size", 13)
+	l.add_theme_font_size_override("font_size", W.si(13))
 	l.add_theme_color_override("font_color", Color(1, 1, 1, 0.8))
 	var bold := EditorInterface.get_editor_theme().get_font("bold", "EditorFonts") if EditorInterface.get_editor_theme() else null
 	if bold:
 		l.add_theme_font_override("font", bold)
 	var band := StyleBoxFlat.new()
 	band.bg_color = W.CHROME
-	band.border_width_left = 3
+	band.border_width_left = W.si(3)
 	band.border_color = W.ACCENT
-	band.set_corner_radius_all(3)
-	band.content_margin_left = 8
-	band.content_margin_right = 8
-	band.content_margin_top = 4
-	band.content_margin_bottom = 4
+	band.set_corner_radius_all(W.si(3))
+	band.content_margin_left = W.si(8)
+	band.content_margin_right = W.si(8)
+	band.content_margin_top = W.si(4)
+	band.content_margin_bottom = W.si(4)
 	l.add_theme_stylebox_override("normal", band)
 	return l
 
@@ -501,7 +501,7 @@ func open_schematic(path: String) -> bool:
 		var text := FileAccess.get_file_as_string(path)
 		var bp := Model.parse_source(text)
 		if bp.is_empty():
-			toast("%s is not a Schematic script" % path.get_file())
+			toast("%s %s" % [path.get_file(), Model.unreadable_reason(text)])
 			return false
 		d = {"path": path}
 		_load_into(d, bp, text)
@@ -536,6 +536,11 @@ func _load_into(d: Dictionary, bp: Dictionary, text: String) -> void:
 		d["disk_code"] = expected
 		d["drift_at_open"] = true
 		_drift_check(d, true)
+	# A file saved when the Data Table class was still called DataTable: its graph is read with the present name, its
+	# code on disk still has the old one and no longer loads. Saving writes the new name.
+	elif Model.names_old_table_class(String(d.code)) and not Model.names_old_table_class(String(d.preview)):
+		d.dirty = true
+		toast("%s names the Data Table class the old way (%s). Save it to write the new name, %s." % [String(d.path).get_file(), Model.TABLE_CLASS_WAS, Model.TABLE_CLASS])
 
 
 func _on_doc_tab(i: int) -> void:
@@ -597,7 +602,7 @@ func _ask_close(d: Dictionary) -> void:
 		if not dlg.visible:
 			dlg.queue_free())
 	EditorInterface.get_base_control().add_child(dlg)
-	dlg.popup_centered(Vector2i(560, 0))
+	dlg.popup_centered(Vector2i(W.si(560), 0))
 	dlg.get_ok_button().grab_focus.call_deferred()
 
 
@@ -651,20 +656,23 @@ func convert_script_apply(path: String, result: Dictionary) -> bool:
 	if FileAccess.get_file_as_string(path) != String(result.source):
 		toast("%s changed since it was read for converting: convert it again." % path.get_file())
 		return false
+	# The original is kept before the file is replaced. An .orig left by converting an earlier version of this
+	# script is not this script: it is moved aside, never overwritten and never taken for the backup.
 	var keep_path := path + ".orig"
-	if not FileAccess.file_exists(keep_path):
-		var keep := FileAccess.open(keep_path, FileAccess.WRITE)
-		if keep == null:
-			toast("Can't write %s" % keep_path)
-			return false
-		keep.store_string(String(result.source))
-		keep.close()
-	var f := FileAccess.open(path, FileAccess.WRITE)
-	if f == null:
-		toast("Can't write %s" % path)
+	var older := ""
+	if FileAccess.file_exists(keep_path) and FileAccess.get_file_as_string(keep_path) != String(result.source):
+		var n := 1
+		while FileAccess.file_exists("%s.%d" % [keep_path, n]):
+			n += 1
+		older = "%s.%d" % [keep_path.get_file(), n]
+	var problem := Model.keep_original(path, String(result.source))
+	if problem == "":
+		problem = Model.write_text(path, String(result.text))
+	if problem != "":
+		toast("Not converted: %s." % problem)
 		return false
-	f.store_string(String(result.text))
-	f.close()
+	if older != "":
+		toast("%s held an older version of this script: that one is now %s." % [keep_path.get_file(), older])
 	var scr := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_REUSE) as GDScript
 	if scr:
 		scr.source_code = String(result.text)
@@ -705,7 +713,7 @@ func convert_script_dialog(path: String) -> void:
 		if not dlg.visible:
 			dlg.queue_free())
 	EditorInterface.get_base_control().add_child(dlg)
-	dlg.popup_centered(Vector2i(720, 0))
+	dlg.popup_centered(Vector2i(W.si(720), 0))
 
 
 ## New Schematic: first offer the starter schematics (ready-wired graphs) next to an empty one. When attaching
@@ -952,12 +960,11 @@ func compile_doc(d: Dictionary, save: bool, side_effect := false) -> bool:
 
 ## Writes a Schematic's whole text and tells Godot the script changed. False (with a toast) when it can't be written.
 func _write_schematic(path: String, src: String) -> bool:
-	var f := FileAccess.open(path, FileAccess.WRITE)
-	if f == null:
-		toast("Can't write %s" % path)
+	var problem := Model.write_text(path, src)
+	if problem != "":
+		toast("Not saved: %s." % problem)
+		push_error("Schematic: " + problem)
 		return false
-	f.store_string(src)
-	f.close()
 	var scr := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_REUSE) as GDScript
 	if scr:
 		scr.source_code = src
@@ -1096,7 +1103,7 @@ func drift_reload(d: Dictionary) -> bool:
 	var text := FileAccess.get_file_as_string(String(d.path))
 	var bp := Model.parse_source(text)
 	if bp.is_empty():
-		toast("%s on disk is not a Schematic any more: there is no graph to load." % String(d.path).get_file())
+		toast("%s on disk %s. There is no graph to load." % [String(d.path).get_file(), Model.unreadable_reason(text)])
 		return false
 	_load_into(d, bp, text)
 	if d == doc:
@@ -1169,7 +1176,7 @@ func show_drift_changes(d: Dictionary, focus := 0) -> void:
 	var view := CodeEdit.new()
 	view.name = "Diff"
 	view.editable = false
-	view.custom_minimum_size = Vector2(760, 420)
+	view.custom_minimum_size = W.sv(Vector2(760, 420))
 	view.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	box.add_child(view)
 	var diff := drift_diff(d)
@@ -1464,7 +1471,7 @@ func _show_reimport(d: Dictionary, pv: Dictionary) -> void:
 	rt.bbcode_enabled = true
 	rt.fit_content = true
 	rt.selection_enabled = true
-	rt.custom_minimum_size = Vector2(760, 0)
+	rt.custom_minimum_size = W.sv(Vector2(760, 0))
 	rt.text = String(words[0])
 	var scroll := ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -1473,7 +1480,7 @@ func _show_reimport(d: Dictionary, pv: Dictionary) -> void:
 	var tags := RegEx.create_from_string("\\[[^\\]]*\\]")
 	for ln in String(words[0]).split("\n"):
 		rows += maxi(1, ceili(tags.sub(ln, "", true).length() / 82.0))
-	scroll.custom_minimum_size = Vector2(780, mini(540, 16 + 24 * rows))
+	scroll.custom_minimum_size = W.sv(Vector2(780, mini(540, 16 + 24 * rows)))
 	scroll.add_child(rt)
 	dlg.add_child(scroll)
 	var line := int(words[1])
@@ -1500,7 +1507,7 @@ func _show_reimport(d: Dictionary, pv: Dictionary) -> void:
 	# once laid out: as tall as the words really are (the estimate above only avoids a first frame that is too small)
 	get_tree().process_frame.connect(func():
 		if is_instance_valid(dlg) and is_instance_valid(rt) and rt.get_content_height() > 0:
-			scroll.custom_minimum_size.y = mini(540, rt.get_content_height() + 28)   # (+ the panel's margins)
+			scroll.custom_minimum_size.y = mini(W.si(540), rt.get_content_height() + W.si(28))   # (+ the panel's margins)
 			dlg.reset_size()
 			dlg.move_to_center(), CONNECT_ONE_SHOT)
 
@@ -1690,7 +1697,7 @@ func show_kits_dialog() -> void:
 	_kits_tree = Tree.new()
 	_kits_tree.name = "KitList"
 	_kits_tree.hide_root = true
-	_kits_tree.custom_minimum_size = Vector2(760, 320)
+	_kits_tree.custom_minimum_size = W.sv(Vector2(760, 320))
 	_kits_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	box.add_child(_kits_tree)
 	var reload := Button.new()
@@ -1783,16 +1790,16 @@ func _build_drift_bar(parent: Control) -> void:
 	var bg := StyleBoxFlat.new()
 	bg.bg_color = Color(0.29, 0.21, 0.06)
 	bg.border_color = Color(1.0, 0.72, 0.1)
-	bg.border_width_left = 3
-	bg.content_margin_left = 8
-	bg.content_margin_right = 6
-	bg.content_margin_top = 3
-	bg.content_margin_bottom = 3
+	bg.border_width_left = W.si(3)
+	bg.content_margin_left = W.si(8)
+	bg.content_margin_right = W.si(6)
+	bg.content_margin_top = W.si(3)
+	bg.content_margin_bottom = W.si(3)
 	_drift_bar.add_theme_stylebox_override("panel", bg)
 	_drift_bar.visible = false
 	parent.add_child(_drift_bar)
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 4)
+	row.add_theme_constant_override("separation", W.si(4))
 	_drift_bar.add_child(row)
 	var icon := TextureRect.new()
 	icon.texture = W.icon("StatusWarning")
@@ -1819,11 +1826,11 @@ func _build_drift_bar(parent: Control) -> void:
 func _drift_button_box() -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(1, 1, 1, 0.08)
-	sb.set_corner_radius_all(4)
-	sb.content_margin_left = 7
-	sb.content_margin_right = 7
-	sb.content_margin_top = 4
-	sb.content_margin_bottom = 4
+	sb.set_corner_radius_all(W.si(4))
+	sb.content_margin_left = W.si(7)
+	sb.content_margin_right = W.si(7)
+	sb.content_margin_top = W.si(4)
+	sb.content_margin_bottom = W.si(4)
 	return sb
 
 
@@ -2253,7 +2260,7 @@ func add_bookmark() -> void:
 	var g := cur_graph()
 	var list: Array = doc.bp.get("bookmarks", [])
 	var names := list.map(func(b): return b.name)
-	var mark := {"name": Model.unique_name("Bookmark", names), "graph": int(g.id), "zoom": _view.zoom, "sx": _view.scroll_offset.x, "sy": _view.scroll_offset.y}
+	var mark := {"name": Model.unique_name("Bookmark", names), "graph": int(g.id), "zoom": _view.zoom / W.scale(), "sx": _view.scroll_offset.x / W.scale(), "sy": _view.scroll_offset.y / W.scale()}
 	mutate("Add Bookmark", func():
 		if not doc.bp.has("bookmarks"):
 			doc.bp["bookmarks"] = []
@@ -2273,8 +2280,8 @@ func goto_bookmark(index: int) -> void:
 	_refresh_graph()
 	_refresh_members()
 	_refresh_graph_tabs()
-	_view.zoom = float(mark.zoom)
-	_view.scroll_offset = Vector2(float(mark.sx), float(mark.sy))
+	_view.zoom = float(mark.zoom) * W.scale()   # (a view is stored as it is at 100%: see sc_graph_view.gd)
+	_view.scroll_offset = Vector2(float(mark.sx), float(mark.sy)) * W.scale()
 
 
 func _nav_step(dir: int) -> void:
@@ -3458,18 +3465,18 @@ func _section(text: String) -> void:
 	var bold := EditorInterface.get_editor_theme().get_font("bold", "EditorFonts") if EditorInterface.get_editor_theme() else null
 	if bold:
 		head.add_theme_font_override("font", bold)
-	head.add_theme_font_size_override("font_size", 13)
+	head.add_theme_font_size_override("font_size", W.si(13))
 	head.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
 	for state in ["normal", "hover", "pressed", "focus"]:
 		var band := StyleBoxFlat.new()
 		band.bg_color = W.CHROME if state != "hover" else W.EDGE
-		band.border_width_bottom = 1
-		band.border_width_top = 1
+		band.border_width_bottom = W.si(1)
+		band.border_width_top = W.si(1)
 		band.border_color = Color(0, 0, 0, 0.55)
-		band.content_margin_left = 6
-		band.content_margin_right = 6
-		band.content_margin_top = 5
-		band.content_margin_bottom = 5
+		band.content_margin_left = W.si(6)
+		band.content_margin_right = W.si(6)
+		band.content_margin_top = W.si(5)
+		band.content_margin_bottom = W.si(5)
 		head.add_theme_stylebox_override(state, band)
 	var body := VBoxContainer.new()
 	body.add_theme_constant_override("separation", 0)
@@ -3495,10 +3502,10 @@ func _cat_add(control: Control) -> void:
 		return
 	# Free-form content (parameter lists, add buttons, previews) gets the same inset as the rows.
 	var m := MarginContainer.new()
-	m.add_theme_constant_override("margin_left", 18)
-	m.add_theme_constant_override("margin_right", 6)
-	m.add_theme_constant_override("margin_top", 3)
-	m.add_theme_constant_override("margin_bottom", 3)
+	m.add_theme_constant_override("margin_left", W.si(18))
+	m.add_theme_constant_override("margin_right", W.si(6))
+	m.add_theme_constant_override("margin_top", W.si(3))
+	m.add_theme_constant_override("margin_bottom", W.si(3))
 	m.add_child(control)
 	_cat_body.add_child(m)
 
@@ -3517,10 +3524,10 @@ func edit_node_note(nid: int) -> void:
 func _text_box(text: String, on_commit: Callable) -> TextEdit:
 	var te := TextEdit.new()
 	te.text = text
-	te.custom_minimum_size = Vector2(0, 66)
+	te.custom_minimum_size = W.sv(Vector2(0, 66))
 	te.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
 	te.scroll_fit_content_height = true
-	te.add_theme_font_size_override("font_size", 13)
+	te.add_theme_font_size_override("font_size", W.si(13))
 	var shown := [text]   # (what the box held when last committed: the panel is not rebuilt after an edit)
 	te.focus_exited.connect(func():
 		if te.text != shown[0]:
@@ -3605,37 +3612,37 @@ func _row(label: String, control: Control, tip := "", reset := Callable()) -> vo
 	pc.set_meta("row_label", label.to_lower())
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.105, 0.105, 0.11)
-	sb.border_width_bottom = 1
+	sb.border_width_bottom = W.si(1)
 	sb.border_color = Color(0, 0, 0, 0.5)
-	sb.content_margin_left = 18
-	sb.content_margin_right = 6
-	sb.content_margin_top = 3
-	sb.content_margin_bottom = 3
+	sb.content_margin_left = W.si(18)
+	sb.content_margin_right = W.si(6)
+	sb.content_margin_top = W.si(3)
+	sb.content_margin_bottom = W.si(3)
 	pc.add_theme_stylebox_override("panel", sb)
 	pc.mouse_entered.connect(func(): sb.bg_color = Color(0.135, 0.135, 0.14))
 	pc.mouse_exited.connect(func(): sb.bg_color = Color(0.105, 0.105, 0.11))
 	var hb := HBoxContainer.new()
-	hb.add_theme_constant_override("separation", 8)
+	hb.add_theme_constant_override("separation", W.si(8))
 	var l := Label.new()
 	l.text = label
-	l.custom_minimum_size.x = 132
+	l.custom_minimum_size.x = W.s(132)
 	l.clip_text = true
 	if label.length() > 20:   # (a long name wraps instead of being cut: the Comment rows)
 		l.clip_text = false
 		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		l.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	l.add_theme_font_size_override("font_size", 13)
+	l.add_theme_font_size_override("font_size", W.si(13))
 	l.add_theme_color_override("font_color", Color(1, 1, 1, 0.8))
 	l.tooltip_text = tip if tip != "" else label
 	l.mouse_filter = Control.MOUSE_FILTER_PASS
 	hb.add_child(l)
 	var div := ColorRect.new()
 	div.color = Color(0, 0, 0, 0.45)
-	div.custom_minimum_size.x = 1
+	div.custom_minimum_size.x = W.s(1)
 	div.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hb.add_child(div)
 	if control is LineEdit or control is BaseButton:
-		control.add_theme_font_size_override("font_size", 13)
+		control.add_theme_font_size_override("font_size", W.si(13))
 	if control is CheckBox:
 		control.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 		var filler := Control.new()
@@ -3702,12 +3709,12 @@ func _note(text: String) -> void:
 	l.text = text
 	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	l.add_theme_color_override("font_color", Color(1, 1, 1, 0.55))
-	l.add_theme_font_size_override("font_size", 12)
+	l.add_theme_font_size_override("font_size", W.si(12))
 	var m := MarginContainer.new()
-	m.add_theme_constant_override("margin_left", 18)
-	m.add_theme_constant_override("margin_right", 8)
-	m.add_theme_constant_override("margin_top", 6)
-	m.add_theme_constant_override("margin_bottom", 6)
+	m.add_theme_constant_override("margin_left", W.si(18))
+	m.add_theme_constant_override("margin_right", W.si(8))
+	m.add_theme_constant_override("margin_top", W.si(6))
+	m.add_theme_constant_override("margin_bottom", W.si(6))
 	m.add_child(l)
 	_cat_add(m)
 
@@ -3778,7 +3785,7 @@ func _fill_details() -> void:
 			_row("Run in Editor", _check_box(bool(bp.get("tool", false)), func(on):
 				mutate("Toggle Tool", func(): bp["tool"] = on)), "Adds @tool: events also run inside the editor (construction-script style).")
 			_row("Show Flow and Values", _check_box(bool(bp.get("trace", false)), func(on):
-				mutate("Toggle Execution Flow", func(): bp["trace"] = on)), "Debug aid: while the game runs from the editor, nodes light up as they execute and each wired input pin shows the last value it received. Adds tracing calls to the generated code (pure nodes feeding a pin are evaluated one extra time), so turn it off before shipping.")
+				mutate("Toggle Execution Flow", func(): bp["trace"] = on)), "Debug aid: while the game runs from the editor, nodes light up as they execute and each wired input pin shows the last value it received. Adds tracing calls to the generated code, so turn it off before shipping (exporting a release warns about files that still have it on). A value is shown only where reading it a second time changes nothing: not a random number, and not a call that runs in place. Static functions are not traced.")
 			_row("Description", _line(String(bp.get("description", "")), func(t: String):
 				mutate("Set Description", func(): bp["description"] = t)))
 			_note("File: %s\n\nThis schematic compiles to plain GDScript in the same file, so it attaches to nodes, exports variables to the Inspector and is callable from any script exactly like hand-written GDScript." % doc.path)
@@ -4090,7 +4097,7 @@ func _node_details(g: Dictionary, n: Dictionary) -> void:
 		"code":
 			var te := TextEdit.new()
 			te.text = String(p.get("code", ""))
-			te.custom_minimum_size = Vector2(0, 140)
+			te.custom_minimum_size = W.sv(Vector2(0, 140))
 			te.focus_exited.connect(func():
 				if te.text != String(p.get("code", "")):
 					mutate("Edit Code", func(): p["code"] = te.text))
@@ -4250,7 +4257,7 @@ func _timeline_details(n: Dictionary) -> void:
 			var te := _line(str(float(key[0])), func(t: String):
 				mutate("Move Key", func(): key[0] = clampf(t.to_float(), 0.0, length), false)
 				_refresh_details())
-			te.custom_minimum_size.x = 56
+			te.custom_minimum_size.x = W.s(56)
 			row.add_child(te)
 			var ed := W.make_value_editor(tt, "", String(key[1]), func(lit: String):
 				if String(key[1]) != lit:

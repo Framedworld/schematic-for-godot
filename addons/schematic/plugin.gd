@@ -19,6 +19,7 @@ var _fs_menu: EditorContextMenuPlugin
 var _fs_file_menu: EditorContextMenuPlugin
 var _tree_menu: EditorContextMenuPlugin
 var _debugger: EditorDebuggerPlugin
+var _export_check: EditorExportPlugin
 
 
 class FsMenu extends EditorContextMenuPlugin:
@@ -99,6 +100,8 @@ func _enter_tree() -> void:
 	editor.debugger = _debugger
 	editor.debug_panel.plugin_debugger = _debugger
 	add_debugger_plugin(_debugger)
+	_export_check = load("res://addons/schematic/editor/sc_export_check.gd").new()
+	add_export_plugin(_export_check)
 	_watch_file_dock()
 	_watch_kits()
 	# a script saved in Godot (its script editor) may be an open Schematic edited there by hand
@@ -117,6 +120,9 @@ func _exit_tree() -> void:
 		_screen.queue_free()
 	if _debugger:
 		remove_debugger_plugin(_debugger)
+	if _export_check:
+		remove_export_plugin(_export_check)
+		_export_check = null
 	_unwatch_file_dock()
 	_unwatch_kits()
 	if _fs_menu:
