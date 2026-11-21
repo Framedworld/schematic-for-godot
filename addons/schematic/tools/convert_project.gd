@@ -3,9 +3,18 @@ extends Node
 ##
 ##   godot --headless --path <project> res://addons/schematic/tools/convert_project.tscn
 ##   options after `--`:  --dry (only print the report)   --only=scripts,scenes (convert just these folders)
+##                        --list=res://convert_list.txt (and the scripts this file names: one res:// path a line,
+##                          `#` starts a comment; with --only, both are converted; with neither, the whole project)
+##                        --skip=scripts/tests,scripts/tools (never the scripts in these folders)
+##                        --not-extending=BTAction,Limbo*,res://addons/ (never a script whose parent, at any depth,
+##                          is one of these: a class, every class whose name begins so, or a script in a folder)
 ##                        --quiet (one line per script, no notes)
 ##                        --no-reuse (leave repeated groups of nodes as they are)
 ##                        --library=res://shared_macros.gd (where macros shared between scripts go)
+##                        --again (convert from the kept original even if the Schematic was saved in the editor since)
+##                        --drop-originals (remove the kept originals when done: for a project under version control)
+##                        --no-autoload-names (do not give an autoload's script the class name SC_<AutoloadName>)
+##                        --options=res://convert.options (read options from a file, one a line)
 ##
 ## After converting, groups of nodes that repeat become macros (tools/reuse_project.gd). That changes the
 ## graphs only: the generated scripts stay the same.
@@ -17,6 +26,9 @@ extends Node
 ## copy, so the tool can be run again. Run it, let Godot import the project (godot --headless --import), and
 ## run it a second time: the second run can use the classes the first one registered, so calls between
 ## scripts (to an autoload, for instance) become nodes instead of carried-over code.
+## A Schematic that was saved from the editor since it was converted is not converted again (that would write
+## over what was changed in its graph): the converter marks what it writes, and a save from the editor takes
+## the mark away. --again converts it from its kept original all the same.
 ## A script whose converted form does not compile is left as it was.
 
 const ProjectFiles := preload("res://addons/schematic/core/sc_project_files.gd")
@@ -76,30 +88,164 @@ func _loads(code: String, path: String, dry: bool) -> bool:
 	return accepted
 
 
+## The options given after `--`, with those of every --options=<file> (one option a line, `#` starts a comment)
+## put where the file was named, so an option written after it on the command line is the later one.
+static func read_args(args: PackedStringArray, depth := 0) -> PackedStringArray:
+	var out := PackedStringArray()
+	for arg in args:
+		if not arg.begins_with("--options=") or depth > 4:
+			out.append(arg)
+			continue
+		var file := arg.trim_prefix("--options=")
+		if not FileAccess.file_exists(file):
+			print("SKIP  %s  the options file was not found" % file)
+			continue
+		var lines := PackedStringArray()
+		for raw in FileAccess.get_file_as_string(file).split("\n"):
+			var line := raw.strip_edges()
+			if line != "" and not line.begins_with("#"):
+				lines.append(line)
+		out.append_array(read_args(lines, depth + 1))
+	return out
+
+
+## The values of every `--name=a,b` in `args`, together.
+static func list_arg(args: PackedStringArray, name: String) -> PackedStringArray:
+	var out := PackedStringArray()
+	for arg in args:
+		if arg.begins_with("--%s=" % name):
+			out.append_array(arg.trim_prefix("--%s=" % name).split(",", false))
+	return out
+
+
+## True when the script's text gives it a class name (on any line, the first included).
+static func has_class_name(source: String) -> bool:
+	return source.begins_with("class_name ") or source.contains("\nclass_name ")
+
+
+## What a script's text says it extends: a script path (res://...), or a class name as written; "RefCounted" when
+## it says nothing. `class_paths` (class name -> script path) turns the name of a script class into its path.
+static func parent_of(source: String, class_paths: Dictionary) -> String:
+	for line in source.split("\n"):
+		# `extends Y` on a line of its own, or `class_name X extends Y`
+		var at := -1
+		if line.begins_with("extends "):
+			at = 0
+		elif line.begins_with("class_name ") and line.contains(" extends "):
+			at = line.find(" extends ") + 1
+		if at == -1:
+			continue
+		var named := line.substr(at + 8).strip_edges().get_slice(" ", 0).get_slice("#", 0)
+		if named.begins_with("\""):
+			return named.trim_prefix("\"").trim_suffix("\"")
+		named = named.get_slice(".", 0)
+		return String(class_paths.get(named, named))
+	return "RefCounted"
+
+
+## For --not-extending: the parent (at any depth) that keeps the script at `path` as GDScript, or "" when none does.
+## A pattern is a class name (`BTAction`; `BT*` for every name that begins so; a class of the engine also stands
+## for the classes derived from it) or a folder (`res://addons/`: any script under it).
+func _kept_parent(path: String, patterns: PackedStringArray, class_paths: Dictionary, depth := 0) -> String:
+	if patterns.is_empty() or depth > 32:
+		return ""
+	var kept := path + ".orig"
+	var parent := parent_of(FileAccess.get_file_as_string(kept if FileAccess.file_exists(kept) else path), class_paths)
+	if parent.begins_with("res://"):
+		var parent_name := ""
+		for cn in class_paths:
+			if String(class_paths[cn]) == parent:
+				parent_name = String(cn)
+		for pattern in patterns:
+			if (pattern.begins_with("res://") and parent.begins_with(pattern)) or (parent_name != "" and _names(pattern, parent_name)):
+				return parent_name if parent_name != "" else parent
+		return _kept_parent(parent, patterns, class_paths, depth + 1)
+	var cls := parent
+	while cls != "":
+		for pattern in patterns:
+			if _names(pattern, cls):
+				return cls
+		cls = String(ClassDB.get_parent_class(cls)) if ClassDB.class_exists(cls) else ""
+	return ""
+
+
+static func _names(pattern: String, cls: String) -> bool:
+	return cls.begins_with(pattern.trim_suffix("*")) if pattern.ends_with("*") else cls == pattern
+
+
+## The scripts this run looks at: the whole project, or the --only folders and the --list files, without the
+## --skip folders and the scripts --not-extending keeps.
+func _scope(args: PackedStringArray) -> Array:
+	var found := []
+	var only := list_arg(args, "only")
+	var lists := list_arg(args, "list")
+	if only.is_empty() and lists.is_empty():
+		_find("res://", found)
+	for folder in only:
+		_find("res://" + folder.trim_prefix("res://").trim_suffix("/"), found)
+	for list in lists:
+		if not FileAccess.file_exists(list):
+			print("SKIP  %s  the list was not found" % list)
+			continue
+		for raw in FileAccess.get_file_as_string(list).split("\n"):
+			var line := raw.strip_edges()
+			if line == "" or line.begins_with("#"):
+				continue
+			if line.get_extension() != "gd" or not FileAccess.file_exists(line):
+				print("SKIP  %s  listed in %s, but there is no such script" % [line, list.get_file()])
+			elif not found.has(line):
+				found.append(line)
+	var skip := PackedStringArray()
+	for folder in list_arg(args, "skip"):
+		skip.append("res://" + folder.trim_prefix("res://").trim_suffix("/") + "/")
+	var not_extending := list_arg(args, "not-extending")
+	var class_paths := {}
+	for entry in ProjectSettings.get_global_class_list():
+		class_paths[String(entry["class"])] = String(entry["path"])
+	var files := []
+	var left := {}   # why -> how many scripts
+	for path in found:
+		var why := ""
+		for folder in skip:
+			if String(path).begins_with(folder):
+				why = "in " + folder
+		if why == "":
+			var parent := _kept_parent(path, not_extending, class_paths)
+			if parent != "":
+				why = "extends " + parent
+		if why == "":
+			files.append(path)
+		else:
+			left[why] = int(left.get(why, 0)) + 1
+	for why in left:
+		print("left as GDScript: %d script(s) %s" % [int(left[why]), why])
+	return files
+
+
 func _ready() -> void:
-	var dry := OS.get_cmdline_user_args().has("--dry")
+	run(read_args(OS.get_cmdline_user_args()))
+	get_tree().quit()
+
+
+## Converts the scripts the options name. Returns {converted: [paths], failed: [paths], skipped: [paths]}.
+func run(args: PackedStringArray) -> Dictionary:
+	var dry := args.has("--dry")
 	T.refresh_globals()
 	R.ensure_api()
 	var autoload_of := {}   # script path -> autoload name
 	for prop in ProjectSettings.get_property_list():
 		if String(prop.name).begins_with("autoload/"):
 			autoload_of[String(ProjectSettings.get_setting(prop.name)).trim_prefix("*")] = String(prop.name).substr(9)
-	var files := []
-	var quiet := OS.get_cmdline_user_args().has("--quiet")
-	var only := PackedStringArray()
-	for arg in OS.get_cmdline_user_args():
-		if arg.begins_with("--only="):
-			only = arg.trim_prefix("--only=").split(",", false)
-	if only.is_empty():
-		_find("res://", files)
-	for folder in only:
-		_find("res://" + folder.trim_suffix("/"), files)
+	var files := _scope(args)
+	var quiet := args.has("--quiet")
+	var again := args.has("--again")
 	var library := "res://shared_macros.gd"
-	for arg in OS.get_cmdline_user_args():
+	for arg in args:
 		if arg.begins_with("--library="):
 			library = arg.trim_prefix("--library=")
 	var converted := []   # [{path, bp}] for reuse
 	var failed := []
+	var skipped := []
 	var lines := 0
 	var as_code := 0
 	var done := 0
@@ -111,12 +257,19 @@ func _ready() -> void:
 			source = FileAccess.get_file_as_string(orig)
 			if current != source and not ReuseTool.matches_disk(current, Model.parse_source(current)):
 				print("SKIP  %s  edited since conversion" % path)
+				skipped.append(path)
+				continue
+			# Converting from the kept original again would write over a graph that was changed in the editor.
+			if current != source and not again and Model.is_schematic_source(current) and not Model.is_as_converted(current):
+				print("SKIP  %s  saved from the Schematic editor since it was converted (or converted by Schematic 0.4.0 or older); --again converts it from %s anyway" % [path, orig.get_file()])
+				skipped.append(path)
 				continue
 		if Model.is_schematic_source(source):
 			continue   # made in the Schematic editor (or the macro library), nothing to convert
 		var opts := {"path": path}
-		# an autoload is reached by its name; giving its script a class name lets other schematics call it with nodes
-		if autoload_of.has(path) and not source.contains("\nclass_name "):
+		# an autoload is reached by its name; giving its script a class name lets other schematics name its type
+		# (they call it with nodes either way: without a class name it is known by its script's path)
+		if autoload_of.has(path) and not has_class_name(source) and not args.has("--no-autoload-names"):
 			opts["class_name"] = "SC_" + String(autoload_of[path])
 		var imp := Importer.new()
 		var out := imp.convert(source, opts)
@@ -159,7 +312,7 @@ func _ready() -> void:
 			# (an .orig that is already there is the source this run converted from, so there is nothing to keep again)
 			var problem := "" if FileAccess.file_exists(orig) else Model.write_text(orig, source)
 			if problem == "":
-				problem = Model.write_text(path, Model.build_source(code, out.bp))
+				problem = Model.write_text(path, Model.build_source(code, out.bp, true))
 			if problem != "":
 				push_error("Not converted: " + problem)
 				print("FAIL  %s  %s" % [path, problem])
@@ -172,6 +325,13 @@ func _ready() -> void:
 	print("converted %d of %d scripts; %d of %d lines became nodes, %d were carried over as code" % [done, files.size(), lines - as_code, lines, as_code])
 	for path in failed:
 		print("left as GDScript: ", path)
-	if not OS.get_cmdline_user_args().has("--no-reuse") and not converted.is_empty():
+	if not args.has("--no-reuse") and not converted.is_empty():
 		ReuseTool.reuse(converted, library, dry, quiet)
-	get_tree().quit()
+	if args.has("--drop-originals") and not dry:
+		var dropped := 0
+		for path in files:
+			if FileAccess.file_exists(String(path) + ".orig") and Model.is_schematic_file(path) \
+					and DirAccess.remove_absolute(ProjectSettings.globalize_path(String(path) + ".orig")) == OK:
+				dropped += 1
+		print("removed the kept original of %d converted script(s)" % dropped)
+	return {"converted": converted.map(func(c): return String(c.path)), "failed": failed, "skipped": skipped}

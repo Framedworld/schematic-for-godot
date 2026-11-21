@@ -3958,7 +3958,8 @@ func _fill_details() -> void:
 ## Reset arrow for a variable's default value; empty Callable (no arrow) while the default is untouched.
 ## Class Settings > Interfaces: the interfaces this schematic implements, and a button to add one.
 func _interface_rows(bp: Dictionary) -> void:
-	R.invalidate_libraries()
+	# (the list of interfaces is made anew when a Schematic is saved or the project's files change: see _init and
+	# R.invalidate_libraries. Doing it here as well read every Schematic of the project each time this panel was shown.)
 	var mine: Array = bp.get("interfaces", [])
 	for iname in mine:
 		var rm := Button.new()

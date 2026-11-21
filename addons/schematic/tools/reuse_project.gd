@@ -88,12 +88,14 @@ static func reuse(candidates: Array, library: String, dry: bool, quiet: bool) ->
 				continue
 			var c := Compiler.new()
 			var code: String = c.compile(f.bp)
-			if FileAccess.get_file_as_string(f.path).md5_text() != snapshots[f.path]:
+			var on_disk := FileAccess.get_file_as_string(f.path)
+			if on_disk.md5_text() != snapshots[f.path]:
 				print("SKIP  %s  changed during reuse" % f.path)
 				skipped.append(f.path)
 				rep.changed.erase(f.path)
 				continue
-			var problem := Model.write_text(String(f.path), Model.build_source(code, f.bp))
+			# (a script the converter just wrote stays marked as the converter's: see Model.is_as_converted)
+			var problem := Model.write_text(String(f.path), Model.build_source(code, f.bp, Model.is_as_converted(on_disk)))
 			if problem != "":
 				rep.changed.erase(f.path)
 				skipped.append(f.path)

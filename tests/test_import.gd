@@ -526,8 +526,9 @@ func _init() -> void:
 	check("locals are declared where they are first set, inferred as written", fast_code.contains("\tvar sum := 0.0\n") and fast_code.contains("\tvar rounded := snappedf(value, 0.5)\n") and fast_code.contains("\tvar made := 0\n"))
 	check("a call that feeds the next variable needs no temporary", fast_code.contains("var bonus := extra(sum)") and fast_code.contains("var text := name_for(rounded)") and fast_code.contains("total = tally(2)"))
 	check("a counted loop is written as range(count)", fast_code.contains(" in range(count):") and fast_code.contains(" in range(2, count):") and not fast_code.contains("+ 1"))
-	# (a whole return value written without brackets comes back without its outer ones)
-	check("a negation stays a negation", fast_code.contains("return (-value) * STEP") and not fast_code.contains("* -1"))
+	# (a whole return value written without brackets comes back without its outer ones, and so does the negation in
+	# it: it binds tighter than the `*` around it)
+	check("a negation stays a negation", fast_code.contains("return -value * STEP") and not fast_code.contains("* -1"))
 	check("a formatted string needs no conversion", fast_code.contains("return \"cell_%d\" % index") and not fast_code.contains("str("))
 	check("a local of an event is a local, not a member, named as written", fast_code.contains("\tvar half := STEP * 0.5\n") and fast_code.contains("\tvar names := [") and not fast_code.contains("\nvar half") and not fast_code.contains("\nvar names"), fast_code)
 	# A local the script names in a string, as a tween of self names a property: in the script the string reaches

@@ -218,6 +218,26 @@ that line.
   overwritten). A whole project converts with
   `godot --headless --path <project> res://addons/schematic/tools/convert_project.tscn -- --only=scripts,scenes`
   (run it, import, run it again; `--only` keeps it to the folders named, so a project's own tests and tools stay scripts).
+  To convert part of a project and leave the rest as GDScript, say which part:
+  - `--list=res://convert_list.txt` converts the scripts a text file names, one `res://` path a line (`#` starts a
+    comment); with `--only`, both are converted;
+  - `--skip=scripts/tests,scripts/tools` never converts the scripts in those folders;
+  - `--not-extending=BTAction,Limbo*,res://addons/` never converts a script whose parent, at any depth, is one of
+    those: a class, every class whose name begins so, or any script in a folder. It keeps scripts that plug into
+    another addon as that addon expects them;
+  - `--options=res://convert.options` reads options from a file, one a line, so a project keeps its scope in one place.
+
+  A Schematic that was saved from the editor since it was converted is not converted again from its kept original
+  (that would write over what was changed in its graph); `--again` converts it anyway. `--drop-originals` removes the
+  kept originals when the run is done, for a project whose history is in version control.
+  An autoload is called with typed nodes whether or not its script has a class name. The converter gives the script of
+  an autoload it converts the class name `SC_<AutoloadName>` if it has none; `--no-autoload-names` leaves it without.
+- **Code edited outside the editor**: a Schematic's code can be edited as text, by hand, by a merge or by another
+  tool. The editor notices and offers **Re-import Code** for the file that is open. For a whole project,
+  `godot --headless --path <project> res://addons/schematic/tools/reimport_project.tscn` brings every such edit back
+  into its graph and writes the files; a file it cannot bring in is left as it is and named with the reason.
+  `-- --check` writes nothing and exits with 1 when any Schematic's code is not its graph's, which a test run or a
+  commit hook can use. It takes `--only`, `--list` and `--options` like the converter.
   What GDScript can say and a plain Schematic could not is covered by node forms rather than code blocks:
   - a call that must run where its value is read (`a and f()`, `g(x, f())`, `f() if c else h()`) is a call node marked
     **runs in place**: it has no exec pins and is written into the line that reads it;
@@ -231,9 +251,12 @@ that line.
     (or with optional parameters and captured values) it is a **Lambda** node, which makes a separate Callable each time.
     In the generated code it is written back as the lambda it was, in the place it stood, so calling it costs what it
     cost before;
-  - comments are kept where they were written: above a statement, at the end of a line, at the end of a block,
-    above a function or a variable. They sit on the node as a bubble you can edit in the Details panel, and are
-    written back into the code; blank lines inside a function are kept too;
+  - comments are kept where they were written: above a statement, at the end of a line (an `elif` or `else:` line
+    included), at the end of a block, above a function or a variable. They sit on the node as a bubble you can edit
+    in the Details panel, and are written back into the code; blank lines inside a function are kept too;
+  - an `elif` is written back as an `elif`, and a value written without brackets comes back without them wherever
+    it means the same: a whole right-hand side or condition, an argument, an operator that binds tighter than the
+    one around it (`a == b and c`, `x * 2 + y`). A graph made in the editor is written with every bracket, as before;
   - an event keeps the parameter names the script gave it (`func _process(dt)` stays `dt`, on the pin and in the code);
     its locals and every loop variable keep their names too (`var speed`, `for y in range(h)`), and get a suffix or
     a number only where two of them would otherwise clash;

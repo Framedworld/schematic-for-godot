@@ -67,7 +67,7 @@ func v7_tests() -> void:
 	var far := v7_name_nodes(g, false)
 	v7_check("v7 far parameter: the importer made a name node with `of`", far.size() == 1 and String(far[0].p.expr) == "dt" and int(far[0].p.of) == 1)
 	var res := v7_compile(bp)
-	v7_check("v7 far parameter read in its own event: compiles with no error", res[1].is_empty() and String(res[0]).contains("print((dt * 2.0))"), str(res[1]))
+	v7_check("v7 far parameter read in its own event: compiles with no error", res[1].is_empty() and String(res[0]).contains("print(dt * 2.0)"), str(res[1]))
 
 	# the same name node feeding a node of another event
 	bp = v7_bp()
@@ -101,7 +101,7 @@ func v7_tests() -> void:
 	var bound := v7_name_nodes(g, true)
 	v7_check("v7 match: the importer made name nodes with bound, of and arm", bound.size() == 2 and bound.all(func(n): return int(n.p.of) == int(v7_node(g, "switch", "t", "any").id) and n.p.arm == "case_0"))
 	res = v7_compile(bp)
-	v7_check("v7 match name read inside its case: compiles with no error", res[1].is_empty() and String(res[0]).contains("print((p + q))"), str(res[1]))
+	v7_check("v7 match name read inside its case: compiles with no error", res[1].is_empty() and String(res[0]).contains("print(p + q)"), str(res[1]))
 	var after := v7_node(g, "util", "a0", "\"after\"")
 	v7_feed(g, bound[0], after, "a0")
 	res = v7_compile(bp)
@@ -175,7 +175,7 @@ func lambda_tests() -> void:
 	for i in lines.size():
 		if lines[i].contains("var get_cell := func("):
 			head_line = i + 1
-		if lines[i].strip_edges() == "return grid[((y * w) + x)]":
+		if lines[i].strip_edges() == "return grid[y * w + x]":
 			body_line = i + 1
 	var lgid := int(lg.get("id", -1))
 	var at: Array = c.line_map.get(body_line, [])

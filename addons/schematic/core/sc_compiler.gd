@@ -9,6 +9,7 @@ extends RefCounted
 const T := preload("res://addons/schematic/core/sc_types.gd")
 const Model := preload("res://addons/schematic/core/sc_model.gd")
 const R := preload("res://addons/schematic/core/sc_registry.gd")
+const Parser := preload("res://addons/schematic/core/sc_gd_parser.gd")
 
 const MAX_STATEMENTS := 20000
 ## A macro use can say what each loop inside the macro calls its variable at that use (`p.vars`: loop node id in
@@ -44,6 +45,7 @@ var text_lines := PackedInt32Array()
 var comment_lines: Dictionary = {}
 var _cur_block := ""
 var _chain_from := 0   # the node whose exec pin leads to the chain about to be written (0: not known)
+var _arm_traces := {}  # a Branch written as an `elif` -> the trace lines its arms begin with (see _fold_elif)
 
 var _members: Array = []    # [text, gid, nid]
 var _blocks: Array = []     # [{name, header, lines, gid, nid}]
@@ -903,7 +905,8 @@ func _line(ind: int, text: String, nid: int, keep_tail := false) -> void:
 # ---------------------------------------------------------------- comments
 # COMMENTS. A node an imported script's statement became carries the comments written with it (see the importer's
 # _block and the parser's COMMENTS): p.note (lines above), p.tail (the end of its line), p.after (lines below),
-# p.empty ({exec pin: {note, tail}}: comments of a block that became no node, written with its `pass`). A line
+# p.empty ({exec pin: {note, tail}}: comments of a block that became no node, written with its `pass`); a Branch's
+# p.else_tail (the end of its `else:` line; the end of an `elif` line is the p.tail of the Branch it became). A line
 # of `note` or `after` is "" (a blank line) or a comment from its `#`, with a tab in front for each block it is
 # indented deeper than the statement and a "<" for each block shallower. A graph made in the editor has none of
 # these and is written exactly as before.
@@ -1890,7 +1893,13 @@ func _chain(nid: int, pin: String, ind: int, scope: Dictionary) -> bool:
 			var came := int(_origin.get(from, from))
 			if came != 0 and came != int(_origin.get(nid, nid)):
 				watch = (watch if watch != "" else ", {}") + ", %d" % came
-			_line(ind, "__sc_trace(%d, %d%s)" % [_gid, int(_origin.get(nid, nid)), watch], nid)
+			var trace_line := "__sc_trace(%d, %d%s)" % [_gid, int(_origin.get(nid, nid)), watch]
+			if _arm_traces.has(nid):
+				# (a Branch that is an `elif`: a line above its `if` would make it an else with an if inside, so the
+				# line is written first thing in each of its arms instead; the code is the same with the trace on or off)
+				_arm_traces[nid].append(trace_line)
+			else:
+				_line(ind, trace_line, nid)
 		# (a reroute is a knot on the wire, not a place execution stops at: what comes after it was reached from
 		# the node before it, and the editor lights every piece of the wire between the two)
 		if String(_nodes[nid].kind) != "reroute":
@@ -1927,6 +1936,53 @@ func _empty_comments(nid: int, out_pin: String, ind: int) -> void:
 	var empty: Dictionary = _nodes.get(nid, {}).get("p", {}).get("empty", {})
 	if empty.has(out_pin):
 		_carry_node(empty[out_pin], ind)
+
+
+## The Branch that an imported script wrote as an `elif` of Branch `id` (the importer marks it so): the node the
+## False pin of `id` leads to, past any reroutes. -1 when it leads to anything else.
+func _elif_head(id: int) -> int:
+	var tgt := _follow(id, "false")
+	var knots := 0
+	while _nodes.has(int(tgt[0])) and String(_nodes[int(tgt[0])].kind) == "reroute" and knots < 100:
+		tgt = _follow(int(tgt[0]), "o")
+		knots += 1
+	if not _nodes.has(int(tgt[0])):
+		return -1
+	var inner: Dictionary = _nodes[int(tgt[0])]
+	return int(inner.id) if String(inner.kind) == "branch" and bool(inner.p.get("elif", false)) else -1
+
+
+## Writes `else:` and, inside it, a Branch that an imported script wrote as an `elif` (see _elif_head) as an `elif`
+## again. `at` is where the lines the else of Branch `id` wrote begin (its `else:` line, at indentation `ind`, is
+## the one before). It is done only where the text shows it is still an elif: the marked Branch's `if` is the
+## first line the else wrote and everything after it belongs to that `if`, and neither line has comment lines
+## that would then stand between the branches. Those lines move up one block and the `else:` line goes.
+## A Branch made in the editor has no mark, so a graph made there is written exactly as before.
+## (With Show Flow and Values on, the trace line of such a Branch is written inside its arms, not above its `if`:
+## see _arm_traces.)
+func _fold_elif(id: int, ind: int, at: int) -> void:
+	var inner_id := _elif_head(id)
+	if at < 1 or at >= _out.size() or inner_id == -1:
+		return
+	var inner: Dictionary = _nodes[inner_id]
+	var else_line: Array = _out[at - 1]
+	var head: Array = _out[at]
+	if else_line.size() > 5 or int(else_line[0]) != ind or String(else_line[1]) != "else:":
+		return
+	if int(head[0]) != ind + 1 or not String(head[1]).begins_with("if ") or int(head[3]) != int(_origin.get(int(inner.id), int(inner.id))):
+		return
+	if head.size() > 5 and head[5] is Dictionary and not (head[5] as Dictionary).get("above", []).is_empty():
+		return
+	for k in range(at + 1, _out.size()):
+		var line: Array = _out[k]
+		var same_block := int(line[0]) == ind + 1
+		var goes_on: bool = line.size() > 4 and line[4] is bool and bool(line[4])   # (the rest of a line that holds a lambda)
+		if int(line[0]) < ind + 1 or (same_block and not goes_on and String(line[1]) != "else:" and not String(line[1]).begins_with("elif ")):
+			return
+	_out.remove_at(at - 1)
+	for k in range(at - 1, _out.size()):
+		_out[k][0] = int(_out[k][0]) - 1
+	_out[at - 1][1] = "el" + String(_out[at - 1][1])
 
 
 ## Like _sub, but runs the chain as a detached coroutine when it contains latent nodes, so the caller
@@ -2177,12 +2233,27 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 			_line(ind, "%sadd_child(%s)" % ["" if par == "self" else par + ".", v], id)
 			return _follow(id, "then")
 		"branch":
+			var arm_traces: Array = _arm_traces.get(id, [])
+			_arm_traces.erase(id)
 			_line(ind, "if %s:" % _in(n, "cond", scope), id)
+			for trace_line in arm_traces:
+				_line(ind + 1, String(trace_line), id)
 			_sub(id, "true", ind + 1, scope)
 			# (an imported `else:` of nothing but `pass` and comments is written for its comments: see COMMENTS)
 			if _wired_out(id, "false") or p.get("empty", {}).has("false"):
 				_line(ind, "else:", id)
+				if String(p.get("else_tail", "")) != "":
+					_with_comments(_out[-1], {"tail": String(p.else_tail)})   # the comment an imported script ended its `else:` line with
+				var else_at := _out.size()
+				var next_elif := _elif_head(id) if bp.get("trace", false) else -1
+				if next_elif != -1:
+					_arm_traces[next_elif] = arm_traces.duplicate()   # (it adds its own, and its arms begin with them all)
+				else:
+					for trace_line in arm_traces:
+						_line(ind + 1, String(trace_line), id)
 				_sub(id, "false", ind + 1, scope)
+				_arm_traces.erase(next_elif)
+				_fold_elif(id, ind, else_at)
 			return STOP
 		"sequence":
 			var cnt := int(p.get("n", 2))
@@ -2538,15 +2609,60 @@ func _in(n: Dictionary, pid: String, scope: Dictionary) -> String:
 const WHOLE_PINS := {"local_set": ["value"], "var_set": ["value"], "set_prop": ["value"], "dyn_set": ["value"], "set_index": ["v"],
 	"branch": ["cond"], "while": ["cond"], "fn_return": ["r_result"]}
 
+## Nodes whose inputs (all but `target`) are written between commas inside brackets, as arguments or items: what
+## is read there needs no brackets of its own either.
+const LISTED_KINDS := ["call", "bcall", "util", "dyn_call", "call_parent", "call_self", "ctor", "make_array", "make_dict", "print", "emit"]
+## Operators that are read from the left: `a - b - c` is `(a - b) - c`.
+const LEFT_TO_RIGHT := ["+", "-", "*", "/", "%", "and", "or", "&", "|", "^", "<<", ">>"]
+
 ## `e` without the outer brackets the value node `src` writes around it, when an imported script wrote it so (the
-## importer marks such a node `unbracketed`) and it is read whole here (WHOLE_PINS); `e` as it is otherwise.
+## importer marks such a node `unbracketed`) and the place it is read in needs none: it is read whole here
+## (WHOLE_PINS), as an argument or item (LISTED_KINDS) or an index, or by an operator that it binds tighter than
+## (_binds_tighter). `e` as it is otherwise.
 ## A graph made in the editor never has the mark, so it is written exactly as before.
 func _unbracket(n: Dictionary, pid: String, src: Dictionary, e: String) -> String:
-	if not bool(src.p.get("unbracketed", false)) or not WHOLE_PINS.get(String(n.kind), []).has(pid):
+	if not bool(src.p.get("unbracketed", false)):
 		return e
 	if e.length() < 2 or e[0] != "(" or not _closes_at_end(e):
 		return e
-	return e.substr(1, e.length() - 2)
+	return e.substr(1, e.length() - 2) if reads_bare(src, n, pid) else e
+
+
+## True when value node `src`, read on pin `pid` of node `n`, needs no brackets around what it writes there.
+static func reads_bare(src: Dictionary, n: Dictionary, pid: String) -> bool:
+	var kind := String(n.kind)
+	return WHOLE_PINS.get(kind, []).has(pid) or (kind in LISTED_KINDS and pid != "target") or (kind in ["index", "set_index"] and pid == "k") \
+		or _binds_tighter(src, n, pid)
+
+
+## The operator an operator node writes, as [operator, how tightly it binds (the parser's scale), true for one
+## with a single operand]; [] for any other node.
+static func _operator_of(n: Dictionary) -> Array:
+	var op := String(n.p.get("op", ""))
+	if String(n.kind) == "math":
+		return ["not", Parser.PREC_NOT, true] if op == "not" else [op, int(Parser.BINARY.get(op, 0)), false]
+	if String(n.kind) != "op":
+		return []
+	if String(n.p.get("r", "")) != "":
+		return [op, int(Parser.BINARY.get(op, 0)), false]
+	match op:
+		"not": return ["not", Parser.PREC_NOT, true]
+		"unary-": return ["-", Parser.PREC_SIGN, true]
+		"unary~": return ["~", Parser.PREC_BIT_NOT, true]
+	return []
+
+
+## True when operator node `src`, read on pin `pid` of operator node `n`, means the same without brackets around
+## it: its operator binds tighter than the one of `n`, or as tightly on the left side of one read from the left.
+static func _binds_tighter(src: Dictionary, n: Dictionary, pid: String) -> bool:
+	var inner := _operator_of(src)
+	var outer := _operator_of(n)
+	if inner.is_empty() or outer.is_empty() or int(inner[1]) == 0 or int(outer[1]) == 0:
+		return false
+	if int(inner[1]) > int(outer[1]):
+		return true
+	return int(inner[1]) == int(outer[1]) and pid in ["a0", "a"] and not bool(inner[2]) and not bool(outer[2]) \
+		and String(inner[0]) in LEFT_TO_RIGHT and String(outer[0]) in LEFT_TO_RIGHT
 
 
 ## Replaces every whole-word use of `word` in GDScript text, leaving string literals, comments and `.member` names alone.

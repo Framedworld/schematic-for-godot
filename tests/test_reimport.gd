@@ -444,12 +444,17 @@ func test_edits() -> void:
 	var dcode := compiled(demo)
 	r = sync.reimport(demo, apply_edits("comment in a helper", dcode, [["\tif keys.is_empty():\n", "\t# nothing to sample\n\tif keys.is_empty():\n"]]))
 	check("a comment in a helper: ok, nothing changed, the comment counted", r.ok and r.bp == demo and int(r.report.comments_dropped) == 1, reasons(r))
-	# formatting: a whole value written without brackets is written back so; brackets the person leaves out inside a
-	# larger expression are the ones Schematic writes, and the next save adds them
+	# formatting: a value written without brackets is written back so wherever it means the same without them (a
+	# whole value, an argument, an operator that binds tighter than the one around it)
 	r = edited("written without brackets", bp, apply_edits("written without brackets", code, [["\t\treturn v + 1", "\t\treturn v + 3"], ["\tvar sum := 0\n", "\tvar sum := items.size() * 3 + 1\n"]]),
 		{"actions": {"apply": "rebuilt", "total": "rebuilt"}})
 	if r.get("ok", false):
-		check("written without brackets: the lines the next save writes differently are reported", r.report.reformatted.size() == 1 and r.report.reformatted.any(func(x): return String(x.file) == "var sum := items.size() * 3 + 1" and String(x.graph) == "var sum := (items.size() * 3) + 1" and int(x.line) > 0), str(r.report.reformatted))
+		check("written without brackets: an operator that binds tighter is written back without them", r.report.reformatted.is_empty() and compiled(r.bp).contains("\tvar sum := items.size() * 3 + 1\n"), str(r.report.reformatted))
+	# brackets the person leaves out where Schematic still writes them (two comparisons in a row): the next save adds them
+	r = edited("brackets Schematic adds", bp, apply_edits("brackets Schematic adds", code, [["\tvar sum := 0\n", "\tvar sum := 0\n\tprint(items.size() > 1 == true)\n"]]),
+		{"actions": {"total": "rebuilt"}})
+	if r.get("ok", false):
+		check("brackets Schematic adds: the lines the next save writes differently are reported", r.report.reformatted.size() == 1 and r.report.reformatted.any(func(x): return String(x.file) == "print(items.size() > 1 == true)" and String(x.graph) == "print((items.size() > 1) == true)" and int(x.line) > 0), str(r.report.reformatted))
 
 
 ## A literal in each function of each converted sample changed by one: every one should come back.
@@ -1429,7 +1434,7 @@ func test_gentle_fallbacks() -> void:
 	var mbp: Dictionary = Importer.new().convert(MACRO_SRC, {}).bp
 	Reuse.new().run([{"path": SCRATCH + "macro_gentle.gd", "bp": mbp}], "")
 	var mcode := compiled(mbp)
-	r = gentle_case("a function that uses a macro, another line edited", mbp, apply_edits("macro", mcode, [["\tlog.append((\"burn %d\" % amount))", "\tlog.append((\"burnt %d\" % amount))"]]), "burn")
+	r = gentle_case("a function that uses a macro, another line edited", mbp, apply_edits("macro", mcode, [["\tlog.append(\"burn %d\" % amount)", "\tlog.append((\"burnt %d\" % amount))"]]), "burn")
 	var bg := Model.graph_named(mbp, "burn")
 	var macros: Array = bg.nodes.filter(func(x): return String(x.kind) == "macro")
 	if r.get("ok", false):
@@ -1437,7 +1442,7 @@ func test_gentle_fallbacks() -> void:
 		check("macro, a line inside it edited: the macro node went (its lines are new nodes, macros_expanded counts it)", not macros.is_empty() and macros.all(func(x): return gone.has(int(x.id)))
 			and int(r.report.macros_expanded) > 0, "%s %s" % [str(gone), str(r.report.gentle)])
 	# every line of the macro kept, in a row: the macro node stays (kept as it is), a line added after it is new
-	r = gentle_case("a function that uses a macro, a line added after it", mbp, mcode.replace("\tlog.append((\"burn %d\" % amount))\n", "\tlog.append((\"burn %d\" % amount))\n\tprint(\"after\")\n"), "burn")
+	r = gentle_case("a function that uses a macro, a line added after it", mbp, mcode.replace("\tlog.append(\"burn %d\" % amount)\n", "\tlog.append(\"burn %d\" % amount)\n\tprint(\"after\")\n"), "burn")
 	if r.get("ok", false):
 		var gone: Array = r.report.replaced.get(int(bg.id), [])
 		check("macro, every line of it kept: the macro node stays with its id (%s)" % str(r.report.gentle.burn), not macros.is_empty()

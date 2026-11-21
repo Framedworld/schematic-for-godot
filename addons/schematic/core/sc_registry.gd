@@ -236,6 +236,7 @@ static var editing_path := ""            # the file open in the editor: its own 
 static var _lib_cache: Dictionary = {}   # path -> {mt, bp}
 static var _lib_list: Array = []         # [{path, kind, name}]
 static var _lib_scanned := false
+static var _lib_seen: Dictionary = {}    # script path -> {mt, at, kind, name}: what a scan found in a file (see _library_entry)
 
 
 ## Call after schematic files were saved, added or removed.
@@ -271,6 +272,29 @@ static func libraries() -> Array:
 	return _lib_list
 
 
+## What a library scan needs to know about one script, {kind ("" when it is not a library), name}, remembered
+## until the file changes: a project can hold hundreds of Schematics, and the scan runs again after every save.
+## Only a file that says it is a library has its graphs read; for the others the first line of the graph data
+## (Model.peek_head) is enough.
+static func _library_entry(path: String) -> Dictionary:
+	var mt := FileAccess.get_modified_time(path)
+	var seen: Dictionary = _lib_seen.get(path, {})
+	if Kits.still_as_read(seen, mt):
+		return seen
+	seen = {"mt": mt, "at": int(Time.get_unix_time_from_system()), "kind": "", "name": ""}
+	if Model.is_schematic_file(path):
+		var text := FileAccess.get_file_as_string(path)
+		var head := Model.peek_head(text)
+		if head.is_empty() or String(head.get("library", "")) != "":
+			head = library_bp(path)   # (a library, or a file laid out the old way: read as a whole, as before)
+		if String(head.get("library", "")) != "":
+			var cn := String(head.get("class_name", ""))
+			seen.kind = String(head.library)
+			seen.name = cn if cn != "" else path.get_file().get_basename()
+	_lib_seen[path] = seen
+	return seen
+
+
 static func _scan_libraries(dir_path: String) -> void:
 	var dir := DirAccess.open(dir_path)
 	if dir == null:
@@ -279,12 +303,12 @@ static func _scan_libraries(dir_path: String) -> void:
 	if dir_path != "res://" and dir.file_exists("project.godot"):
 		return
 	for f in dir.get_files():
+		if f.get_extension() != "gd":
+			continue
 		var path := dir_path.path_join(f)
-		if f.get_extension() == "gd" and Model.is_schematic_file(path):
-			var lbp := library_bp(path)
-			if String(lbp.get("library", "")) != "":
-				var cn := String(lbp.get("class_name", ""))
-				_lib_list.append({"path": path, "kind": String(lbp.library), "name": cn if cn != "" else f.get_basename()})
+		var seen := _library_entry(path)
+		if String(seen.kind) != "":
+			_lib_list.append({"path": path, "kind": String(seen.kind), "name": String(seen.name)})
 	for sub in dir.get_directories():
 		if not sub.begins_with(".") and not (dir_path == "res://" and sub == "addons"):
 			_scan_libraries(dir_path.path_join(sub))
@@ -1815,6 +1839,8 @@ static func is_overridable(cls: String, m: Dictionary) -> bool:
 	return not ClassDB.class_exists(cls) and not mn.begins_with("__") and not mn.begins_with("@") and not mn.begins_with("_on_")
 
 
+## Every autoload as [name, class]. An autoload whose script has no class name is known by the script's path in
+## quotes (see T.script_entry), so its own functions and variables are nodes like those of a named class.
 static func autoloads() -> Array:
 	var out := []
 	for prop in ProjectSettings.get_property_list():
@@ -1826,7 +1852,7 @@ static func autoloads() -> Array:
 		if path.get_extension() == "gd" and ResourceLoader.exists(path):
 			var scr := load(path) as Script
 			if scr:
-				cls = String(scr.get_global_name()) if scr.get_global_name() != &"" else String(scr.get_instance_base_type())
+				cls = String(scr.get_global_name()) if scr.get_global_name() != &"" else "\"%s\"" % path
 		out.append([pn.substr(9), cls])
 	return out
 

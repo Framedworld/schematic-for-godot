@@ -6,8 +6,10 @@ extends Node
 ##
 ## Each graph becomes <name>.gd beside the original, and every scene and script that named the .torch file
 ## is pointed at the new one. It reads the text form of the graph files, so Orchestrator need not be installed.
-## Node kinds it knows: events, member function calls, variable gets, scene nodes and operators. A graph
-## that uses anything else is reported and left alone.
+## Node kinds it knows: events, function entries, branches, autoloads, member function calls, variable gets,
+## scene nodes and operators. A graph that uses anything else is reported and left alone.
+## A call on an autoload is typed by the autoload's script, so it keeps the function's own pins; a call
+## whose target cannot be worked out becomes a Call (by name).
 
 const ProjectFiles := preload("res://addons/schematic/core/sc_project_files.gd")
 const Model := preload("res://addons/schematic/core/sc_model.gd")
@@ -25,6 +27,21 @@ func _type_name(info: Dictionary) -> String:
 	return t if t != "" else "any"
 
 
+## The class an autoload's functions are found on: its script's class name, or the script's path in quotes
+## when it has none (the way `extends "res://base.gd"` names a script). "" when there is no such autoload.
+func _autoload_class(autoload: String) -> String:
+	var setting := "autoload/" + autoload
+	if autoload == "" or not ProjectSettings.has_setting(setting):
+		return ""
+	var path := String(ProjectSettings.get_setting(setting)).trim_prefix("*")
+	if path.get_extension() != "gd" or not ResourceLoader.exists(path):
+		return "Node"
+	var scr := load(path) as Script
+	if scr == null:
+		return "Node"
+	return String(scr.get_global_name()) if scr.get_global_name() != &"" else "\"%s\"" % path
+
+
 ## Reads an Orchestrator text file into plain dictionaries:
 ## {base_type, brief_description, variables: [..], functions: [..], nodes: [..], connections: [..]}.
 func parse_torch(path: String) -> Dictionary:
@@ -33,7 +50,8 @@ func parse_torch(path: String) -> Dictionary:
 	var sections := []        # every [obj] / [resource] block as {__class, key: value text}
 	var section := {}
 	var key := ""
-	for line in FileAccess.get_file_as_string(path).split("\n"):
+	for raw_line in FileAccess.get_file_as_string(path).split("\n"):
+		var line := raw_line.trim_suffix("\r")   # a file saved with Windows line endings reads the same
 		if line.begins_with("[obj type=\"") or line == "[resource]":
 			section = {"__class": "resource" if line == "[resource]" else line.get_slice("\"", 1)}
 			sections.append(section)
@@ -99,7 +117,7 @@ func convert_graph(res: Dictionary) -> Dictionary:
 	g.nodes.clear()
 	g.next_id = 1
 	for v in res.get("variables"):
-		var info: Dictionary = v.get("info")
+		var info: Dictionary = v.get("info") if v.get("info") is Dictionary else {"type": int(v.get("type", TYPE_NIL))}
 		var def: Variant = v.get("default_value")
 		bp.variables.append({"name": String(v.get("name")), "type": _type_name(info), "default": var_to_str(def) if def != null else "",
 			"export": bool(v.get("exported")), "category": "" if String(v.get("category")) == "Default" else String(v.get("category")),
@@ -107,6 +125,14 @@ func convert_graph(res: Dictionary) -> Dictionary:
 	var functions := {}   # guid -> method info
 	for f in res.get("functions"):
 		functions[String(f.get("guid"))] = f.get("method")
+
+	var kinds := {}       # orchestrator node id -> its section
+	for on in res.get("nodes"):
+		kinds[int(on.get("id"))] = on
+	var feeds := {}       # "to node:to input port" -> orchestrator node id wired into it
+	var all_conns: Array = Array(res.get("connections"))
+	for i in range(0, all_conns.size() - 3, 4):
+		feeds["%d:%d" % [int(all_conns[i + 2]), int(all_conns[i + 3])]] = int(all_conns[i])
 
 	# nodes
 	var made := {}        # orchestrator node id -> schematic node
@@ -122,7 +148,7 @@ func convert_graph(res: Dictionary) -> Dictionary:
 		var out_ids := []
 		var pin_data: Array = on.get("pin_data")
 		match kind:
-			"OScriptNodeEvent":
+			"OScriptNodeEvent", "OScriptNodeFunctionEntry":
 				var method: Dictionary = functions.get(String(on.get("function_id")), {})
 				var mname := String(method.get("name", "event"))
 				var info := R.find_method(String(bp.parent), mname)
@@ -138,11 +164,38 @@ func convert_graph(res: Dictionary) -> Dictionary:
 						out_ids.append("then" if String(pd.pin_name) == "ExecOut" else "p_" + T.ident(String(pd.pin_name)))
 			"OScriptNodeCallMemberFunction":
 				var cls := String(on.get("target_class_name"))
-				n = Model.add_node(g, "call", pos, {"cls": cls, "method": String(on.get("function_name"))})
-				var d := R.describe(n, bp, g)
-				if String(d.err) != "":
-					problems.append("node %d: %s" % [oid, d.err])
-				pure[oid] = bool(d.pure)
+				var method := String(on.get("function_name"))
+				var by_name := false
+				if R.find_method(cls, method).is_empty():
+					# Orchestrator calls it on whatever is wired to Target. An autoload names its script,
+					# which gives the call its own pins; anything else is called by name, as it was.
+					var port := 0
+					var source := -1
+					for pd in pin_data:
+						if int(pd.get("dir", 0)) == 1:
+							continue
+						if String(pd.pin_name) == "target":
+							source = int(feeds.get("%d:%d" % [oid, port], -1))
+						port += 1
+					var wired: Dictionary = kinds.get(source, {})
+					var found := _autoload_class(String(wired.get("autoload", ""))) if String(wired.get("__class", "")) == "OScriptNodeAutoload" else ""
+					if found != "" and not R.find_method(found, method).is_empty():
+						cls = found
+					else:
+						by_name = true
+				if by_name:
+					var count := 0
+					for pd in pin_data:
+						if int(pd.get("dir", 0)) != 1 and not String(pd.pin_name) in ["ExecIn", "target"]:
+							count += 1
+					n = Model.add_node(g, "dyn_call", pos, {"method": method, "n": count})
+					pure[oid] = false
+				else:
+					n = Model.add_node(g, "call", pos, {"cls": cls, "method": method})
+					var d := R.describe(n, bp, g)
+					if String(d.err) != "":
+						problems.append("node %d: %s" % [oid, d.err])
+					pure[oid] = bool(d.pure)
 				var arg := 0
 				for pd in pin_data:
 					var pname := String(pd.pin_name)
@@ -155,11 +208,28 @@ func convert_graph(res: Dictionary) -> Dictionary:
 					elif pname == "target":
 						pin_id = "target"
 					else:
-						pin_id = "a%d" % arg
+						pin_id = ("v%d" if by_name else "a%d") % arg
 						arg += 1
 					in_ids.append(pin_id)
 					if pd.has("dv") and pin_id != "exec":
 						n.d[pin_id] = var_to_str(pd.dv)
+			"OScriptNodeBranch":
+				n = Model.add_node(g, "branch", pos, {})
+				for pd in pin_data:
+					var pname := String(pd.pin_name)
+					if int(pd.get("dir", 0)) == 1:
+						out_ids.append("true" if pname == "true" else "false")
+					elif pname == "ExecIn":
+						in_ids.append("exec")
+					else:
+						in_ids.append("cond")
+						if pd.has("dv"):
+							n.d["cond"] = var_to_str(pd.dv)
+			"OScriptNodeAutoload":
+				var al := String(on.get("autoload"))
+				var al_cls := _autoload_class(al)
+				n = Model.add_node(g, "autoload", pos, {"name": al, "cls": al_cls if al_cls != "" else "Node"})
+				out_ids = ["value"]
 			"OScriptNodeVariableGet":
 				n = Model.add_node(g, "var_get", pos, {"name": String(on.get("variable_name"))})
 				out_ids = ["value"]
@@ -185,7 +255,7 @@ func convert_graph(res: Dictionary) -> Dictionary:
 		outs[oid] = out_ids
 
 	# wires: [from node, from output port, to node, to input port] by port index
-	var conns: Array = Array(res.get("connections"))
+	var conns := all_conns
 	var exec_into := {}   # pure node id -> [from node, pin] feeding its exec in
 	var exec_out := {}    # pure node id -> [[to node, pin]]
 	var wires := []

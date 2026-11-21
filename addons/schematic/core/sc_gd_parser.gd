@@ -770,7 +770,8 @@ func _tail_note(lines: Array, tail: String) -> void:
 ##     statement at its depth there (or the deepest one shallower), written after everything that statement wrote;
 ##   - a comment above an `elif` / `else:` or a match arm is the `after` of the last statement of the branch or arm
 ##     before it (above the first arm: the `note` of the arm's first statement); so is the comment at the end of
-##     such a line;
+##     a match arm's line. The comment at the end of an `elif` / `else:` line is kept for that line: the if's
+##     `arm_tails` ({the branch's place in `branches`, or "else": the comment with the spaces before it});
 ##   - the comment at the end of a statement's line is its `tail`; the one at the end of the `func` line is the
 ##     function's;
 ##   - comments inside a statement whose text is kept as written (a lambda's body) are in that text.
@@ -833,7 +834,17 @@ func _attach_comments(out: Dictionary) -> void:
 				continue
 			var rest := orphans + items.slice(upto)
 			if not first_at.has(at) and String(_lines[at].tail) != "":
-				rest = rest + [{"text": String(_lines[at].tail).strip_edges(), "level": level}]
+				# the end of an `elif` / `else:` line of an if: kept for that line (the if's arm_tails)
+				var arm_if := {}
+				for en in entries:
+					if String(en.st.get("k", "")) == "if" and (en.st.get("arm_lines", {}) as Dictionary).has(int(_lines[at].line)):
+						arm_if = en.st
+				if arm_if.is_empty():
+					rest = rest + [{"text": String(_lines[at].tail).strip_edges(), "level": level}]
+				else:
+					var arm_tails: Dictionary = arm_if.get("arm_tails", {})
+					arm_tails[arm_if.arm_lines[int(_lines[at].line)]] = String(_lines[at].tail)
+					arm_if["arm_tails"] = arm_tails
 			if rest.is_empty():
 				continue
 			if first_at.has(at):
@@ -1521,19 +1532,27 @@ func _if_stmt(ln: Dictionary) -> Dictionary:
 	var cond: Variant = _expr()
 	_take(":")
 	st.branches.append([cond, _body(indent)])
+	# the lines of its `elif`s and its `else:` (line -> the branch's place in `branches`, or "else"): the comment at
+	# the end of one is kept for that line (arm_tails, same keys; see _attach_comments)
+	var arm_lines := {}
 	while _li < _lines.size() and int(_lines[_li].indent) == indent:
 		_t = _lines[_li].toks
 		_p = 0
+		var arm_line := int(_lines[_li].line)
 		if _take("elif"):
 			var c2: Variant = _expr()
 			_take(":")
+			arm_lines[arm_line] = st.branches.size()
 			st.branches.append([c2, _body(indent)])
 		elif _take("else"):
 			_take(":")
+			arm_lines[arm_line] = "else"
 			st["else"] = _body(indent)
 			break
 		else:
 			break
+	if not arm_lines.is_empty():
+		st["arm_lines"] = arm_lines
 	st["text"] = _text(start, _li)
 	return st
 

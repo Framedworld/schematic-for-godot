@@ -1344,6 +1344,10 @@ func _wire(val: Dictionary, n: Dictionary, pin: String) -> bool:
 		n.d[pin] = String(val.lit)
 		return true
 	if val.has("n"):
+		# A value written without brackets of its own (see _value), wired where the compiler needs none around it:
+		# the node says so, and the compiler leaves them out there (its _unbracket).
+		if bool(val.get("bare", false)) and Compiler.reads_bare(val.n, n, pin):
+			val.n.p["unbracketed"] = true
 		_g.wires.append([int(val.n.id), String(val.pin), int(n.id), pin])
 		return true
 	return _fail("this can't be used as a value")
@@ -1601,9 +1605,11 @@ func _devar(text: String) -> String:
 ## Value nodes the compiler writes in brackets of their own: `(a + b)`, `(x as T)`, `(a if c else b)`...
 const BRACKETED := ["math", "op", "as_type", "cast", "get_node", "is_type", "select"]
 
-## A whole right-hand side, return value or condition written without brackets: the node it became is marked
-## `unbracketed`, and the compiler leaves out the outer brackets it would write around it there (and only there:
-## the same node read inside a larger expression keeps them). Written with brackets, it keeps them.
+## A value written without brackets of its own, wired where none are needed (a whole right-hand side, return
+## value or condition here; an argument, an item, or an operator that binds tighter than the one around it in
+## _wire, by the compiler's reads_bare): the node it became is marked `unbracketed`, and the compiler leaves out
+## the outer brackets it would write around it there (and only there: the same node read anywhere else keeps
+## them). Written with brackets, it keeps them.
 func _mark_unbracketed(e: Variant, val: Dictionary) -> void:
 	if e is Dictionary and String(e.get("k", "")) != "paren" and val.has("n") and String(val.n.kind) in BRACKETED:
 		val.n.p["unbracketed"] = true
@@ -1795,6 +1801,8 @@ func _absorb_comments(st: Dictionary) -> void:
 			lines.append("\t" + String(inner.tail).strip_edges())
 		for l in inner.get("after", []):
 			lines.append(_one_deeper(String(l)))
+	for arm in st.get("arm_tails", {}):
+		lines.append(String(st.arm_tails[arm]).strip_edges())
 	if not lines.is_empty():
 		st["after"] = lines + st.get("after", [])
 
@@ -1863,7 +1871,7 @@ func _if(st: Dictionary, last: bool) -> bool:
 		seq = _exec("sequence", {"n": 2}, "exec", "then_0")
 		_cx = float(seq.x) + 250.0
 	var branches: Array = st.branches
-	var ok := _if_chain(branches, 0, st["else"])
+	var ok := _if_chain(branches, 0, st["else"], st.get("arm_tails", {}))
 	if not ok:
 		return false
 	if not last:
@@ -2095,12 +2103,18 @@ func _sig_node(sig: Dictionary, depth: int) -> Dictionary:
 	return {"n": g, "pin": "value", "t": "Signal"}
 
 
-func _if_chain(branches: Array, at: int, else_body: Array) -> bool:
+## `tails`: the comments at the end of the if's `elif` and `else:` lines (the parser's arm_tails). The Branch an
+## `elif` became carries its line's as its own `tail`; the last Branch carries the `else:` line's as `else_tail`.
+func _if_chain(branches: Array, at: int, else_body: Array, tails := {}) -> bool:
 	var cond := _value(branches[at][0], 1)
 	if cond.is_empty():
 		return false
 	_mark_unbracketed(branches[at][0], cond)
-	var br := _exec("branch", {}, "exec", "true")
+	# (the branch an `elif` became says so, and the compiler writes it as an `elif` again where it still is one:
+	# the only thing its Branch's False pin runs. A graph made in the editor has no such mark.)
+	var br := _exec("branch", {"elif": true} if at > 0 else {}, "exec", "true")
+	if at > 0 and tails.has(at):
+		br.p["tail"] = String(tails[at])
 	if not _wire(cond, br, "cond"):
 		return false
 	var bx := float(br.x) + 300.0
@@ -2113,9 +2127,11 @@ func _if_chain(branches: Array, at: int, else_body: Array) -> bool:
 		_cx = bx
 		_cy = _low + 70.0
 		if at + 1 < branches.size():
-			if not _if_chain(branches, at + 1, else_body):
+			if not _if_chain(branches, at + 1, else_body, tails):
 				return false
 		else:
+			if tails.has("else"):
+				br.p["else_tail"] = String(tails["else"])
 			_block(else_body)
 	return true
 
@@ -2630,6 +2646,10 @@ func _value(e: Variant, depth: int) -> Dictionary:
 	var mark := {"nodes": _g.nodes.size(), "wires": _g.wires.size(), "next": int(_g.next_id), "pending": _pending.size(), "failed": _failed}
 	var val := _lower(e, depth)
 	if not val.is_empty() and (val.has("n") or val.has("lit")):
+		# Written without brackets of its own: remembered until the value is wired (see _wire).
+		if val.has("n") and e is Dictionary and String(e.get("k", "")) != "paren" \
+				and (String(val.n.kind) in BRACKETED or (String(e.k) == "await" and bool(val.n.p.get("await", false)))):
+			val["bare"] = true
 		return val
 	if val.has("fnref"):
 		return {"n": _data("event_ref", {"fn": String(val.fnref)}, depth), "pin": "fn", "t": "Callable"}

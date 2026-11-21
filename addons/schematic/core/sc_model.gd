@@ -26,7 +26,9 @@ extends RefCounted
 ##   node.p.note [lines above the statement], p.tail, p.after [lines that end the block after it], on the nodes a
 ##     statement became (see the importer's _block); an entry node's p.note / p.tail are its function's, p.end
 ##     the `#endregion` lines right below the function; p.empty {exec pin: {note, tail}} a block of nothing but
-##     `pass` (written with the `pass` for that pin). A code node's text holds the comments inside its statement.
+##     `pass` (written with the `pass` for that pin); a Branch's p.else_tail the end of its `else:` line (the
+##     end of an `elif` line is the p.tail of the Branch it became). A code node's text holds the comments
+##     inside its statement.
 
 const Types := preload("res://addons/schematic/core/sc_types.gd")
 const MARKER := "# @schematic"
@@ -39,6 +41,9 @@ const DATA_PREFIX := "#~ "
 ## The line in the graph data that holds the fingerprint of the code above it (see code_hash()). It starts with
 ## "#~" but not "#~ ", so parse_source() of this and of older versions passes over it.
 const CODE_HASH_PREFIX := "#~code "
+## The line the project converter adds to the graph data of a script it converted (see is_as_converted()). Like
+## the fingerprint line it starts with "#~" but not "#~ ", so every reader of the graph passes over it.
+const CONVERTED_MARK := "#~converted"
 const VERSION := 1
 ## The Data Table class (runtime/data_table.gd). Up to 0.3.3 it was called DataTable, a name a project may well
 ## use for a class of its own; graph data that names it the old way is read as naming it the present way.
@@ -209,6 +214,29 @@ static func is_schematic_file(path: String) -> bool:
 		return false
 	var first := f.get_line()
 	return first.begins_with(MARKER) or first.begins_with(OLD_MARKER)
+
+
+## The schematic's own fields (parent, class name, library kind, variables...: everything but its graphs) read from
+## a Schematic's text without reading the graphs, which are most of a large file. {} when the graph data is not
+## laid out the way graph_lines() writes it (an older file); parse_source() reads those. Nothing is checked or
+## filled in: it is for a quick look at many files (which of them are libraries), not for opening one.
+static func peek_head(src: String) -> Dictionary:
+	if not is_schematic_source(src):
+		return {}
+	var at := maxi(src.rfind(GRAPH_BLOCK), src.rfind(OLD_GRAPH_BLOCK))
+	if at < 0:
+		return {}
+	var first := src.find("\n" + DATA_PREFIX, at)
+	if first < 0:
+		return {}
+	var end := src.find("\n", first + 1)
+	var line := src.substr(first + 1 + DATA_PREFIX.length(), (end if end != -1 else src.length()) - first - 1 - DATA_PREFIX.length()).strip_edges()
+	if not line.ends_with("\"graphs\":["):
+		return {}
+	var reader := JSON.new()
+	if reader.parse(line + "]}") != OK or typeof(reader.data) != TYPE_DICTIONARY:
+		return {}
+	return reader.data
 
 
 ## Returns the schematic dictionary embedded in a script's source, or {} if there is none that this version can
@@ -500,8 +528,20 @@ static func graph_lines(bp: Dictionary) -> PackedStringArray:
 	return lines
 
 
-## Assembles the final .gd text: marker line + generated code + embedded graph data.
-static func build_source(code: String, bp: Dictionary) -> String:
+## True when the Schematic's text is as the project converter (or its reuse pass) wrote it: it holds the
+## converter's mark, which no save from the editor writes. The converter converts such a file from its kept
+## original again when asked to; one without the mark has a graph somebody may have changed.
+static func is_as_converted(text: String) -> bool:
+	var cut := graph_block_at(text)
+	if cut == -1:
+		return false
+	var at := text.find("\n" + CONVERTED_MARK, cut)
+	return at != -1 and text.substr(at + 1 + CONVERTED_MARK.length(), 1) in ["\n", "\r"]
+
+
+## Assembles the final .gd text: marker line + generated code + embedded graph data. `as_converted` adds the
+## project converter's mark (see is_as_converted): only the converter and its reuse pass ask for it.
+static func build_source(code: String, bp: Dictionary, as_converted := false) -> String:
 	var out := PackedStringArray()
 	out.append(code.strip_edges(false, true))
 	out.append("")
@@ -509,6 +549,8 @@ static func build_source(code: String, bp: Dictionary) -> String:
 	out.append("#region Schematic graph data (machine-written; edit this file in the Schematic editor)")
 	out.append(CODE_HASH_PREFIX + code_hash(file_code(code, bp)))
 	out.append("#~hash-v2")
+	if as_converted:
+		out.append(CONVERTED_MARK)
 	for line in graph_lines(bp):
 		out.append(DATA_PREFIX + line)
 	out.append("#endregion")

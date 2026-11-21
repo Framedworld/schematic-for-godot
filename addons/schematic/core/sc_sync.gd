@@ -3149,7 +3149,7 @@ func _shape_of(w: Dictionary, u: Dictionary, id: int, idx: Dictionary, order: Ar
 	order.append(id)
 	var n: Dictionary = w.by[id]
 	var p: Dictionary = n.get("p", {}).duplicate(true)
-	for k in ["note", "tail", "after", "empty", "of", "in"]:
+	for k in ["note", "tail", "after", "empty", "else_tail", "of", "in"]:
 		p.erase(k)
 	if String(n.kind) in REF_KINDS and lams.has(String(p.get("fn", ""))):
 		p.fn = "(lambda)"

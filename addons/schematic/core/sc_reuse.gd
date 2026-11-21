@@ -25,7 +25,7 @@ const LOOPVAR := ["for", "for_each", "for_each_dict"]
 ## What a node says in comments (see COMMENTS in the converter): lines above, at the end of the line, after the
 ## statement, in a block of nothing else, and after a function. A macro call node also carries the comments of the
 ## nodes inside it (`notes`), when the macro it calls is itself used inside a group.
-const COMMENT_FIELDS := ["note", "tail", "after", "empty", "end"]
+const COMMENT_FIELDS := ["note", "tail", "after", "empty", "else_tail", "end"]
 const LEAVES := ["local_get", "var_get", "const", "self", "autoload"]
 ## Never part of a group: they leave the function or loop they are in, hold state per node, or are text.
 const NEVER := ["fn_return", "loop_break", "loop_continue", "macro_in", "macro_out", "fn_entry", "timeline", "comment",

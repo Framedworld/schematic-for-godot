@@ -61,7 +61,7 @@ func _init() -> void:
 	check("a random number is not read a second time for the trace", not shown.contains("randi") and code.count("randi()") == 1, shown)
 	check("a call that changes its object is not made a second time", not shown.contains("pop_back") and code.count("q.pop_back()") == 1, shown)
 	check("a random pick is not made a second time", not shown.contains("pick_random") and code.count("pick_random()") == 1, shown)
-	check("values that are safe to read again are still shown", shown.contains("q.size()") and shown.contains("(speed * 2.0)") and shown.contains("absf(speed)"), shown)
+	check("values that are safe to read again are still shown", shown.contains("q.size()") and shown.contains("\"v0\": speed * 2.0,") and shown.contains("absf(speed)"), shown)
 
 	code = traced("extends Node\n\nstatic func helper(x: int) -> int:\n\tprint(x)\n\treturn x + 1\n\nfunc other(y: int) -> void:\n\tprint(y)\n")
 	check("a script with a static function loads with Show Flow on", loads(code))

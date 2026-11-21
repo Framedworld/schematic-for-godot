@@ -53,6 +53,18 @@ const FLOW_AUTOLOAD_PATH := "res://schematic_kits/flow_nodes_bridge.gd"
 const FLOW_FOLDERS_SETTING := "schematics/kits/flow_node_folders"
 
 static var _scanned := false
+## What a scan read in each file, kept until the file changes (see still_as_read): a project can hold hundreds of
+## scripts, and the scan runs again after every save. script path -> {mt, at, names: [blackboard variable names]};
+## resource path -> {mt, at, kind: "plan" | "flow" | ""}.
+static var _gd_seen: Dictionary = {}
+static var _tres_seen: Dictionary = {}
+
+
+## True when what was read from a file at time `seen.at` still holds for a file last modified at `mt`: the file was
+## read more than a second after it was last written, and has not been written since. (Modified times count in
+## whole seconds, so a file read in the second it was written may have been written again in that second.)
+static func still_as_read(seen: Dictionary, mt: int) -> bool:
+	return not seen.is_empty() and int(seen.mt) == mt and int(seen.at) > mt + 1
 static var _bb_vars: Dictionary = {}      # blackboard variable name -> schematic type ("any" when unknown)
 static var _flow_graphs: Array = []       # [{path, name, ins: [[name, type, default]], outs: [name]}]
 static var _has_flow := -1
@@ -311,21 +323,41 @@ static func _scan() -> void:
 			var ext := f.get_extension()
 			if ext == "gd" and limbo:
 				seen_files += 1
-				var text := FileAccess.get_file_as_string(path)
-				if not text.contains("_var"):
-					continue
-				for m in used.search_all(text) + named.search_all(text):
-					if not _bb_vars.has(m.get_string(1)):
-						_bb_vars[m.get_string(1)] = "any"
+				var mt := FileAccess.get_modified_time(path)
+				var seen: Dictionary = _gd_seen.get(path, {})
+				if not still_as_read(seen, mt):
+					seen = {"mt": mt, "at": int(Time.get_unix_time_from_system()), "names": []}
+					var text := FileAccess.get_file_as_string(path)
+					# (a Schematic's code names every variable its graph does: the graph data below it is not read)
+					var graph_at := text.rfind("\n#region Schematic graph data")
+					if graph_at != -1:
+						text = text.substr(0, graph_at)
+					if text.contains("_var"):
+						for m in used.search_all(text) + named.search_all(text):
+							if not seen.names.has(m.get_string(1)):
+								seen.names.append(m.get_string(1))
+					_gd_seen[path] = seen
+				for nm in seen.names:
+					if not _bb_vars.has(nm):
+						_bb_vars[nm] = "any"
 			elif ext == "ds" and parley:
 				_dialogues.append(path)
 			elif ext == "tres":
 				seen_files += 1
-				var head := FileAccess.open(path, FileAccess.READ)
-				var first := head.get_line() if head != null else ""
-				if limbo and (first.contains("type=\"BehaviorTree\"") or first.contains("type=\"BlackboardPlan\"")):
+				var mt := FileAccess.get_modified_time(path)
+				var seen: Dictionary = _tres_seen.get(path, {})
+				if not still_as_read(seen, mt):
+					var head := FileAccess.open(path, FileAccess.READ)
+					var first := head.get_line() if head != null else ""
+					seen = {"mt": mt, "at": int(Time.get_unix_time_from_system()), "kind": ""}
+					if first.contains("type=\"BehaviorTree\"") or first.contains("type=\"BlackboardPlan\""):
+						seen.kind = "plan"
+					elif first.contains("script_class=\"FlowGraphResource\""):
+						seen.kind = "flow"
+					_tres_seen[path] = seen
+				if limbo and String(seen.kind) == "plan":
 					_read_plan(path)
-				elif flow and first.contains("script_class=\"FlowGraphResource\""):
+				elif flow and String(seen.kind) == "flow":
 					_read_flow_graph(path)
 
 
