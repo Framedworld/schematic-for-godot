@@ -266,6 +266,15 @@ func _fill_categories(root: TreeItem) -> void:
 func _on_collapsed(item: TreeItem) -> void:
 	if item.collapsed or not item.has_meta("lazy"):
 		return
+	# Tree items cannot be created during mouse selection.
+	# Use an ID because a search/reload may free this item before the deferred population runs.
+	_populate_category.call_deferred(item.get_instance_id())
+
+
+func _populate_category(item_id: int) -> void:
+	var item := instance_from_id(item_id) as TreeItem
+	if item == null or item.collapsed or not item.has_meta("lazy"):
+		return
 	var acts: Array = item.get_meta("lazy")
 	item.remove_meta("lazy")
 	# Remove the placeholder (always the last child created for this holder).
