@@ -325,6 +325,7 @@ godot --headless --path . --script res://tests/test_drift.gd       # telling a h
 godot --headless --path . --script res://tests/test_sync.gd        # a script split into its blocks: the user's code and the compiler's
 godot --headless --path . --script res://tests/test_reimport.gd    # a hand-edited file brought back into its graph, function by function
 godot --headless --path . --script res://tests/test_hardening.gd   # damaged or newer graph data, saving, kept originals, Show Flow changing nothing
+godot --headless --path . --script res://tests/test_typed.gd       # generated code writes a type wherever the graph knows it
 godot --headless --path . --script res://tests/stress_convert.gd -- <folder of scripts>   # converts any scripts and checks the result (reads only)
 godot --headless --path . --script res://tests/test_libraries.gd
 godot --headless --path . --script res://tests/test_interfaces.gd

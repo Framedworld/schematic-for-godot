@@ -1083,7 +1083,10 @@ func _block(name: String, header: String, entry: Dictionary, start_pin: String) 
 		if String(hk).begins_with(prefix):
 			var pname := String(hk).substr(prefix.length())
 			var mname := "__p%d_%s_g%d" % [int(entry.id), pname, _gid]
-			_member("var %s = %s" % [mname, T.default_literal(String(_hoist[hk]))], int(entry.id))
+			# typed like any other value kept in a member (see _decl): an untyped one makes every read slower
+			var ptype := String(_hoist[hk])
+			var phint := T.hint(ptype)
+			_member("var %s%s%s" % [mname, (": " + phint) if phint != "" else "", (" = " + T.default_literal(ptype)) if not (T.is_object(ptype) and phint != "") else ""], int(entry.id))
 			_line(1, "%s = %s" % [mname, _event_pin_name(entry, pname)], int(entry.id))
 	_chain_from = int(entry.id)
 	_carry = {"above": [], "tail": ""}
@@ -2322,9 +2325,17 @@ func _step(n: Dictionary, pin: String, ind: int, scope: Dictionary) -> Array:
 				var rarr := "arr_%d" % id
 				var ridx := "idx_%d" % id
 				var ritem := _loop_var(n, "item_%d" % id, scope)
-				_decl(rarr, "any", _in(n, "array", scope), ind, id, scope)
+				# The copy is a plain Array when the wire says the value is one (a typed array is one too), and the
+				# element has the type the node knows, as in the forward loop: untyped, every use of the element
+				# in the body is worked out at run time.
+				var rsrc := "any"
+				if _inw.has("%d:array" % id):
+					var rw: Array = _inw["%d:array" % id]
+					rsrc = _out_type(_nodes[rw[0]], String(rw[1]))
+				_decl(rarr, "Array" if (rsrc == "Array" or rsrc.begins_with("Array[")) else "any", _in(n, "array", scope), ind, id, scope)
+				var rh := T.hint(String(p.get("t", "any")))
 				_line(ind, "for %s in range(%s.size() - 1, -1, -1):" % [ridx, rarr], id)
-				_line(ind + 1, "var %s = %s[%s]" % [ritem, rarr, ridx], id)
+				_line(ind + 1, "var %s%s = %s[%s]" % [ritem, (": " + rh) if rh != "" else "", rarr, ridx], id)
 				var rbody := scope.duplicate()
 				rbody[ridx] = true
 				rbody[ritem] = true

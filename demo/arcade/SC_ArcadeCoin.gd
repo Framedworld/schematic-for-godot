@@ -21,13 +21,18 @@ func _on_self_body_entered(body: Node2D) -> void:
 
 
 func __sc_message(target: Variant, fn: StringName, arg: Variant) -> Variant:
-	if not is_instance_valid(target) or not target.has_method(fn):
+	if not is_instance_valid(target):
 		return null
-	return target.call(fn) if target.get_method_argument_count(fn) == 0 else target.call(fn, arg)
+	var to: Object = target
+	if not to.has_method(fn):
+		return null
+	return to.call(fn) if to.get_method_argument_count(fn) == 0 else to.call(fn, arg)
 
 
 #region Schematic graph data (machine-written; edit this file in the Schematic editor)
-#~ {"class_name":"SC_ArcadeCoin","description":"Collected when a node in the 'player' group touches it: adds its value to the Game State's score, then removes itself.","dispatchers":[{"name":"collected","params":[["by","Node"]]}],"parent":"Area2D","tool":false,"variables":[{"category":"","default":"1","export":true,"name":"value","tooltip":"Score given when collected.","type":"int"}],"version":1,"graphs":[
+#~code af35f1f9b8037f528808755e2d557452
+#~hash-v2
+#~ {"class_name":"SC_ArcadeCoin","description":"Collected when a node in the 'player' group touches it: adds its value to the Game State's score, then removes itself.","dispatchers":[{"name":"collected","params":[["by","Node"]]}],"enums":[],"parent":"Area2D","tool":false,"variables":[{"category":"","default":"1","export":true,"name":"value","tooltip":"Score given when collected.","type":"int"}],"version":1.0,"graphs":[
 #~ {"id":1,"inputs":[],"kind":"event","locals":[],"name":"EventGraph","next_id":10,"outputs":[],"pure":false,"sx":0.0,"sy":0.0,"zoom":1.0,"nodes":[
 #~ {"d":{},"id":1,"kind":"signal_event","p":{"args":[["body","Node2D"]],"cls":"Area2D","path":".","signal":"body_entered"},"x":80.0,"y":120.0},
 #~ {"d":{"group":"&\"player\""},"id":2,"kind":"tpl","p":{"id":"is_in_group"},"x":80.0,"y":330.0},

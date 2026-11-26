@@ -116,8 +116,10 @@ static func _builtin_templates() -> void:
 		"outs": [["ret", "Return Value", "any"]],
 		"exprs": {"ret": "__sc_message({target}, {fn}, {arg})"},
 		"helper": ["__sc_message", "func __sc_message(target: Variant, fn: StringName, arg: Variant) -> Variant:", [
-			[1, "if not is_instance_valid(target) or not target.has_method(fn):"], [2, "return null"],
-			[1, "return target.call(fn) if target.get_method_argument_count(fn) == 0 else target.call(fn, arg)"]]]})
+			[1, "if not is_instance_valid(target):"], [2, "return null"],
+			[1, "var to: Object = target"],
+			[1, "if not to.has_method(fn):"], [2, "return null"],
+			[1, "return to.call(fn) if to.get_method_argument_count(fn) == 0 else to.call(fn, arg)"]]]})
 	register_template("range", {"title": "Range", "cat": "Utilities|Array", "pure": true, "search": "count step sequence numbers",
 		"tip": "The whole numbers from Start up to (not including) Stop, Step apart. Step may be negative.",
 		"ins": [["from", "Start", "int", "0"], ["to", "Stop", "int", "10"], ["step", "Step", "int", "1"]], "outs": [["ret", "Numbers", "Array[int]"]],
