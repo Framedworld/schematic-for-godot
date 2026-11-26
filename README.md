@@ -191,6 +191,11 @@ other projects and are not in the repository.
 | Animated wires | With Show Flow and Values on, dots run along each exec wire the game follows; a node step at a breakpoint animates the wire it took |
 | Drag from Scene dock or FileSystem | Node reference / preloaded resource |
 
+The button at the right end of the toolbar (**Make Floating**) opens the Schematic editor in its own window, so the
+graph can sit on a second monitor while the 2D or 3D view stays in the main one. Close the window, or press the
+button again, to dock it back. Where the window was, and that it was floating, is remembered per project. The
+button is off when Godot runs in single-window mode.
+
 The **Generated Code** tab shows the GDScript live, and the two sides are linked. Select nodes and their lines are
 highlighted: strongly for the lines a node wrote, softly for the lines it only feeds a value into. Click a line and
 the node that wrote it is selected and centred, in whichever function it is; the nodes feeding that line get an

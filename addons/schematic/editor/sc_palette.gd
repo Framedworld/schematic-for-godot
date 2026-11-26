@@ -88,7 +88,9 @@ func open(screen_pos: Vector2, title: String, provider: Callable, on_pick: Calla
 	_search.text = ""
 	_search.right_icon = W.icon("Search")
 	_reload()
-	var scr := DisplayServer.screen_get_usable_rect(DisplayServer.window_get_current_screen())
+	# (the screen the editor's window is on: the main window's, or its own window's when it floats)
+	var host := get_parent().get_window() if get_parent() else null
+	var scr := DisplayServer.screen_get_usable_rect(host.current_screen if host else DisplayServer.window_get_current_screen())
 	var pos := Vector2i(screen_pos)
 	pos.x = mini(pos.x, scr.end.x - W.si(470))
 	pos.y = mini(pos.y, scr.end.y - W.si(500))

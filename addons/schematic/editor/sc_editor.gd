@@ -56,6 +56,7 @@ var _palette: Palette
 var _crumb: Label
 var _toast: Label
 var _toolbar: HBoxContainer
+var _float_btn: Button      # Make Floating / dock back (the window itself is the plugin's)
 var _parent_btn: Button
 var _class_btn: Button
 var _defaults_btn: Button
@@ -197,6 +198,15 @@ func build_ui() -> void:
 	for st in _step_tools:
 		st.visible = false
 		bar.add_child(st)
+	var bar_gap := Control.new()
+	bar_gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bar.add_child(bar_gap)
+	_float_btn = _tool("", "MakeFloating", "", func():
+		if plugin:
+			plugin.toggle_floating())
+	_float_btn.toggle_mode = true
+	bar.add_child(_float_btn)
+	update_float_button()
 
 	# --- empty state
 	_empty = CenterContainer.new()
@@ -468,6 +478,35 @@ func _header(text: String) -> Label:
 	return l
 
 
+## The Make Floating button follows where the editor is and whether Godot can give it a window of its own.
+func update_float_button() -> void:
+	if _float_btn == null:
+		return
+	var floating: bool = plugin != null and plugin.is_floating()
+	var reason: String = plugin.cannot_float_reason() if plugin != null else "Not available."
+	_float_btn.set_pressed_no_signal(floating)
+	_float_btn.disabled = reason != "" and not floating
+	if floating:
+		_float_btn.tooltip_text = "Dock the Schematic editor back into the main editor window (closing its window does the same)"
+	elif reason != "":
+		_float_btn.tooltip_text = "Make Floating: open the Schematic editor in its own window.\n" + reason
+	else:
+		_float_btn.tooltip_text = "Make Floating: open the Schematic editor in its own window, for a second monitor"
+
+
+## Shows the Schematic editor: its own window when it floats, else its main screen tab.
+func _show_screen() -> void:
+	if plugin:
+		plugin.show_editor()
+	else:
+		EditorInterface.set_main_screen_editor("Schematic")
+
+
+## Where dialogs go: over the window the editor is used in.
+func _dialog_host() -> Control:
+	return plugin.dialog_host() if plugin else EditorInterface.get_base_control()
+
+
 func toast(msg: String) -> void:
 	_toast.text = msg
 	var t := get_tree().create_timer(4.0)
@@ -601,7 +640,7 @@ func _ask_close(d: Dictionary) -> void:
 	dlg.visibility_changed.connect(func():
 		if not dlg.visible:
 			dlg.queue_free())
-	EditorInterface.get_base_control().add_child(dlg)
+	_dialog_host().add_child(dlg)
 	dlg.popup_centered(Vector2i(W.si(560), 0))
 	dlg.get_ok_button().grab_focus.call_deferred()
 
@@ -707,12 +746,12 @@ func convert_script_dialog(path: String) -> void:
 		dlg.ok_button_text = "Convert"
 		dlg.confirmed.connect(func():
 			if convert_script_apply(path, result):
-				EditorInterface.set_main_screen_editor("Schematic"))
+				_show_screen())
 	dlg.dialog_text = "\n".join(lines)
 	dlg.visibility_changed.connect(func():
 		if not dlg.visible:
 			dlg.queue_free())
-	EditorInterface.get_base_control().add_child(dlg)
+	_dialog_host().add_child(dlg)
 	dlg.popup_centered(Vector2i(W.si(720), 0))
 
 
@@ -729,7 +768,7 @@ func new_schematic_dialog(attach: Node = null) -> void:
 		items.append({"label": String(s.name), "value": String(s.id), "icon": W.class_icon(String(s.parent)),
 			"tip": "%s
 Parent class: %s" % [s.desc, s.parent]})
-	W.popup_search(EditorInterface.get_base_control(), items, func(id: String):
+	W.popup_search(_dialog_host(), items, func(id: String):
 		if id != "":
 			_new_schematic_file(attach.get_class() if attach else String(Starters.find(id).parent), attach, id)
 		elif attach:
@@ -795,11 +834,11 @@ func _new_schematic_file(parent: String, attach: Node, starter := "") -> void:
 			EditorInterface.mark_scene_as_unsaved()
 		_sel = {"kind": "class"}
 		_refresh_all()
-		EditorInterface.set_main_screen_editor("Schematic"))
+		_show_screen())
 	fd.visibility_changed.connect(func():
 		if not fd.visible:
 			fd.queue_free())
-	EditorInterface.get_base_control().add_child(fd)
+	_dialog_host().add_child(fd)
 	fd.popup_file_dialog()
 
 
@@ -1200,7 +1239,7 @@ func show_drift_changes(d: Dictionary, focus := 0) -> void:
 	dlg.visibility_changed.connect(func():
 		if not dlg.visible:
 			dlg.queue_free())
-	EditorInterface.get_base_control().add_child(dlg)
+	_dialog_host().add_child(dlg)
 	dlg.popup_centered()
 	if at >= 0:
 		view.set_caret_line(at)
@@ -1501,7 +1540,7 @@ func _show_reimport(d: Dictionary, pv: Dictionary) -> void:
 	dlg.visibility_changed.connect(func():
 		if not dlg.visible:
 			dlg.queue_free())
-	EditorInterface.get_base_control().add_child(dlg)
+	_dialog_host().add_child(dlg)
 	dlg.popup_centered()
 	dlg.get_ok_button().grab_focus.call_deferred()   # Re-import is one step that can be undone
 	# once laid out: as tall as the words really are (the estimate above only avoids a first frame that is too small)
@@ -1717,7 +1756,7 @@ func show_kits_dialog() -> void:
 	dlg.visibility_changed.connect(func():
 		if not dlg.visible:
 			dlg.queue_free())
-	EditorInterface.get_base_control().add_child(dlg)
+	_dialog_host().add_child(dlg)
 	dlg.popup_centered()
 
 
@@ -1962,7 +2001,7 @@ func debug_show(path: String, line: int) -> void:
 		if map.has(line - back):
 			where = map[line - back]
 			break
-	EditorInterface.set_main_screen_editor.call_deferred("Schematic")
+	_show_screen.call_deferred()
 	if where.is_empty() or int(where[1]) == 0:
 		toast("Stopped in generated line %d (no single node maps to it)" % line)
 		_update_code()

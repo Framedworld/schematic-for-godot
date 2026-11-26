@@ -106,6 +106,11 @@ func _enter_tree() -> void:
 	_watch_kits()
 	# a script saved in Godot (its script editor) may be an open Schematic edited there by hand
 	resource_saved.connect(_on_resource_saved)
+	main_screen_changed.connect(_on_main_screen_changed)
+	EditorInterface.get_editor_settings().settings_changed.connect(_on_editor_settings_changed)
+	editor.update_float_button()
+	if bool(_float_saved().get("on", false)):
+		_restore_floating.call_deferred()
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--sc-selftest="):
 			_selftest.call_deferred(arg.trim_prefix("--sc-selftest="))
@@ -116,6 +121,17 @@ func _exit_tree() -> void:
 	remove_tool_menu_item("New Data Table...")
 	if _flow_menu:
 		remove_tool_menu_item("Schematics: Set Up FlowNodes Bridge")
+	var es := EditorInterface.get_editor_settings()
+	if es and es.settings_changed.is_connected(_on_editor_settings_changed):
+		es.settings_changed.disconnect(_on_editor_settings_changed)
+	if _float:
+		# (still floating the next time: closing the editor or switching the plugin off is not docking it)
+		_save_float_place()
+		_float.unpark()
+		_float.hide()
+		_float.queue_free()
+		_float = null
+		_floating = false
 	if _screen:
 		_screen.queue_free()
 	if _debugger:
@@ -309,7 +325,7 @@ func _selftest(path: String) -> void:
 
 func open_path(path: String) -> void:
 	if editor.open_schematic(path):
-		EditorInterface.set_main_screen_editor("Schematic")
+		show_editor()
 
 
 func _has_main_screen() -> bool:
@@ -327,12 +343,27 @@ func _get_plugin_icon() -> Texture2D:
 var _screen_visible := false
 
 func _make_visible(visible: bool) -> void:
+	if _floating:
+		# The editor is in its own window, which this neither shows nor hides.
+		_show_editors(visible)
+		if not _tab_is_dock():
+			# Godot 4.6 and 4.7 call this when the Schematic tab is chosen or left. The tab has nothing to show
+			# while the editor floats, and _settle_tab leaves it again.
+			_screen_visible = false
+			_screen.visible = false
+			if visible:
+				_settle_tab.call_deferred()
+		return
 	_screen_visible = visible
 	if _screen:
 		_screen.visible = visible
+	_show_editors(visible)
+
+
+func _show_editors(refresh: bool) -> void:
 	if editor:
 		editor.visible = not _showing_table
-		if visible and editor.visible:
+		if refresh and editor.visible:
 			editor._refresh_components()
 			editor.check_drift_all()
 	if table_editor:
@@ -342,7 +373,267 @@ func _make_visible(visible: bool) -> void:
 ## Switches the Schematic main screen between the graph editor and the Data Table editor.
 func show_table(on: bool) -> void:
 	_showing_table = on and table_editor != null and table_editor.table != null
-	_make_visible(_screen_visible)
+	if _floating:
+		_show_editors(true)
+	else:
+		_make_visible(_screen_visible)
+
+
+# ---------------------------------------------------------------- the editor in its own window
+# Make Floating (the button at the right of the toolbar) moves the editors into a window of the plugin's own
+# (editor/sc_float.gd); closing that window, or the button again, brings them back. Nothing here is made until
+# the editor is first floated. Whether it floats and where is kept per project, in the project's .godot folder.
+
+const FloatWindow := preload("res://addons/schematic/editor/sc_float.gd")
+
+var _float: FloatWindow        # made the first time the editor is floated
+var _floating := false
+var _placeholder: Control      # what the Schematic tab holds while the editor is in its window
+var _main_screen := ""         # the main screen tab chosen now, once Godot has said (it has no way to ask)
+var _last_screen := ""         # the one used last that is not Schematic's (2D, 3D, Script...)
+var _float_written: Variant = null   # what the project's metadata holds (read once)
+
+
+func is_floating() -> bool:
+	return _floating
+
+
+func float_window() -> Window:
+	return _float
+
+
+func can_float() -> bool:
+	return EditorInterface.is_multi_window_enabled()
+
+
+## Why the editor can't have its own window (the wording follows Godot's own Make Floating buttons).
+func cannot_float_reason() -> String:
+	if can_float():
+		return ""
+	var es := EditorInterface.get_editor_settings()
+	for key in ["interface/editor/display/single_window_mode", "interface/editor/single_window_mode"]:
+		if es.has_setting(key) and bool(es.get_setting(key)):
+			return "Not available while Interface > Editor > Single Window Mode is on in the Editor Settings."
+	if get_tree().root.gui_embed_subwindows:
+		return "Not available: the editor was started with --single-window, or this platform has one window only."
+	return "Not available while Interface > Multi Window > Enable is off in the Editor Settings."
+
+
+## Shows the Schematic editor wherever it is: its window when it floats, its main screen tab when it does not.
+func show_editor() -> void:
+	if _floating:
+		_float.bring_forward()
+	else:
+		EditorInterface.set_main_screen_editor("Schematic")
+
+
+## Where a dialog asked for now belongs: over the floating window when that is the window in use.
+func dialog_host() -> Control:
+	if _floating and _float.has_focus():
+		return _float.dialog_host()
+	return EditorInterface.get_base_control()
+
+
+func toggle_floating() -> void:
+	set_floating(not _floating)
+
+
+func set_floating(on: bool) -> void:
+	if on == _floating or editor == null or _screen == null:
+		return
+	if on:
+		if not can_float():
+			editor.toast(cannot_float_reason())
+			editor.update_float_button()
+			return
+		var saved := _float_saved()
+		var rect := _float_rect(saved)
+		if _float == null:
+			_float = FloatWindow.new()
+			_float.plugin = self
+			_float.close_requested.connect(set_floating.bind(false))
+			_float.focus_entered.connect(_on_float_focus)
+			_float.focus_exited.connect(_save_float_place)
+			_screen.add_child(_float)
+			_placeholder = _make_placeholder()
+			_screen.add_child(_placeholder)
+		_move_editors(_float.box)
+		var maximize := bool(saved.get("max", false))
+		var es := EditorInterface.get_editor_settings()
+		if not saved.has("rect") and es.has_setting("interface/multi_window/maximize_window"):
+			maximize = bool(es.get_setting("interface/multi_window/maximize_window"))
+		_float.open(rect, maximize)
+		# (Godot has no way to ask which tab is chosen: it says when that changes, and before it first has, the
+		# tab is the chosen one if what it holds is on screen)
+		var on_tab := _on_schematic_tab() or (_main_screen == "" and _screen.is_visible_in_tree())
+		_floating = true
+		_placeholder.visible = true
+		if not _tab_is_dock():
+			_screen_visible = false
+			_screen.visible = false
+		_show_editors(true)
+		if on_tab:
+			_main_screen = _get_plugin_name()
+			_settle_tab.call_deferred()
+	else:
+		_save_float_place()
+		_float.close_dialogs()
+		_move_editors(_screen)
+		_float.hide()
+		_float.unpark()
+		_floating = false
+		_placeholder.visible = false
+		EditorInterface.set_main_screen_editor("Schematic")
+		if _on_schematic_tab():
+			_make_visible(true)   # (Godot 4.8 does not call it for a tab, nor does any when the tab was already chosen)
+	_write_float(_float_saved().merged({"on": _floating}, true))
+	editor.update_float_button()
+
+
+func _move_editors(to: Node) -> void:
+	var at := 0
+	for c in [editor, table_editor]:
+		if c == null:
+			continue
+		if c.get_parent() != to:
+			c.get_parent().remove_child(c)
+			to.add_child(c)
+		to.move_child(c, at)
+		at += 1
+
+
+func _make_placeholder() -> Control:
+	var center := CenterContainer.new()
+	center.name = "FloatingPlaceholder"
+	center.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	center.visible = false
+	var rows := VBoxContainer.new()
+	rows.add_theme_constant_override("separation", W.si(10))
+	center.add_child(rows)
+	var label := Label.new()
+	label.text = "The Schematic editor is in its own window."
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	rows.add_child(label)
+	var buttons := HBoxContainer.new()
+	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
+	buttons.add_theme_constant_override("separation", W.si(8))
+	rows.add_child(buttons)
+	var show_btn := Button.new()
+	show_btn.text = "Show the Window"
+	show_btn.pressed.connect(func():
+		if _floating:
+			_float.bring_forward())
+	buttons.add_child(show_btn)
+	var dock_btn := Button.new()
+	dock_btn.text = "Dock It Back Here"
+	dock_btn.pressed.connect(set_floating.bind(false))
+	buttons.add_child(dock_btn)
+	return center
+
+
+func _on_main_screen_changed(screen_name: String) -> void:
+	_main_screen = screen_name
+	if screen_name != _get_plugin_name():
+		_last_screen = screen_name
+	elif _floating:
+		_settle_tab.call_deferred()
+
+
+func _on_schematic_tab() -> bool:
+	return _main_screen == _get_plugin_name()
+
+
+## Godot 4.8 puts what a plugin adds to the main screen into a dock of its own, shows and hides that dock with
+## the tab, and no longer calls _make_visible for tabs. Before 4.8 the plugin shows and hides its own control.
+func _tab_is_dock() -> bool:
+	return _screen.get_parent() != EditorInterface.get_editor_main_screen()
+
+
+## The Schematic tab was chosen while the editor is in its own window: bring the window forward and put the main
+## window back on the screen it showed before (as Godot's Game tab does when it floats). If the main window can't
+## leave the tab, the tab says where the editor is and has a button to dock it back.
+func _settle_tab() -> void:
+	if not _floating or not _on_schematic_tab():
+		return
+	_float.bring_forward()
+	var to := _last_screen
+	if to == "":
+		to = "3D" if EditorInterface.get_edited_scene_root() is Node3D else "2D"
+	EditorInterface.set_main_screen_editor(to)
+	if _on_schematic_tab():
+		_screen_visible = true
+		_screen.visible = true
+
+
+func _on_float_focus() -> void:
+	if _floating and editor and editor.visible:
+		editor._refresh_components()
+		editor.check_drift_all()
+
+
+func _on_editor_settings_changed() -> void:
+	if editor:
+		editor.update_float_button()
+
+
+func _float_saved() -> Dictionary:
+	if _float_written == null:
+		var read: Variant = EditorInterface.get_editor_settings().get_project_metadata("schematics", "floating_window", {})
+		_float_written = read if read is Dictionary else {}
+	return _float_written
+
+
+func _write_float(state: Dictionary) -> void:
+	if state != _float_saved():
+		_float_written = state
+		EditorInterface.get_editor_settings().set_project_metadata("schematics", "floating_window", state)
+
+
+## Remembers where the window is now (asked for whenever it may have moved: the window has no signal for that).
+func _save_float_place() -> void:
+	if _floating and _float:
+		_write_float(_float.placement(_float_saved()))
+
+
+func _float_rect(saved: Dictionary) -> Rect2i:
+	var screens := []
+	for i in DisplayServer.get_screen_count():
+		screens.append(DisplayServer.screen_get_usable_rect(i))
+	var main_window := EditorInterface.get_base_control().get_window()
+	var rect := FloatWindow.fit_rect(saved, screens, main_window.current_screen, W.si(32))
+	if rect.size.x > 0:
+		return rect
+	# the first time: where the editor is now, as Godot's own floating editors open
+	if _screen.is_visible_in_tree() and _screen.size.x > 0 and _screen.size.y > 0:
+		return Rect2i(Vector2i(_screen.get_screen_position()), Vector2i(_screen.size))
+	# (floated while another tab is showing: over the middle of the main window)
+	var over := Rect2i(main_window.position, main_window.size)
+	return Rect2i(over.position + over.size / 8, over.size * 3 / 4)
+
+
+## When the project is opened with the editor floating as it was left (unless Godot is set not to bring windows
+## back, or can't have them now).
+func _restore_floating() -> void:
+	var efs := EditorInterface.get_resource_filesystem()
+	var waited := 0
+	while is_inside_tree() and efs != null and efs.is_scanning() and waited < 3600:
+		await get_tree().process_frame
+		waited += 1
+	if not is_inside_tree() or _floating or not can_float():
+		return
+	var es := EditorInterface.get_editor_settings()
+	if es.has_setting("interface/multi_window/restore_windows_on_load") and not bool(es.get_setting("interface/multi_window/restore_windows_on_load")):
+		return
+	set_floating(true)
+
+
+func _get_window_layout(_configuration: ConfigFile) -> void:
+	_save_float_place()   # (Godot is saving its own windows' places: the moment to note this one's)
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_save_float_place()
 
 
 func is_data_table(object: Object) -> bool:
@@ -357,11 +648,11 @@ func _edit(object: Object) -> void:
 	if is_data_table(object):
 		table_editor.edit(object as Resource)
 		show_table(true)
-		EditorInterface.set_main_screen_editor.call_deferred("Schematic")
+		show_editor.call_deferred()
 	elif object is GDScript and (object as GDScript).resource_path != "":
 		show_table(false)
 		if editor.open_schematic((object as GDScript).resource_path):
-			EditorInterface.set_main_screen_editor.call_deferred("Schematic")
+			show_editor.call_deferred()
 
 
 ## New Data Table: pick the row structure, then where to save it.
@@ -378,10 +669,10 @@ func new_table_dialog(dir: String) -> void:
 		dlg.visibility_changed.connect(func():
 			if not dlg.visible:
 				dlg.queue_free())
-		EditorInterface.get_base_control().add_child(dlg)
+		dialog_host().add_child(dlg)
 		dlg.popup_centered()
 		return
-	W.popup_search(EditorInterface.get_base_control(), items, func(script_path: String): _new_table_file(script_path, dir),
+	W.popup_search(dialog_host(), items, func(script_path: String): _new_table_file(script_path, dir),
 		"New Data Table: row structure", true)
 
 
@@ -398,7 +689,7 @@ func _new_table_file(script_path: String, dir: String) -> void:
 	fd.visibility_changed.connect(func():
 		if not fd.visible:
 			fd.queue_free())
-	EditorInterface.get_base_control().add_child(fd)
+	dialog_host().add_child(fd)
 	fd.popup_file_dialog()
 
 
@@ -426,6 +717,7 @@ func _apply_changes() -> void:
 func _save_external_data() -> void:
 	if editor:
 		editor.save_all()
+	_save_float_place()
 
 
 func _get_unsaved_status(for_scene: String) -> String:
@@ -445,6 +737,8 @@ func _input(event: InputEvent) -> void:
 		return
 	if not editor.is_visible_in_tree() or editor.debug_panel == null or not editor.debug_panel.paused:
 		return
+	if _floating and not _float.forwarding:
+		return   # a key pressed in the main window while the editor floats is the main window's
 	var es := EditorInterface.get_editor_settings()
 	for pair in [["debugger/step_into", "step"], ["debugger/step_over", "next"], ["debugger/step_out", "out"]]:
 		if es.has_shortcut(pair[0]) and es.is_shortcut(pair[0], event):
@@ -454,6 +748,8 @@ func _input(event: InputEvent) -> void:
 
 
 func _shortcut_input(event: InputEvent) -> void:
+	if _floating and not _float.forwarding:
+		return
 	if editor and editor.is_visible_in_tree() and event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_F7:
 		editor.compile_doc(editor.doc, true)
 		get_viewport().set_input_as_handled()

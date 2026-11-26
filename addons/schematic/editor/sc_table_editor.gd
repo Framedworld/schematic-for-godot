@@ -433,5 +433,5 @@ func _csv_dialog(importing: bool) -> void:
 	fd.visibility_changed.connect(func():
 		if not fd.visible:
 			fd.queue_free())
-	EditorInterface.get_base_control().add_child(fd)
+	(plugin.dialog_host() if plugin else EditorInterface.get_base_control()).add_child(fd)
 	fd.popup_file_dialog()
